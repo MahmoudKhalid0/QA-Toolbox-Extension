@@ -498,8 +498,8 @@ function scanPageFormFields() {
         fields.push(field);
     }
 
-    // Rich text editors (CKEditor, Quill, ...): the real textarea is hidden and
-    // the user-visible surface is a contenteditable div - scan those too
+    // Rich text editors (CKEditor, Quill, TinyMCE inline, ...): the real textarea
+    // is hidden and the user-visible surface is a contenteditable div - scan those too
     if (fields.length < MAX_FIELDS) {
         const editors = document.querySelectorAll('[contenteditable="true"]');
         for (const el of editors) {
