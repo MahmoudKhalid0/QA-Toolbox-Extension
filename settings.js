@@ -6,7 +6,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Toggle Handlers
     document.getElementById('floatingButtonToggle').addEventListener('change', (e) => updateSetting('showFloatingButton', e.target.checked));
-    document.getElementById('autoCloseToggle').addEventListener('change', (e) => updateSetting('autoClose', e.target.checked));
 
     // AI Save Behavior Handler
     document.getElementById('aiSaveBehaviorSelect').addEventListener('change', async (e) => {
@@ -26,10 +25,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function loadSettings() {
     const result = await chrome.storage.sync.get(['formFillerSettings']);
-    const settings = result.formFillerSettings || { randomDigits: 5, showFloatingButton: true, autoClose: false };
+    const settings = result.formFillerSettings || { randomDigits: 5, showFloatingButton: true };
 
     document.getElementById('floatingButtonToggle').checked = !!settings.showFloatingButton;
-    document.getElementById('autoCloseToggle').checked = !!settings.autoClose;
 
     // AI save behavior lives in local storage (set here or via the on-page prompt)
     const aiResult = await chrome.storage.local.get(['aiSaveBehavior', 'aiAutoSaveProfiles']);
@@ -42,7 +40,7 @@ async function updateSetting(key, value) {
     const settings = result.formFillerSettings || { randomDigits: 5 };
 
     // Explicitly handle boolean types for toggles
-    if (key === 'showFloatingButton' || key === 'autoClose') {
+    if (key === 'showFloatingButton') {
         settings[key] = !!value;
     } else {
         settings[key] = value;

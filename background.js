@@ -33,8 +33,18 @@ if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
 let recordingState = {
     isRecording: false,
     appendToProfileId: null,
-    isReplacementMode: false
+    isReplacementMode: false,
+    tabId: null
 };
+
+async function clearRecordingState() {
+    recordingState.isRecording = false;
+    recordingState.appendToProfileId = null;
+    recordingState.isReplacementMode = false;
+    recordingState.tabId = null;
+    await chrome.storage.sync.remove(['isRecordingActive', 'appendToProfileId']);
+    chrome.runtime.sendMessage({ action: 'recordingStopped' }).catch(() => { });
+}
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'openEditorWithFields') {
@@ -160,6 +170,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Content script started recording in its tab - track which tab it is
+    if (request.action === 'recordingStarted') {
+        recordingState.isRecording = true;
+        recordingState.appendToProfileId = request.appendToProfileId || recordingState.appendToProfileId;
+        recordingState.tabId = sender.tab ? sender.tab.id : null;
+        sendResponse({ success: true });
+        return true;
+    }
+
+    // A page loaded. If it's the tab that was recording, the page was
+    // refreshed mid-recording - recording does not survive that, stop it
+    if (request.action === 'recordingPageLoaded') {
+        (async () => {
+            const senderTabId = sender.tab ? sender.tab.id : null;
+            const tabMatches = !recordingState.tabId || recordingState.tabId === senderTabId;
+            if (recordingState.isRecording && tabMatches) {
+                await clearRecordingState();
+            }
+            sendResponse({ success: true });
+        })();
+        return true;
+    }
+
     // Handle stop recording from content.js - ALL LOGIC VIA INDEXEDDB
     if (request.action === 'handleStopRecording') {
         (async () => {
@@ -188,11 +221,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
             // Clear recording state everywhere (in-memory + storage) and tell the
             // side panel, which stays open and can't detect the stop on its own
-            recordingState.isRecording = false;
-            recordingState.appendToProfileId = null;
-            recordingState.isReplacementMode = false;
-            await chrome.storage.sync.remove(['isRecordingActive', 'appendToProfileId']);
-            chrome.runtime.sendMessage({ action: 'recordingStopped' }).catch(() => { });
+            await clearRecordingState();
 
             if (!fields || fields.length === 0) {
                 sendResponse({ success: true, message: 'No fields' });
@@ -357,7 +386,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === 'getSettings') {
         chrome.storage.sync.get(['formFillerSettings'], (result) => {
-            const defaultSettings = { randomDigits: 5, showFloatingButton: true, autoClose: false };
+            const defaultSettings = { randomDigits: 5, showFloatingButton: true };
             sendResponse({ settings: result.formFillerSettings || defaultSettings });
         });
         return true;
@@ -377,6 +406,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         recordingState.isRecording = true;
         recordingState.appendToProfileId = request.profileId;
         recordingState.isReplacementMode = true; // Flag for replacement mode
+        recordingState.tabId = sender.tab ? sender.tab.id : null;
 
         // Save to storage so popup can detect recording state
         chrome.storage.sync.set({

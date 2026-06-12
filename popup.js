@@ -797,15 +797,6 @@ async function fillForm(profileId) {
             }
         });
 
-        // Auto-close logic: Strictly check if setting is enabled
-        console.log('Fill success. Settings:', settings);
-        if (settings.autoClose === true) {
-            console.log('Auto-closing popup...');
-            // Reduced delay for faster close
-            setTimeout(() => {
-                window.close();
-            }, 100);
-        }
     } catch (e) {
         showToastMessage('Error filling form', 'error');
     }

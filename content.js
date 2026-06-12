@@ -7,14 +7,11 @@ let recordedElementMap = new WeakMap(); // Map elements to their index in record
 let lastCapture = { time: 0, value: '', element: null }; // For temporal deduplication
 let lastComboboxInput = null; // Last custom dropdown (input[role="combobox"]) the user opened
 
-// Check with background if recording should be active on page load
-chrome.runtime.sendMessage({ action: 'getRecordingState' }, (response) => {
+// Recording does NOT survive page loads: tell the background this page loaded.
+// If this is the tab that was recording, the background stops the recording
+// everywhere (its own state, storage and the side panel).
+chrome.runtime.sendMessage({ action: 'recordingPageLoaded' }, () => {
     if (chrome.runtime.lastError) return;
-    if (response && response.isRecording) {
-        currentAppendToProfileId = response.appendToProfileId || null;
-        console.log('Resuming recording, appendToProfileId:', currentAppendToProfileId);
-        startRecording();
-    }
 });
 
 // Listen for messages from popup
@@ -141,6 +138,12 @@ function startRecording() {
     isRecording = true;
     recordedFields = [];
     recordedElementMap = new WeakMap();
+
+    // Register with background (it tracks which tab records, so a page
+    // refresh in this tab stops the recording instead of resuming it)
+    chrome.runtime.sendMessage({ action: 'recordingStarted', appendToProfileId: currentAppendToProfileId }, () => {
+        if (chrome.runtime.lastError) return;
+    });
 
     showRecordingIndicator();
 
@@ -727,6 +730,32 @@ const INSPECTOR_COMMON_PROPS = [
     'flex', 'gap', 'transform'
 ];
 
+// Candidate keyword values for the value autocomplete. Filtered per property
+// with CSS.supports(prop, keyword), so each property only suggests its own
+// valid keywords (display -> flex/grid/..., position -> absolute/sticky/...).
+const INSPECTOR_VALUE_KEYWORDS = [
+    'auto', 'none', 'normal', 'inherit', 'initial', 'unset', 'revert',
+    'block', 'inline', 'inline-block', 'flex', 'inline-flex', 'grid', 'inline-grid', 'contents', 'flow-root', 'table', 'table-cell',
+    'static', 'relative', 'absolute', 'fixed', 'sticky',
+    'visible', 'hidden', 'scroll', 'clip', 'collapse',
+    'pointer', 'default', 'move', 'text', 'grab', 'not-allowed', 'crosshair', 'wait', 'help',
+    'left', 'right', 'center', 'justify', 'start', 'end',
+    'bold', 'bolder', 'lighter', 'italic', 'oblique',
+    'nowrap', 'pre', 'pre-wrap', 'pre-line', 'break-all', 'break-word', 'keep-all',
+    'row', 'column', 'row-reverse', 'column-reverse', 'wrap', 'wrap-reverse',
+    'flex-start', 'flex-end', 'space-between', 'space-around', 'space-evenly', 'stretch', 'baseline',
+    'uppercase', 'lowercase', 'capitalize',
+    'underline', 'line-through', 'overline',
+    'solid', 'dashed', 'dotted', 'double', 'groove', 'ridge', 'inset', 'outset',
+    'border-box', 'content-box',
+    'middle', 'top', 'bottom', 'text-top', 'text-bottom', 'sub', 'super',
+    'cover', 'contain', 'fill', 'scale-down',
+    'repeat', 'no-repeat', 'repeat-x', 'repeat-y',
+    'ellipsis', 'disc', 'circle', 'square', 'decimal',
+    'ease', 'ease-in', 'ease-out', 'ease-in-out', 'linear',
+    'transparent', 'currentColor'
+];
+
 function startInspectMode() {
     stopInspectMode();
     closeInspectorPanel();
@@ -869,6 +898,32 @@ function showInspectorPanel(el) {
             .ff-insp-list .ff-insp-row { word-break: break-all; }
             .ff-insp-list .ff-insp-k { color: #a5b4fc; font-weight: 600; }
             .ff-insp-list .ff-insp-v { color: #ffffff; }
+            .ff-insp-rule { margin-bottom: 8px; }
+            .ff-insp-rule .ff-insp-sel { color: #fbbf24; font-weight: 600; word-break: break-all; cursor: pointer; }
+            .ff-insp-rule .ff-insp-sel:hover { background: rgba(255,255,255,0.07); border-radius: 3px; }
+            .ff-insp-swatch {
+                -webkit-appearance: none; appearance: none;
+                display: inline-block; width: 12px; height: 12px; border-radius: 2px;
+                border: 1px solid rgba(255,255,255,0.5); margin: 0 4px 0 0; padding: 0;
+                vertical-align: middle; cursor: pointer; background: none;
+            }
+            .ff-insp-swatch::-webkit-color-swatch-wrapper { padding: 0; }
+            .ff-insp-swatch::-webkit-color-swatch { border: none; border-radius: 1px; }
+            .ff-insp-swatch:hover { transform: scale(1.35); border-color: #fff; }
+            .ff-insp-off .ff-insp-swatch { pointer-events: none; opacity: 0.4; }
+            .ff-insp-decl { padding-left: 6px; }
+            .ff-insp-dchk {
+                width: 11px; height: 11px; margin: 0 5px 0 0; accent-color: #6366f1;
+                cursor: pointer; vertical-align: middle;
+            }
+            .ff-insp-off .ff-insp-k, .ff-insp-off .ff-insp-v { text-decoration: line-through; opacity: 0.45; }
+            .ff-insp-decl .ff-insp-k, .ff-insp-decl .ff-insp-v { cursor: text; }
+            .ff-insp-decl .ff-insp-k:hover, .ff-insp-decl .ff-insp-v:hover { text-decoration: underline; }
+            .ff-insp-edit {
+                background: rgba(0,0,0,0.5); border: 1px solid #6366f1; color: #fff;
+                font: inherit; border-radius: 4px; padding: 0 4px; outline: none; max-width: 220px;
+            }
+            .ff-insp-edit::-webkit-calendar-picker-indicator { display: none !important; }
             .ff-insp-empty { color: rgba(255,255,255,0.35); font-style: italic; }
             #ff-insp-style-filter, #ff-insp-css {
                 width: 100%; background: rgba(255,255,255,0.06);
@@ -924,14 +979,14 @@ function showInspectorPanel(el) {
                 ).join('')}</div>
             </div>
             <div class="ff-insp-section">
-                <div class="ff-insp-sec-title"><span>Computed Styles</span><button id="ff-insp-copy-styles">Copy</button></div>
+                <div class="ff-insp-sec-title"><span>CSS Rules</span><button id="ff-insp-copy-styles">Copy</button></div>
                 <input id="ff-insp-style-filter" type="text" placeholder="Filter properties... (e.g. font, margin)">
                 <div class="ff-insp-list" id="ff-insp-style-list"></div>
             </div>
             <div class="ff-insp-section">
                 <div class="ff-insp-sec-title"><span>Apply Custom Style</span></div>
                 <div class="ff-insp-css-wrap">
-                    <textarea id="ff-insp-css" placeholder="background: red; border: 2px solid blue;" dir="ltr" spellcheck="false"></textarea>
+                    <textarea id="ff-insp-css" placeholder="background: red;  —or—  .new { color: red; }" dir="ltr" spellcheck="false"></textarea>
                     <div id="ff-insp-suggest"></div>
                 </div>
                 <div class="ff-insp-actions">
@@ -993,7 +1048,7 @@ function showInspectorPanel(el) {
         const pos = cssBox.selectionStart;
         const before = cssBox.value.slice(0, pos);
         const after = cssBox.value.slice(pos);
-        const segStart = Math.max(before.lastIndexOf(';'), before.lastIndexOf('\n')) + 1;
+        const segStart = Math.max(before.lastIndexOf(';'), before.lastIndexOf('\n'), before.lastIndexOf('{'), before.lastIndexOf('}')) + 1;
         const leading = before.slice(segStart).match(/^\s*/)[0];
         const newBefore = before.slice(0, segStart) + leading + prop + ': ';
         cssBox.value = newBefore + after;
@@ -1011,7 +1066,7 @@ function showInspectorPanel(el) {
     const updateSuggest = () => {
         const pos = cssBox.selectionStart;
         const before = cssBox.value.slice(0, pos);
-        const segStart = Math.max(before.lastIndexOf(';'), before.lastIndexOf('\n')) + 1;
+        const segStart = Math.max(before.lastIndexOf(';'), before.lastIndexOf('\n'), before.lastIndexOf('{'), before.lastIndexOf('}')) + 1;
         const seg = before.slice(segStart);
         // Already typing a value (past the colon) - no property suggestions
         if (seg.includes(':')) { hideSuggest(); return; }
@@ -1055,26 +1110,406 @@ function showInspectorPanel(el) {
         }
     });
 
+    // Live-editing state for the CSS Rules list (DevTools-style):
+    // edits/toggles mutate the page's real CSSStyleDeclaration objects.
+    const disabledDecls = new Map(); // CSSStyleDeclaration -> [{prop, value, priority}]
+    const touchedRules = new Map();  // CSSStyleDeclaration -> original cssText (for Reset)
+    let currentBlocks = [];          // blocks currently rendered, indexes match data-b
+
+    // Collect the actual CSS rules that match the element, grouped per selector
+    // (like the DevTools Styles pane): [{ selector, style, decls: [{prop, value, disabled}] }]
+    const getMatchedCssBlocks = () => {
+        const el = inspectedElement;
+        if (!el) return [];
+        const blocks = [];
+        const addBlock = (selector, style) => {
+            const decls = [];
+            for (const d of style.cssText.split(';')) {
+                const i = d.indexOf(':');
+                if (i > 0) decls.push({ prop: d.slice(0, i).trim(), value: d.slice(i + 1).trim(), disabled: false });
+            }
+            // Re-insert disabled declarations at the position they were disabled from
+            const offs = (disabledDecls.get(style) || []).slice().sort((a, b) => a.idx - b.idx);
+            for (const d of offs) {
+                decls.splice(Math.min(d.idx ?? decls.length, decls.length), 0,
+                    { prop: d.prop, value: d.value + (d.priority ? ' !important' : ''), disabled: true });
+            }
+            if (decls.length) blocks.push({ selector, style, decls });
+        };
+        const collect = (rules) => {
+            for (const rule of rules) {
+                try {
+                    if (rule.selectorText && rule.style) {
+                        if (el.matches(rule.selectorText)) addBlock(rule.selectorText, rule.style);
+                    } else if (rule.cssRules && (!rule.media || matchMedia(rule.media.mediaText).matches)) {
+                        collect(rule.cssRules); // @media / @supports blocks
+                    }
+                } catch (e) { }
+            }
+        };
+        for (const sheet of document.styleSheets) {
+            try { collect(sheet.cssRules); } catch (e) { } // cross-origin sheets are unreadable
+        }
+        // Later rules win the cascade - show them first, with inline style on top
+        blocks.reverse();
+        if (el.getAttribute('style') || disabledDecls.has(el.style)) {
+            addBlock('element.style', el.style);
+            if (blocks.length && blocks[blocks.length - 1].selector === 'element.style') {
+                blocks.unshift(blocks.pop());
+            }
+        }
+        return blocks;
+    };
+
+    // Prepend a small color swatch to color values (rgb/rgba/hsl/hex), DevTools-style.
+    // var(--x) references are resolved against the inspected element to find the
+    // actual color. Works on already-escaped HTML - color tokens contain no
+    // HTML-sensitive chars.
+    const colorizeValue = (escapedValue) =>
+        escapedValue.replace(/(var\(--[^)]*\)|#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\))/g, (m) => {
+            let color = m;
+            if (m.startsWith('var(')) {
+                const name = m.match(/--[\w-]+/);
+                color = '';
+                if (name && inspectedElement) {
+                    try { color = getComputedStyle(inspectedElement).getPropertyValue(name[0]).trim(); } catch (e) { }
+                }
+                // Custom props can hold anything (sizes, fonts) - only swatch real colors
+                if (!color || !CSS.supports('color', color)) return m;
+            }
+            // A real color input: clicking it opens the native picker directly
+            // (a trusted click - programmatic .click() on a hidden input is not)
+            return `<input type="color" class="ff-insp-swatch" data-color="${m}" title="Click to pick a color" value="${toHexColor(color)}">${m}`;
+        });
+
+    const filterBlocks = (filter) => {
+        let blocks = getMatchedCssBlocks();
+        if (filter && filter.trim()) {
+            const f = filter.trim().toLowerCase();
+            blocks = blocks
+                .map(b => ({ ...b, decls: b.decls.filter(d => (d.prop + ': ' + d.value).toLowerCase().includes(f)) }))
+                .filter(b => b.decls.length > 0);
+        }
+        return blocks;
+    };
+
     const renderStyleList = (filter) => {
         const listEl = panel.querySelector('#ff-insp-style-list');
         if (!inspectedElement) return;
-        const cs = getComputedStyle(inspectedElement);
-        let props;
-        if (filter && filter.trim()) {
-            const f = filter.trim().toLowerCase();
-            props = [];
-            for (let i = 0; i < cs.length; i++) {
-                if (cs.item(i).includes(f)) props.push(cs.item(i));
+        const blocks = filterBlocks(filter);
+
+        if (blocks.length === 0) {
+            // Fallback: flat computed values (no readable rules, or nothing matched the filter)
+            currentBlocks = [];
+            const cs = getComputedStyle(inspectedElement);
+            let props;
+            if (filter && filter.trim()) {
+                const f = filter.trim().toLowerCase();
+                props = [];
+                for (let i = 0; i < cs.length; i++) {
+                    if (cs.item(i).includes(f)) props.push(cs.item(i));
+                }
+            } else {
+                props = INSPECTOR_COMMON_PROPS;
+            }
+            listEl.innerHTML = props.length === 0
+                ? '<div class="ff-insp-empty">No matching properties</div>'
+                : props.map(p =>
+                    `<div class="ff-insp-row"><span class="ff-insp-k">${escapeHtml(p)}</span>: <span class="ff-insp-v">${colorizeValue(escapeHtml(cs.getPropertyValue(p)))}</span>;</div>`
+                ).join('');
+            return;
+        }
+
+        currentBlocks = blocks;
+        listEl.innerHTML = blocks.map((b, bi) => {
+            const rows = b.decls.map(d =>
+                `<div class="ff-insp-row ff-insp-decl${d.disabled ? ' ff-insp-off' : ''}" data-b="${bi}" data-prop="${escapeHtml(d.prop)}">` +
+                `<input type="checkbox" class="ff-insp-dchk"${d.disabled ? '' : ' checked'} title="${d.disabled ? 'Enable' : 'Disable'} this property">` +
+                `<span class="ff-insp-k">${escapeHtml(d.prop)}</span>: <span class="ff-insp-v">${colorizeValue(escapeHtml(d.value))}</span>;</div>`
+            ).join('');
+            return `<div class="ff-insp-rule" data-b="${bi}"><div class="ff-insp-sel" title="Click to add a property">${escapeHtml(b.selector)} {</div>${rows}<div class="ff-insp-sel" title="Click to add a property">}</div></div>`;
+        }).join('');
+    };
+
+    // ---- Live editing of the CSS Rules list (toggle + inline edit) ----
+    const styleListEl = panel.querySelector('#ff-insp-style-list');
+    const currentFilter = () => panel.querySelector('#ff-insp-style-filter').value;
+
+    // Native autocomplete for property names while editing
+    const propDatalist = document.createElement('datalist');
+    propDatalist.id = 'ff-insp-props';
+    propDatalist.innerHTML = cssProps.map(p => `<option value="${p}"></option>`).join('');
+    panel.appendChild(propDatalist);
+
+    // Value autocomplete: refilled per property via CSS.supports
+    const valDatalist = document.createElement('datalist');
+    valDatalist.id = 'ff-insp-vals';
+    panel.appendChild(valDatalist);
+    const fillValueSuggestions = (prop) => {
+        let vals = [];
+        try { vals = INSPECTOR_VALUE_KEYWORDS.filter(k => CSS.supports(prop, k)); } catch (e) { }
+        valDatalist.innerHTML = vals.map(v => `<option value="${v}"></option>`).join('');
+    };
+
+    // Snapshot a rule before its first mutation so Reset can restore it
+    const snapshotRule = (style) => {
+        if (!touchedRules.has(style)) touchedRules.set(style, style.cssText);
+    };
+
+    // Checkbox: enable/disable a declaration (mutates the real rule, like DevTools)
+    styleListEl.addEventListener('change', (e) => {
+        if (!e.target.classList.contains('ff-insp-dchk')) return;
+        const row = e.target.closest('.ff-insp-decl');
+        const b = currentBlocks[+row.dataset.b];
+        if (!b) return;
+        const prop = row.dataset.prop;
+        snapshotRule(b.style);
+        const list = disabledDecls.get(b.style) || [];
+        if (e.target.checked) {
+            const d = list.find(x => x.prop === prop);
+            if (d) {
+                disabledDecls.set(b.style, list.filter(x => x !== d));
+                // Rebuild the declaration block with the property back at its
+                // original position - setProperty would append it at the end
+                try {
+                    const parts = b.style.cssText.split(';').map(s => s.trim()).filter(Boolean);
+                    parts.splice(Math.min(d.idx ?? parts.length, parts.length), 0,
+                        `${d.prop}: ${d.value}${d.priority ? ' !important' : ''}`);
+                    b.style.cssText = parts.join('; ');
+                } catch (err) { }
             }
         } else {
-            props = INSPECTOR_COMMON_PROPS;
+            list.push({
+                prop,
+                value: b.style.getPropertyValue(prop),
+                priority: b.style.getPropertyPriority(prop),
+                idx: b.decls.findIndex(x => x.prop === prop)
+            });
+            disabledDecls.set(b.style, list);
+            try { b.style.removeProperty(prop); } catch (err) { }
         }
-        listEl.innerHTML = props.length === 0
-            ? '<div class="ff-insp-empty">No matching properties</div>'
-            : props.map(p =>
-                `<div class="ff-insp-row"><span class="ff-insp-k">${escapeHtml(p)}</span>: <span class="ff-insp-v">${escapeHtml(cs.getPropertyValue(p))}</span>;</div>`
-            ).join('');
+        renderStyleList(currentFilter());
+    });
+
+    // Convert any CSS color to #rrggbb for the native color picker
+    const toHexColor = (color) => {
+        try {
+            const ctx = document.createElement('canvas').getContext('2d');
+            ctx.fillStyle = '#000';
+            ctx.fillStyle = color;
+            const v = ctx.fillStyle;
+            if (v.startsWith('#')) return v;
+            const nums = v.match(/\d+(\.\d+)?/g);
+            if (nums) return '#' + nums.slice(0, 3).map(n => Math.round(+n).toString(16).padStart(2, '0')).join('');
+        } catch (e) { }
+        return '#000000';
     };
+
+    // The swatch IS a color input - picking a color updates the declaration
+    // live. The replacement runs on the same displayed value string the token
+    // was extracted from (getPropertyValue can serialize differently, or be
+    // empty for shorthands holding var(), silently breaking the replacement).
+    styleListEl.addEventListener('input', (e) => {
+        const sw = e.target;
+        if (!sw.classList.contains('ff-insp-swatch')) return;
+        const row = sw.closest('.ff-insp-decl');
+        const b = row && currentBlocks[+row.dataset.b];
+        if (!b) return;
+        const prop = row.dataset.prop;
+        if (sw.dataset.curval === undefined) {
+            const decl = b.decls.find(x => x.prop === prop && !x.disabled);
+            sw.dataset.curval = decl ? decl.value : (b.style.getPropertyValue(prop) || sw.dataset.color);
+        }
+        snapshotRule(b.style);
+        const raw = sw.dataset.curval.replace(sw.dataset.color, sw.value);
+        sw.dataset.curval = raw;
+        sw.dataset.color = sw.value;
+        const imp = /!important/i.test(raw);
+        try { b.style.setProperty(prop, raw.replace(/\s*!important\s*/i, ' ').trim(), imp ? 'important' : ''); } catch (err) { }
+    });
+
+    // Picker closed - re-render so the value text shows the final color
+    styleListEl.addEventListener('change', (e) => {
+        if (e.target.classList.contains('ff-insp-swatch')) renderStyleList(currentFilter());
+    });
+
+    // Edit a property name or value in place. Value edits preview live while
+    // typing; Arrow Up/Down steps numbers (+Shift=10, +Alt=0.1); Tab on a
+    // property jumps to its value; Esc undoes.
+    const beginInlineEdit = (row, span, isProp) => {
+        const b = currentBlocks[+row.dataset.b];
+        if (!b) return;
+        const prop = row.dataset.prop;
+        const priority = b.style.getPropertyPriority(prop);
+        const origValue = b.style.getPropertyValue(prop);
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'ff-insp-edit';
+        if (isProp) {
+            input.value = prop;
+            input.setAttribute('list', 'ff-insp-props');
+        } else {
+            input.value = origValue + (priority ? ' !important' : '');
+            input.setAttribute('list', 'ff-insp-vals');
+            fillValueSuggestions(prop);
+        }
+        const fit = () => { input.style.width = Math.min(34, Math.max(6, input.value.length + 2)) + 'ch'; };
+        fit();
+        span.replaceWith(input);
+        input.focus();
+        input.select();
+
+        const applyValue = (raw) => {
+            const imp = /!important$/i.test(raw);
+            const clean = raw.replace(/!important$/i, '').trim();
+            if (!clean) return;
+            try { b.style.setProperty(prop, clean, imp ? 'important' : ''); } catch (e) { }
+        };
+
+        let done = false;
+        const finish = (commit, thenEditValue) => {
+            if (done) return;
+            done = true;
+            const v = input.value.trim();
+            snapshotRule(b.style);
+            try {
+                if (isProp) {
+                    if (commit && v && v !== prop) {
+                        b.style.removeProperty(prop);
+                        b.style.setProperty(v, origValue, priority);
+                    }
+                } else if (commit) {
+                    if (!v) b.style.removeProperty(prop);
+                    else applyValue(v);
+                } else {
+                    // Cancelled - undo the live preview
+                    b.style.setProperty(prop, origValue, priority);
+                }
+            } catch (err) { }
+            renderStyleList(currentFilter());
+            if (thenEditValue) {
+                const newProp = (isProp && commit && v) ? v : prop;
+                const nrow = styleListEl.querySelector(`.ff-insp-decl[data-b="${row.dataset.b}"][data-prop="${newProp}"]`);
+                const nspan = nrow && nrow.querySelector('.ff-insp-v');
+                if (nspan) beginInlineEdit(nrow, nspan, false);
+            }
+        };
+
+        input.addEventListener('input', (ev) => {
+            fit();
+            if (isProp) {
+                // Picked a property from the autocomplete list - commit it and
+                // jump straight to editing its value
+                if (ev.inputType === 'insertReplacementText') finish(true, true);
+                return;
+            }
+            snapshotRule(b.style);
+            applyValue(input.value.trim());
+            // Picked a value from the list - commit right away
+            if (ev.inputType === 'insertReplacementText') finish(true);
+        });
+        input.addEventListener('keydown', (ev) => {
+            ev.stopPropagation();
+            if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+            else if (ev.key === 'Tab') { ev.preventDefault(); finish(true, isProp); }
+            else if (ev.key === 'Escape') finish(false);
+            else if (!isProp && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown')) {
+                ev.preventDefault();
+                const delta = (ev.key === 'ArrowUp' ? 1 : -1) * (ev.shiftKey ? 10 : ev.altKey ? 0.1 : 1);
+                input.value = input.value.replace(/-?\d*\.?\d+/, (n) => String(+(parseFloat(n) + delta).toFixed(3)));
+                fit();
+                snapshotRule(b.style);
+                applyValue(input.value.trim());
+            }
+        });
+        input.addEventListener('blur', () => finish(true));
+    };
+
+    // Click a rule's selector line (or closing brace) to add a new declaration
+    const startAddDecl = (b, ruleDiv) => {
+        const existing = ruleDiv.querySelector('.ff-insp-new input');
+        if (existing) { existing.focus(); return; }
+        const row = document.createElement('div');
+        row.className = 'ff-insp-row ff-insp-decl ff-insp-new';
+        const propIn = document.createElement('input');
+        propIn.className = 'ff-insp-edit';
+        propIn.placeholder = 'property';
+        propIn.setAttribute('list', 'ff-insp-props');
+        row.appendChild(propIn);
+        ruleDiv.insertBefore(row, ruleDiv.lastElementChild);
+        propIn.focus();
+
+        let stage = 'prop';
+        const commit = (prop, val) => {
+            stage = 'done';
+            if (prop && val) {
+                snapshotRule(b.style);
+                const imp = /!important$/i.test(val);
+                try { b.style.setProperty(prop, val.replace(/!important$/i, '').trim(), imp ? 'important' : ''); } catch (e) { }
+            }
+            renderStyleList(currentFilter());
+        };
+        const toValueStage = () => {
+            if (stage !== 'prop') return;
+            const typed = propIn.value.trim();
+            if (!typed) { stage = 'done'; row.remove(); return; }
+            // "prop: value" typed in one go also works
+            const ci = typed.indexOf(':');
+            if (ci > 0) { commit(typed.slice(0, ci).trim(), typed.slice(ci + 1).replace(/;$/, '').trim()); return; }
+            stage = 'value';
+            const sep = document.createElement('span');
+            sep.textContent = ': ';
+            row.appendChild(sep);
+            const valIn = document.createElement('input');
+            valIn.className = 'ff-insp-edit';
+            valIn.placeholder = 'value';
+            valIn.setAttribute('list', 'ff-insp-vals');
+            fillValueSuggestions(typed);
+            row.appendChild(valIn);
+            valIn.focus();
+            valIn.addEventListener('keydown', (ev) => {
+                ev.stopPropagation();
+                if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); commit(typed, valIn.value.replace(/;$/, '').trim()); }
+                else if (ev.key === 'Escape') { stage = 'done'; renderStyleList(currentFilter()); }
+            });
+            // Picking a value from the autocomplete list commits right away
+            valIn.addEventListener('input', (ev) => {
+                if (ev.inputType === 'insertReplacementText') commit(typed, valIn.value.replace(/;$/, '').trim());
+            });
+            valIn.addEventListener('blur', () => { if (stage === 'value') commit(typed, valIn.value.replace(/;$/, '').trim()); });
+        };
+        propIn.addEventListener('keydown', (ev) => {
+            ev.stopPropagation();
+            if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); toValueStage(); }
+            else if (ev.key === 'Escape') { stage = 'done'; row.remove(); }
+        });
+        // Picking a property from the autocomplete list moves on to the value
+        propIn.addEventListener('input', (ev) => {
+            if (ev.inputType === 'insertReplacementText') toValueStage();
+        });
+        propIn.addEventListener('blur', () => setTimeout(toValueStage, 120));
+    };
+
+    styleListEl.addEventListener('click', (e) => {
+        // Inputs handle themselves (checkboxes, color swatches, edit fields)
+        if (e.target.tagName === 'INPUT') return;
+        const row = e.target.closest('.ff-insp-decl');
+
+        // Selector line -> add a new declaration to the rule
+        const selLine = e.target.closest('.ff-insp-sel');
+        if (selLine) {
+            const ruleDiv = selLine.closest('.ff-insp-rule');
+            const b = ruleDiv && currentBlocks[+ruleDiv.dataset.b];
+            if (b) startAddDecl(b, ruleDiv);
+            return;
+        }
+
+        // Property name / value -> edit in place
+        const span = e.target.closest('.ff-insp-k, .ff-insp-v');
+        if (!span || !row || row.classList.contains('ff-insp-off') || row.classList.contains('ff-insp-new')) return;
+        beginInlineEdit(row, span, span.classList.contains('ff-insp-k'));
+    });
 
     const copyText = (text, btn) => {
         navigator.clipboard.writeText(text).then(() => {
@@ -1085,8 +1520,15 @@ function showInspectorPanel(el) {
     };
 
     const stylesAsText = () => {
-        const cs = getComputedStyle(inspectedElement);
         const filter = panel.querySelector('#ff-insp-style-filter').value;
+        const blocks = filterBlocks(filter);
+        if (blocks.length > 0) {
+            return blocks.map(b =>
+                `${b.selector} {\n${b.decls.filter(d => !d.disabled).map(d => `    ${d.prop}: ${d.value};`).join('\n')}\n}`
+            ).join('\n\n');
+        }
+        // Fallback: flat computed values
+        const cs = getComputedStyle(inspectedElement);
         let props;
         if (filter && filter.trim()) {
             const f = filter.trim().toLowerCase();
@@ -1122,6 +1564,24 @@ function showInspectorPanel(el) {
         const feedback = panel.querySelector('#ff-insp-feedback');
         if (!cssText) return;
 
+        // Full CSS rules with selectors (.new { color: red; }) - inject as a live
+        // stylesheet so they apply to every matching element on the page
+        if (cssText.includes('{')) {
+            let styleEl = document.getElementById('ff-insp-custom-css');
+            if (!styleEl) {
+                styleEl = document.createElement('style');
+                styleEl.id = 'ff-insp-custom-css';
+                document.head.appendChild(styleEl);
+            }
+            styleEl.textContent = cssText;
+            const ruleCount = styleEl.sheet ? styleEl.sheet.cssRules.length : 0;
+            feedback.textContent = ruleCount > 0 ? `Applied ${ruleCount} CSS rule${ruleCount === 1 ? '' : 's'} to the page` : 'Invalid CSS - check the syntax';
+            feedback.style.color = ruleCount > 0 ? '#4ade80' : '#f87171';
+            renderStyleList(panel.querySelector('#ff-insp-style-filter').value);
+            return;
+        }
+
+        // Plain declarations - applied inline to the picked element
         let applied = 0;
         cssText.split(';').forEach(decl => {
             const idx = decl.indexOf(':');
@@ -1143,8 +1603,14 @@ function showInspectorPanel(el) {
 
     panel.querySelector('#ff-insp-reset').addEventListener('click', () => {
         if (!inspectedElement) return;
+        // Restore stylesheet rules edited/disabled from the CSS Rules list
+        touchedRules.forEach((cssText, style) => { try { style.cssText = cssText; } catch (e) { } });
+        touchedRules.clear();
+        disabledDecls.clear();
         if (inspectedOriginalStyle === null) inspectedElement.removeAttribute('style');
         else inspectedElement.setAttribute('style', inspectedOriginalStyle);
+        const customCss = document.getElementById('ff-insp-custom-css');
+        if (customCss) customCss.remove();
         const feedback = panel.querySelector('#ff-insp-feedback');
         feedback.textContent = 'Styles reset to original';
         feedback.style.color = '#4ade80';
