@@ -186,10 +186,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 storedProfileId: storageData.profileIdForReplacement
             });
 
-            // Clear recording state
+            // Clear recording state everywhere (in-memory + storage) and tell the
+            // side panel, which stays open and can't detect the stop on its own
             recordingState.isRecording = false;
             recordingState.appendToProfileId = null;
             recordingState.isReplacementMode = false;
+            await chrome.storage.sync.remove(['isRecordingActive', 'appendToProfileId']);
+            chrome.runtime.sendMessage({ action: 'recordingStopped' }).catch(() => { });
 
             if (!fields || fields.length === 0) {
                 sendResponse({ success: true, message: 'No fields' });

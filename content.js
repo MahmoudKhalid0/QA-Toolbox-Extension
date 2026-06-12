@@ -173,7 +173,13 @@ function stopRecording() {
     chrome.storage.sync.remove('isRecordingActive');
 
     hideRecordingIndicator();
-    return recordedFields;
+    // Hand back the fields but clear local state, so a second stop call
+    // (e.g. from the side panel after the page bar already stopped) can't
+    // re-save the previous recording
+    const fields = recordedFields;
+    recordedFields = [];
+    recordedElementMap = new WeakMap();
+    return fields;
 }
 
 function startMutationObserver() {
@@ -1309,13 +1315,8 @@ function showRecordingIndicator() {
         console.log('=== STOP BUTTON ===');
         console.log('Fields:', fields.length, 'AppendTo:', appendToId);
 
-        if (fields.length === 0) {
-            console.log('No fields recorded');
-            hideRecordingIndicator();
-            return;
-        }
-
-        // Send everything to background - it will handle all logic via IndexedDB
+        // Always notify background - even with 0 fields it must clear its
+        // recording state, otherwise the indicator resurrects on the next page load
         chrome.runtime.sendMessage({
             action: 'handleStopRecording',
             fields: fields,

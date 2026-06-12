@@ -221,6 +221,8 @@ document.getElementById('recordBtn').addEventListener('click', async () => {
             });
         } else {
             showToastMessage('No fields recorded', 'error');
+            // Tell background even with 0 fields so its in-memory recording state clears
+            chrome.runtime.sendMessage({ action: 'handleStopRecording', fields: [], url: '', appendToProfileId: activeAppendId });
             await chrome.storage.sync.remove(['isRecordingActive', 'appendToProfileId']);
             await chrome.storage.local.remove(['recordedFields', 'recordedUrl', 'failedFieldSelectors', 'profileIdForReplacement']);
             appendToId = null;
@@ -258,6 +260,16 @@ async function refreshCurrentTabContext() {
         }
     } catch (e) { }
 }
+
+// Recording was stopped from the on-page indicator - sync the panel UI
+chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'recordingStopped' && isRecording) {
+        isRecording = false;
+        appendToId = null;
+        updateRecordButton();
+        renderProfiles();
+    }
+});
 
 if (chrome.tabs && chrome.tabs.onActivated) {
     chrome.tabs.onActivated.addListener(refreshCurrentTabContext);
