@@ -1,6 +1,24 @@
 let profiles = [];
 let currentFields = [];
 let isRecording = false;
+
+// Make sure the content script is alive in the tab. Content scripts die whenever
+// the extension is reloaded, so pages opened before the reload need re-injection.
+async function ensureContentScript(tabId) {
+    try {
+        await chrome.tabs.sendMessage(tabId, { action: 'getRecordingStatus' });
+        return true;
+    } catch (e) {
+        try {
+            await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+            await new Promise(resolve => setTimeout(resolve, 150));
+            return true;
+        } catch (err) {
+            console.warn('Could not inject content script:', err);
+            return false;
+        }
+    }
+}
 let appendToId = null;
 let expandedCategories = new Set();
 let availableCategories = []; // Global list of category names
@@ -105,6 +123,8 @@ document.getElementById('recordBtn').addEventListener('click', async () => {
             }
         } catch (e) { }
 
+        await ensureContentScript(tab.id);
+
         try {
             appendToId = null;
             await chrome.storage.sync.remove('appendToProfileId');
@@ -114,7 +134,7 @@ document.getElementById('recordBtn').addEventListener('click', async () => {
             isRecording = true;
             updateRecordButton();
             renderProfiles();
-            window.close();
+            // Side panel stays open - the user stops recording from here
         } catch (e) {
             await chrome.scripting.executeScript({
                 target: { tabId: tab.id },
@@ -126,8 +146,8 @@ document.getElementById('recordBtn').addEventListener('click', async () => {
                 await chrome.storage.sync.set({ isRecordingActive: true });
                 await chrome.tabs.sendMessage(tab.id, { action: 'startRecording' });
                 isRecording = true;
+                updateRecordButton();
                 renderProfiles();
-                window.close();
             }, 100);
         }
     } else {
@@ -209,6 +229,45 @@ document.getElementById('recordBtn').addEventListener('click', async () => {
     }
 });
 
+// Tab navigation (Profiles / Tools) - remembers the last open tab
+function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+    document.querySelectorAll('.tab-page').forEach(p => p.classList.toggle('hidden', p.id !== 'tab-' + name));
+    try { localStorage.setItem('qaToolboxActiveTab', name); } catch (e) { }
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+});
+
+try {
+    const savedTab = localStorage.getItem('qaToolboxActiveTab');
+    if (savedTab === 'tools') switchTab(savedTab);
+} catch (e) { }
+
+// The side panel stays open across tab switches - keep the smart filter and
+// recording state in sync with whatever tab the user is looking at
+async function refreshCurrentTabContext() {
+    try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const newUrl = tabs[0]?.url || '';
+        if (newUrl !== currentTabUrl) {
+            currentTabUrl = newUrl;
+            smartFilterActive = true;
+            renderProfiles();
+        }
+    } catch (e) { }
+}
+
+if (chrome.tabs && chrome.tabs.onActivated) {
+    chrome.tabs.onActivated.addListener(refreshCurrentTabContext);
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+        if (tab && tab.active && (changeInfo.url || changeInfo.status === 'complete')) {
+            refreshCurrentTabContext();
+        }
+    });
+}
+
 function updateRecordButton() {
     const btn = document.getElementById('recordBtn');
     if (isRecording) {
@@ -235,15 +294,10 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
         return;
     }
 
-    try {
-        await chrome.tabs.sendMessage(tab.id, { action: 'startInspectMode' });
-    } catch (e) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-        await new Promise(resolve => setTimeout(resolve, 100));
-        await chrome.tabs.sendMessage(tab.id, { action: 'startInspectMode' }).catch(() => { });
-    }
+    await ensureContentScript(tab.id);
+    await chrome.tabs.sendMessage(tab.id, { action: 'startInspectMode' }).catch(() => { });
 
-    window.close();
+    showToastMessage('Pick an element on the page (Esc to cancel)', 'success');
 });
 
 // AI Create Profile button - scans the form, generates data via Claude, saves and fills
@@ -261,13 +315,7 @@ document.getElementById('aiBtn').addEventListener('click', async () => {
     btn.innerHTML = '<i class="fas fa-spinner"></i><span class="btn-label">Working</span>';
     showToastMessage('AI is analyzing the form...', 'success');
 
-    // Make sure the content script is available on the page
-    try {
-        await chrome.tabs.sendMessage(tab.id, { action: 'getRecordingStatus' });
-    } catch (e) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-        await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await ensureContentScript(tab.id);
 
     chrome.runtime.sendMessage({ action: 'aiCreateProfile', tabId: tab.id }, async (response) => {
         btn.classList.remove('loading');
@@ -718,6 +766,7 @@ async function fillForm(profileId) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const result = await chrome.storage.sync.get(['formFillerSettings']);
     const settings = result.formFillerSettings || { randomDigits: 5 };
+    await ensureContentScript(tab.id);
     try {
         chrome.tabs.sendMessage(tab.id, {
             action: 'fillForm',

@@ -1,6 +1,11 @@
-// Background script for Form Filler
+// Background script for QA-Toolbox
 importScripts('db.js');
 importScripts('config.js');
+
+// Clicking the toolbar icon opens the side panel (the extension's main surface)
+if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => { });
+}
 
 // Migration: Move profiles from sync/local storage to IndexedDB
 (async () => {
