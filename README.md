@@ -1,11 +1,12 @@
-# Form Filler - Test Accounts Manager
+# QA-Toolbox
 
-Chrome extension (Manifest V3) for saving and auto-filling forms with multiple test accounts, with an AI profile generator powered by the Claude API.
+Chrome extension (Manifest V3) - a growing toolkit for QA engineers: record & auto-fill forms with multiple test accounts, generate test data with AI (Claude API), and inspect/restyle page elements.
 
 ## Features
 
 - **Record & fill**: record form fields as you type, save them as profiles, and fill with one click
 - **AI profile generator**: scans the form on the current page, generates realistic context-aware test data (Claude Haiku), fills the form instantly, and asks before saving
+- **Element inspector**: DevTools-style element picker - view selector, attributes, and computed styles, and apply custom CSS to any element live
 - Supports text inputs, selects, checkboxes, radio groups, custom comboboxes (`role="combobox"`), and rich text editors (CKEditor 5, Quill, TinyMCE inline, and more)
 - Conditional fields: multi-pass fill catches fields that appear after earlier values are set
 - Sequential/random choice cycling for selects, radios, and comboboxes on every fill

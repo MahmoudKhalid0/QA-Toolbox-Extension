@@ -212,11 +212,11 @@ document.getElementById('recordBtn').addEventListener('click', async () => {
 function updateRecordButton() {
     const btn = document.getElementById('recordBtn');
     if (isRecording) {
-        btn.innerHTML = '<i class="fas fa-stop"></i>';
+        btn.innerHTML = '<i class="fas fa-stop"></i><span class="btn-label">Stop</span>';
         btn.title = 'Stop Recording';
         btn.classList.add('recording');
     } else {
-        btn.innerHTML = '<i class="fas fa-circle"></i>';
+        btn.innerHTML = '<i class="fas fa-circle"></i><span class="btn-label">Record</span>';
         btn.title = 'Record Form';
         btn.classList.remove('recording');
     }
@@ -224,6 +224,26 @@ function updateRecordButton() {
 
 document.getElementById('addBtn').addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('editor.html?new=true') });
+});
+
+// Element Inspector button - hover-highlight picking, then a properties/style panel
+document.getElementById('inspectBtn').addEventListener('click', async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
+        showToastMessage('Open a website first', 'error');
+        return;
+    }
+
+    try {
+        await chrome.tabs.sendMessage(tab.id, { action: 'startInspectMode' });
+    } catch (e) {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+        await new Promise(resolve => setTimeout(resolve, 100));
+        await chrome.tabs.sendMessage(tab.id, { action: 'startInspectMode' }).catch(() => { });
+    }
+
+    window.close();
 });
 
 // AI Create Profile button - scans the form, generates data via Claude, saves and fills
@@ -238,7 +258,7 @@ document.getElementById('aiBtn').addEventListener('click', async () => {
     const btn = document.getElementById('aiBtn');
     btn.classList.add('loading');
     btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner"></i>';
+    btn.innerHTML = '<i class="fas fa-spinner"></i><span class="btn-label">Working</span>';
     showToastMessage('AI is analyzing the form...', 'success');
 
     // Make sure the content script is available on the page
@@ -252,7 +272,7 @@ document.getElementById('aiBtn').addEventListener('click', async () => {
     chrome.runtime.sendMessage({ action: 'aiCreateProfile', tabId: tab.id }, async (response) => {
         btn.classList.remove('loading');
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i>';
+        btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i><span class="btn-label">AI Fill</span>';
 
         if (chrome.runtime.lastError || !response) {
             showToastMessage('AI profile failed: ' + (chrome.runtime.lastError?.message || 'no response'), 'error');

@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Form Filler</title>
+    <title>QA-Toolbox</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
@@ -29,10 +29,10 @@
         /* Header */
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
+            padding: 16px 16px 14px;
             display: flex;
-            align-items: center;
-            justify-content: space-between;
+            flex-direction: column;
+            gap: 14px;
         }
 
         .logo {
@@ -63,22 +63,87 @@
             color: rgba(255, 255, 255, 0.7);
         }
 
-        .header-actions {
+        .logo-row {
             display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
             gap: 10px;
         }
 
-        .header-btn {
-            width: 38px;
-            height: 38px;
-            border-radius: 10px;
+        .settings-icon-btn {
+            width: 34px;
+            height: 34px;
+            flex-shrink: 0;
             border: none;
+            border-radius: 9px;
+            background: rgba(255, 255, 255, 0.15);
+            color: rgba(255, 255, 255, 0.85);
             cursor: pointer;
             font-size: 14px;
+            transition: all 0.25s;
+        }
+
+        .settings-icon-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            color: white;
+            transform: rotate(60deg);
+        }
+
+        .header-groups {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .action-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .group-title {
+            font-size: 8.5px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.55);
+            padding-left: 2px;
+        }
+
+        .group-btns {
+            display: flex;
+            gap: 6px;
+            flex: 1;
+        }
+
+        .header-btn {
+            /* Fixed third-of-row width so buttons keep the same size
+               regardless of how many are in the row */
+            flex: 0 0 calc((100% - 12px) / 3);
+            min-width: 0;
+            padding: 9px 4px 7px;
+            border-radius: 11px;
+            border: none;
+            cursor: pointer;
+            font-size: 15px;
             transition: all 0.2s;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
+            gap: 4px;
+        }
+
+        .header-btn .btn-label {
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .header-btn:hover {
+            transform: translateY(-2px);
         }
 
         .btn-record {
@@ -88,7 +153,6 @@
 
         .btn-record:hover {
             background: #dc2626;
-            transform: scale(1.05);
         }
 
         .btn-record.recording {
@@ -111,21 +175,6 @@
             background: rgba(255, 255, 255, 0.3);
         }
 
-        .btn-settings {
-            background: rgba(255, 255, 255, 0.1);
-            color: rgba(255, 255, 255, 0.7);
-        }
-
-        .btn-settings:hover {
-            background: rgba(255, 255, 255, 0.2);
-            color: white;
-        }
-
-        .btn-settings.active {
-            background: white;
-            color: #667eea;
-        }
-
         .btn-ai {
             background: linear-gradient(135deg, #8b5cf6, #6366f1);
             color: white;
@@ -133,13 +182,26 @@
 
         .btn-ai:hover {
             background: linear-gradient(135deg, #7c3aed, #4f46e5);
-            transform: scale(1.05);
         }
 
         .btn-ai:disabled {
             opacity: 0.7;
             cursor: wait;
             transform: none;
+        }
+
+        .btn-inspect {
+            background: linear-gradient(135deg, #0ea5e9, #06b6d4);
+            color: white;
+        }
+
+        .btn-inspect:hover {
+            background: linear-gradient(135deg, #0284c7, #0891b2);
+        }
+
+        .btn-add {
+            background: rgba(255, 255, 255, 0.18);
+            color: white;
         }
 
         .btn-ai.loading i {
@@ -939,26 +1001,45 @@
 <body>
     <div class="app">
         <div class="header">
-            <div class="logo">
-                <div class="logo-icon"><i class="fas fa-bolt"></i></div>
-                <div class="logo-text">
-                    <h1>Form Filler</h1>
-                    <span>Auto-fill test accounts</span>
+            <div class="logo-row">
+                <div class="logo">
+                    <div class="logo-icon"><i class="fas fa-toolbox"></i></div>
+                    <div class="logo-text">
+                        <h1>QA-Toolbox</h1>
+                        <span>Your QA companion &mdash; auto-fill, AI profiles &amp; inspector</span>
+                    </div>
                 </div>
-            </div>
-            <div class="header-actions">
-                <button class="header-btn btn-settings" id="settingsBtn" title="Settings">
+                <button class="settings-icon-btn" id="settingsBtn" title="Settings">
                     <i class="fas fa-cog"></i>
                 </button>
-                <button class="header-btn btn-ai" id="aiBtn" title="AI Create Profile">
-                    <i class="fas fa-wand-magic-sparkles"></i>
-                </button>
-                <button class="header-btn btn-record" id="recordBtn" title="Record Form">
-                    <i class="fas fa-circle"></i>
-                </button>
-                <button class="header-btn btn-add" id="addBtn" title="Add Profile Manually">
-                    <i class="fas fa-plus"></i>
-                </button>
+            </div>
+            <div class="header-groups">
+                <div class="action-group">
+                    <span class="group-title">Form Filling</span>
+                    <div class="group-btns">
+                        <button class="header-btn btn-record" id="recordBtn" title="Record Form">
+                            <i class="fas fa-circle"></i>
+                            <span class="btn-label">Record</span>
+                        </button>
+                        <button class="header-btn btn-ai" id="aiBtn" title="AI Create Profile">
+                            <i class="fas fa-wand-magic-sparkles"></i>
+                            <span class="btn-label">AI Fill</span>
+                        </button>
+                        <button class="header-btn btn-add" id="addBtn" title="Create a profile manually">
+                            <i class="fas fa-user-plus"></i>
+                            <span class="btn-label">New Profile</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="action-group">
+                    <span class="group-title">Tools</span>
+                    <div class="group-btns">
+                        <button class="header-btn btn-inspect" id="inspectBtn" title="Inspect Element">
+                            <i class="fas fa-crosshairs"></i>
+                            <span class="btn-label">Inspect</span>
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
 

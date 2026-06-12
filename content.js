@@ -54,6 +54,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'showAiSavePrompt') {
         showAiSavePromptModal(request.profile);
     }
+    if (request.action === 'startInspectMode') {
+        startInspectMode();
+        sendResponse({ success: true });
+    }
     if (request.action === 'updateFloatingButton' || request.action === 'recheckFloatingButton') {
         const enabled = request.action === 'updateFloatingButton' ? request.enabled : true;
         if (enabled) {
@@ -699,6 +703,449 @@ function showAiSavePromptModal(profile) {
         }
         modal.remove();
     });
+}
+
+// ==================== Element Inspector ====================
+// Pick an element on the page (DevTools-style hover highlight), then show a
+// panel with its selector, attributes, computed styles, and a custom-CSS box.
+
+let inspectState = null;
+let inspectedElement = null;
+let inspectedOriginalStyle = null;
+
+const INSPECTOR_COMMON_PROPS = [
+    'display', 'position', 'top', 'left', 'right', 'bottom', 'width', 'height',
+    'margin', 'padding', 'border', 'border-radius', 'background-color', 'color',
+    'font-family', 'font-size', 'font-weight', 'line-height', 'text-align',
+    'z-index', 'opacity', 'overflow', 'visibility', 'cursor', 'box-shadow',
+    'flex', 'gap', 'transform'
+];
+
+function startInspectMode() {
+    stopInspectMode();
+    closeInspectorPanel();
+
+    const hl = document.createElement('div');
+    hl.id = 'ff-insp-highlight';
+    hl.style.cssText = 'position:fixed;z-index:2147483646;pointer-events:none;background:rgba(99,102,241,0.18);border:2px solid #6366f1;border-radius:2px;display:none;';
+    document.body.appendChild(hl);
+
+    const badge = document.createElement('div');
+    badge.id = 'ff-insp-badge';
+    badge.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;background:#6366f1;color:#fff;font:11px/1.7 monospace;padding:1px 8px;border-radius:4px;display:none;white-space:nowrap;';
+    document.body.appendChild(badge);
+
+    const onMove = (e) => {
+        const t = e.target;
+        if (!t || t === hl || t === badge || t === document.documentElement || t === document.body) {
+            hl.style.display = 'none';
+            badge.style.display = 'none';
+            return;
+        }
+        const r = t.getBoundingClientRect();
+        hl.style.display = 'block';
+        hl.style.top = r.top + 'px';
+        hl.style.left = r.left + 'px';
+        hl.style.width = r.width + 'px';
+        hl.style.height = r.height + 'px';
+        badge.style.display = 'block';
+        badge.style.top = Math.max(2, r.top - 24) + 'px';
+        badge.style.left = Math.max(2, r.left) + 'px';
+        const cls = (t.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+        badge.textContent = t.tagName.toLowerCase() + (t.id ? '#' + t.id : '') + (cls ? '.' + cls : '') + '  ' + Math.round(r.width) + '×' + Math.round(r.height);
+    };
+
+    const onClick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const target = e.target;
+        stopInspectMode();
+        if (target && target !== document.documentElement && target !== document.body) {
+            showInspectorPanel(target);
+        }
+    };
+
+    const onKey = (e) => {
+        if (e.key === 'Escape') stopInspectMode();
+    };
+
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKey, true);
+    inspectState = { hl, badge, onMove, onClick, onKey };
+}
+
+function stopInspectMode() {
+    if (!inspectState) return;
+    document.removeEventListener('mousemove', inspectState.onMove, true);
+    document.removeEventListener('click', inspectState.onClick, true);
+    document.removeEventListener('keydown', inspectState.onKey, true);
+    inspectState.hl.remove();
+    inspectState.badge.remove();
+    inspectState = null;
+}
+
+let inspectorDragCleanup = null;
+
+function closeInspectorPanel() {
+    if (inspectorDragCleanup) {
+        inspectorDragCleanup();
+        inspectorDragCleanup = null;
+    }
+    const p = document.getElementById('ff-insp-panel');
+    if (p) p.remove();
+    inspectedElement = null;
+    inspectedOriginalStyle = null;
+}
+
+function showInspectorPanel(el) {
+    closeInspectorPanel();
+    inspectedElement = el;
+    inspectedOriginalStyle = el.getAttribute('style');
+
+    let selector = '';
+    try { selector = generateSelector(el); } catch (e) { }
+
+    const attrs = Array.from(el.attributes || []).map(a => ({ name: a.name, value: a.value }));
+    const cls = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.');
+    const tagLabel = el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (cls ? '.' + cls : '');
+
+    // Always replace the injected styles - a stale <style> from a previous
+    // extension version can linger in the page DOM and hide style updates
+    {
+        const oldStyles = document.getElementById('ff-insp-styles');
+        if (oldStyles) oldStyles.remove();
+        const style = document.createElement('style');
+        style.id = 'ff-insp-styles';
+        style.textContent = `
+            #ff-insp-panel {
+                --ff-mono: 'Segoe UI', Tahoma, Arial, sans-serif;
+                position: fixed; top: 16px; right: 16px; width: 360px; max-height: 88vh;
+                z-index: 2147483647; display: flex; flex-direction: column;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                border: 2px solid rgba(14, 165, 233, 0.45); border-radius: 14px;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.7);
+                font-family: 'Segoe UI', Arial, sans-serif; color: #fff; direction: ltr;
+            }
+            #ff-insp-panel * { box-sizing: border-box; }
+            .ff-insp-head {
+                display: flex; align-items: center; justify-content: space-between;
+                padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1);
+                cursor: move; user-select: none;
+            }
+            .ff-insp-tag { font: 600 13px/1.4 var(--ff-mono); color: #ffffff; word-break: break-all; }
+            .ff-insp-head-btns { display: flex; gap: 6px; flex-shrink: 0; margin-left: 8px; }
+            .ff-insp-head-btns button {
+                background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer;
+                width: 26px; height: 26px; border-radius: 6px; font-size: 13px;
+            }
+            .ff-insp-head-btns button:hover { background: rgba(255,255,255,0.22); }
+            .ff-insp-body { overflow-y: auto; padding: 10px 14px 14px; }
+            .ff-insp-section { margin-bottom: 14px; }
+            .ff-insp-sec-title {
+                display: flex; align-items: center; justify-content: space-between;
+                font-size: 11px; font-weight: 700; text-transform: uppercase;
+                color: rgba(255,255,255,0.55); margin-bottom: 6px; letter-spacing: 0.5px;
+            }
+            .ff-insp-sec-title button {
+                background: rgba(14,165,233,0.18); border: 1px solid rgba(14,165,233,0.4);
+                color: #38bdf8; cursor: pointer; font-size: 10px; padding: 2px 8px; border-radius: 5px;
+            }
+            .ff-insp-sec-title button:hover { background: rgba(14,165,233,0.32); }
+            .ff-insp-selector {
+                background: rgba(0,0,0,0.35); border-radius: 7px; padding: 8px 10px;
+                font: 12px/1.6 var(--ff-mono); color: #c7d2fe; word-break: break-all;
+            }
+            .ff-insp-list {
+                background: rgba(0,0,0,0.35); border-radius: 7px; padding: 6px 10px;
+                max-height: 160px; overflow-y: auto; font: 12px/1.9 var(--ff-mono);
+            }
+            .ff-insp-list .ff-insp-row { word-break: break-all; }
+            .ff-insp-list .ff-insp-k { color: #a5b4fc; font-weight: 600; }
+            .ff-insp-list .ff-insp-v { color: #ffffff; }
+            .ff-insp-empty { color: rgba(255,255,255,0.35); font-style: italic; }
+            #ff-insp-style-filter, #ff-insp-css {
+                width: 100%; background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
+                color: #ffffff; font: 12px/1.6 var(--ff-mono); padding: 7px 10px; outline: none;
+            }
+            #ff-insp-style-filter { margin-bottom: 6px; }
+            #ff-insp-style-filter:focus, #ff-insp-css:focus { border-color: #0ea5e9; }
+            #ff-insp-css { min-height: 64px; resize: vertical; }
+            .ff-insp-actions { display: flex; gap: 8px; margin-top: 8px; }
+            .ff-insp-actions button {
+                flex: 1; border: none; border-radius: 8px; padding: 8px 10px;
+                font-size: 12px; font-weight: 600; cursor: pointer;
+            }
+            #ff-insp-apply { background: linear-gradient(135deg, #0ea5e9, #6366f1); color: #fff; }
+            #ff-insp-apply:hover { filter: brightness(1.15); }
+            #ff-insp-reset { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.75); }
+            #ff-insp-reset:hover { background: rgba(255,255,255,0.2); color: #fff; }
+            .ff-insp-feedback { font-size: 11px; color: #4ade80; margin-top: 6px; min-height: 14px; }
+            .ff-insp-css-wrap { position: relative; }
+            #ff-insp-suggest {
+                position: absolute; left: 0; right: 0; top: 100%; margin-top: 2px;
+                z-index: 10; display: none; background: #1e293b;
+                border: 1px solid rgba(99,102,241,0.5); border-radius: 7px;
+                max-height: 150px; overflow-y: auto; font: 12px/2 var(--ff-mono);
+                box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+            }
+            .ff-insp-sg { padding: 3px 10px; cursor: pointer; color: #ffffff; }
+            .ff-insp-sg.active, .ff-insp-sg:hover { background: rgba(99,102,241,0.3); color: #fff; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    const panel = document.createElement('div');
+    panel.id = 'ff-insp-panel';
+    panel.innerHTML = `
+        <div class="ff-insp-head">
+            <span class="ff-insp-tag">${escapeHtml(tagLabel)}</span>
+            <div class="ff-insp-head-btns">
+                <button id="ff-insp-repick" title="Pick another element">&#8982;</button>
+                <button id="ff-insp-close" title="Close">&#10005;</button>
+            </div>
+        </div>
+        <div class="ff-insp-body">
+            <div class="ff-insp-section">
+                <div class="ff-insp-sec-title"><span>Selector</span><button id="ff-insp-copy-selector">Copy</button></div>
+                <div class="ff-insp-selector">${escapeHtml(selector || '(none)')}</div>
+            </div>
+            <div class="ff-insp-section">
+                <div class="ff-insp-sec-title"><span>Attributes (${attrs.length})</span><button id="ff-insp-copy-attrs">Copy</button></div>
+                <div class="ff-insp-list">${attrs.length === 0 ? '<div class="ff-insp-empty">No attributes</div>' : attrs.map(a =>
+                    `<div class="ff-insp-row"><span class="ff-insp-k">${escapeHtml(a.name)}</span>="<span class="ff-insp-v">${escapeHtml(a.value)}</span>"</div>`
+                ).join('')}</div>
+            </div>
+            <div class="ff-insp-section">
+                <div class="ff-insp-sec-title"><span>Computed Styles</span><button id="ff-insp-copy-styles">Copy</button></div>
+                <input id="ff-insp-style-filter" type="text" placeholder="Filter properties... (e.g. font, margin)">
+                <div class="ff-insp-list" id="ff-insp-style-list"></div>
+            </div>
+            <div class="ff-insp-section">
+                <div class="ff-insp-sec-title"><span>Apply Custom Style</span></div>
+                <div class="ff-insp-css-wrap">
+                    <textarea id="ff-insp-css" placeholder="background: red; border: 2px solid blue;" dir="ltr" spellcheck="false"></textarea>
+                    <div id="ff-insp-suggest"></div>
+                </div>
+                <div class="ff-insp-actions">
+                    <button id="ff-insp-apply">Apply</button>
+                    <button id="ff-insp-reset">Reset</button>
+                </div>
+                <div class="ff-insp-feedback" id="ff-insp-feedback"></div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(panel);
+
+    // ---- Drag the panel around by its header ----
+    let dragOffset = null;
+    const headEl = panel.querySelector('.ff-insp-head');
+    const onDragStart = (e) => {
+        if (e.target.closest('button')) return;
+        const rect = panel.getBoundingClientRect();
+        dragOffset = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+        e.preventDefault();
+    };
+    const onDragMove = (e) => {
+        if (!dragOffset) return;
+        panel.style.right = 'auto';
+        panel.style.left = Math.max(4, Math.min(window.innerWidth - 80, e.clientX - dragOffset.dx)) + 'px';
+        panel.style.top = Math.max(4, Math.min(window.innerHeight - 50, e.clientY - dragOffset.dy)) + 'px';
+    };
+    const onDragEnd = () => { dragOffset = null; };
+    headEl.addEventListener('mousedown', onDragStart);
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
+    inspectorDragCleanup = () => {
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+    };
+
+    // ---- CSS property autocomplete for the custom-style box ----
+    // Full property list from the browser itself + common shorthands
+    const cssProps = (() => {
+        const set = new Set(['margin', 'padding', 'border', 'background', 'font', 'flex', 'gap', 'inset', 'outline', 'overflow', 'transition', 'animation', 'grid', 'border-radius', 'box-shadow', 'text-decoration']);
+        try {
+            const cs = getComputedStyle(document.documentElement);
+            for (let i = 0; i < cs.length; i++) set.add(cs.item(i));
+        } catch (e) { }
+        return Array.from(set).filter(p => !p.startsWith('-')).sort();
+    })();
+
+    const cssBox = panel.querySelector('#ff-insp-css');
+    const suggestBox = panel.querySelector('#ff-insp-suggest');
+    let suggestItems = [];
+    let suggestIndex = 0;
+
+    const hideSuggest = () => {
+        suggestBox.style.display = 'none';
+        suggestItems = [];
+    };
+
+    const acceptSuggestion = (prop) => {
+        const pos = cssBox.selectionStart;
+        const before = cssBox.value.slice(0, pos);
+        const after = cssBox.value.slice(pos);
+        const segStart = Math.max(before.lastIndexOf(';'), before.lastIndexOf('\n')) + 1;
+        const leading = before.slice(segStart).match(/^\s*/)[0];
+        const newBefore = before.slice(0, segStart) + leading + prop + ': ';
+        cssBox.value = newBefore + after;
+        cssBox.setSelectionRange(newBefore.length, newBefore.length);
+        cssBox.focus();
+        hideSuggest();
+    };
+
+    const highlightSuggest = () => {
+        suggestBox.querySelectorAll('.ff-insp-sg').forEach((n, i) => {
+            n.classList.toggle('active', i === suggestIndex);
+        });
+    };
+
+    const updateSuggest = () => {
+        const pos = cssBox.selectionStart;
+        const before = cssBox.value.slice(0, pos);
+        const segStart = Math.max(before.lastIndexOf(';'), before.lastIndexOf('\n')) + 1;
+        const seg = before.slice(segStart);
+        // Already typing a value (past the colon) - no property suggestions
+        if (seg.includes(':')) { hideSuggest(); return; }
+        const token = seg.trim().toLowerCase();
+        if (!token) { hideSuggest(); return; }
+
+        suggestItems = cssProps.filter(p => p.startsWith(token) && p !== token).slice(0, 8);
+        if (suggestItems.length === 0) { hideSuggest(); return; }
+
+        suggestIndex = 0;
+        suggestBox.innerHTML = suggestItems.map((p, i) =>
+            `<div class="ff-insp-sg${i === 0 ? ' active' : ''}" data-prop="${p}">${p}</div>`
+        ).join('');
+        suggestBox.style.display = 'block';
+        suggestBox.querySelectorAll('.ff-insp-sg').forEach(n => {
+            n.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                acceptSuggestion(n.dataset.prop);
+            });
+        });
+    };
+
+    cssBox.addEventListener('input', updateSuggest);
+    cssBox.addEventListener('blur', () => setTimeout(hideSuggest, 150));
+    cssBox.addEventListener('keydown', (e) => {
+        if (suggestItems.length === 0) return;
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            suggestIndex = (suggestIndex + 1) % suggestItems.length;
+            highlightSuggest();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            suggestIndex = (suggestIndex - 1 + suggestItems.length) % suggestItems.length;
+            highlightSuggest();
+        } else if (e.key === 'Enter' || e.key === 'Tab') {
+            e.preventDefault();
+            acceptSuggestion(suggestItems[suggestIndex]);
+        } else if (e.key === 'Escape') {
+            e.stopPropagation();
+            hideSuggest();
+        }
+    });
+
+    const renderStyleList = (filter) => {
+        const listEl = panel.querySelector('#ff-insp-style-list');
+        if (!inspectedElement) return;
+        const cs = getComputedStyle(inspectedElement);
+        let props;
+        if (filter && filter.trim()) {
+            const f = filter.trim().toLowerCase();
+            props = [];
+            for (let i = 0; i < cs.length; i++) {
+                if (cs.item(i).includes(f)) props.push(cs.item(i));
+            }
+        } else {
+            props = INSPECTOR_COMMON_PROPS;
+        }
+        listEl.innerHTML = props.length === 0
+            ? '<div class="ff-insp-empty">No matching properties</div>'
+            : props.map(p =>
+                `<div class="ff-insp-row"><span class="ff-insp-k">${escapeHtml(p)}</span>: <span class="ff-insp-v">${escapeHtml(cs.getPropertyValue(p))}</span>;</div>`
+            ).join('');
+    };
+
+    const copyText = (text, btn) => {
+        navigator.clipboard.writeText(text).then(() => {
+            const old = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = old; }, 1200);
+        }).catch(() => { });
+    };
+
+    const stylesAsText = () => {
+        const cs = getComputedStyle(inspectedElement);
+        const filter = panel.querySelector('#ff-insp-style-filter').value;
+        let props;
+        if (filter && filter.trim()) {
+            const f = filter.trim().toLowerCase();
+            props = [];
+            for (let i = 0; i < cs.length; i++) {
+                if (cs.item(i).includes(f)) props.push(cs.item(i));
+            }
+        } else {
+            props = INSPECTOR_COMMON_PROPS;
+        }
+        return props.map(p => `${p}: ${cs.getPropertyValue(p)};`).join('\n');
+    };
+
+    panel.querySelector('#ff-insp-close').addEventListener('click', closeInspectorPanel);
+    panel.querySelector('#ff-insp-repick').addEventListener('click', () => {
+        closeInspectorPanel();
+        startInspectMode();
+    });
+    panel.querySelector('#ff-insp-copy-selector').addEventListener('click', (e) => copyText(selector, e.target));
+    panel.querySelector('#ff-insp-copy-attrs').addEventListener('click', (e) =>
+        copyText(attrs.map(a => `${a.name}="${a.value}"`).join('\n'), e.target));
+    panel.querySelector('#ff-insp-copy-styles').addEventListener('click', (e) => copyText(stylesAsText(), e.target));
+
+    let filterTimer = null;
+    panel.querySelector('#ff-insp-style-filter').addEventListener('input', (e) => {
+        clearTimeout(filterTimer);
+        filterTimer = setTimeout(() => renderStyleList(e.target.value), 200);
+    });
+
+    panel.querySelector('#ff-insp-apply').addEventListener('click', () => {
+        if (!inspectedElement) return;
+        const cssText = panel.querySelector('#ff-insp-css').value.trim();
+        const feedback = panel.querySelector('#ff-insp-feedback');
+        if (!cssText) return;
+
+        let applied = 0;
+        cssText.split(';').forEach(decl => {
+            const idx = decl.indexOf(':');
+            if (idx <= 0) return;
+            const prop = decl.slice(0, idx).trim();
+            const value = decl.slice(idx + 1).trim();
+            if (!prop || !value) return;
+            try {
+                // !important so the style wins over the page's own rules, like DevTools
+                inspectedElement.style.setProperty(prop, value.replace(/!important$/i, '').trim(), 'important');
+                applied++;
+            } catch (err) { }
+        });
+
+        feedback.textContent = applied > 0 ? `Applied ${applied} propert${applied === 1 ? 'y' : 'ies'}` : 'Nothing applied - use "prop: value;" format';
+        feedback.style.color = applied > 0 ? '#4ade80' : '#f87171';
+        renderStyleList(panel.querySelector('#ff-insp-style-filter').value);
+    });
+
+    panel.querySelector('#ff-insp-reset').addEventListener('click', () => {
+        if (!inspectedElement) return;
+        if (inspectedOriginalStyle === null) inspectedElement.removeAttribute('style');
+        else inspectedElement.setAttribute('style', inspectedOriginalStyle);
+        const feedback = panel.querySelector('#ff-insp-feedback');
+        feedback.textContent = 'Styles reset to original';
+        feedback.style.color = '#4ade80';
+        renderStyleList(panel.querySelector('#ff-insp-style-filter').value);
+    });
+
+    renderStyleList('');
 }
 
 function generateSelector(element) {
