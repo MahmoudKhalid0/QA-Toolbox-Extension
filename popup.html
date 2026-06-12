@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Form Filler</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            width: 380px;
+            min-height: 480px;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0f0f23;
+            color: #e0e0e0;
+        }
+
+        .app {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 42px;
+            height: 42px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+
+        .logo-text h1 {
+            font-size: 18px;
+            font-weight: 700;
+            color: white;
+        }
+
+        .logo-text span {
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .header-btn {
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn-record {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-record:hover {
+            background: #dc2626;
+            transform: scale(1.05);
+        }
+
+        .btn-record.recording {
+            animation: pulse-red 1.5s infinite;
+        }
+
+        @keyframes pulse-red {
+
+            0%,
+            100% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+
+            50% {
+                box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+            }
+        }
+
+        .btn-add:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .btn-settings {
+            background: rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .btn-settings:hover {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        .btn-settings.active {
+            background: white;
+            color: #667eea;
+        }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #8b5cf6, #6366f1);
+            color: white;
+        }
+
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            transform: scale(1.05);
+        }
+
+        .btn-ai:disabled {
+            opacity: 0.7;
+            cursor: wait;
+            transform: none;
+        }
+
+        .btn-ai.loading i {
+            animation: ai-spin 1s linear infinite;
+        }
+
+        @keyframes ai-spin {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Content */
+        .content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        /* Profile Cards */
+        .profile-card {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 12px;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.2s;
+        }
+
+        .profile-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(102, 126, 234, 0.5);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+        }
+
+        .profile-avatar {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+        }
+
+        .profile-info {
+            flex: 1;
+        }
+
+        .profile-name {
+            font-size: 15px;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 4px;
+        }
+
+        .profile-meta {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .profile-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .action-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn-fill {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            width: auto;
+            padding: 0 16px;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .btn-fill:hover {
+            transform: scale(1.05);
+        }
+
+        .btn-edit {
+            background: rgba(255, 255, 255, 0.1);
+            color: #888;
+        }
+
+        .btn-edit:hover {
+            background: rgba(102, 126, 234, 0.3);
+            color: #667eea;
+        }
+
+        .btn-delete {
+            background: rgba(255, 255, 255, 0.1);
+            color: #888;
+        }
+
+        .btn-delete:hover {
+            background: rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+        }
+
+        .btn-record-more {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+        }
+
+        .btn-record-more:hover {
+            background: rgba(239, 68, 68, 0.2);
+            transform: scale(1.05);
+        }
+
+        .btn-record-more.active {
+            background: #ef4444;
+            color: white;
+            animation: pulse-red 1.5s infinite;
+        }
+
+        .action-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .profile-card.recording-active {
+            border-color: #ef4444;
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
+        }
+
+        @keyframes pulse-red {
+            0% {
+                transform: scale(1);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+            }
+
+            70% {
+                transform: scale(1.05);
+                box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+            }
+
+            100% {
+                transform: scale(1);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+
+        /* Toggle Switch */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 34px;
+            height: 18px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.1);
+            transition: .4s;
+            border-radius: 18px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 2px;
+            bottom: 2px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked+.slider {
+            background-color: #10b981;
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(16px);
+        }
+
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: #888;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 4px 10px;
+            border-radius: 8px;
+            margin-right: auto;
+        }
+
+        /* Category Header Styles */
+        .category-group {
+            margin-bottom: 8px;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            background: rgba(255, 255, 255, 0.02);
+            display: grid;
+            grid-template-rows: auto 0fr;
+            transition: grid-template-rows 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .category-group.expanded {
+            grid-template-rows: auto 1fr;
+        }
+
+        .category-header {
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(255, 255, 255, 0.03);
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+        }
+
+        .category-header:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .category-title-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .category-icon {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #667eea;
+            font-size: 14px;
+        }
+
+        .category-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #aaa;
+            text-transform: capitalize;
+        }
+
+        .category-count {
+            font-size: 11px;
+            color: #555;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+
+        .category-chevron {
+            font-size: 12px;
+            color: #555;
+            transition: transform 0.3s;
+        }
+
+        .category-group.expanded .category-chevron {
+            transform: rotate(180deg);
+        }
+
+        .category-group.expanded .category-title {
+            color: #fff;
+        }
+
+        .category-content {
+            overflow: hidden;
+            padding: 0 12px;
+            opacity: 0;
+            transition: opacity 0.5s ease, padding 0.5s ease;
+        }
+
+        .category-group.expanded .category-content {
+            opacity: 1;
+            padding: 12px;
+        }
+
+        /* Category Filter Styles */
+        .filter-area {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .search-container {
+            flex: 1;
+        }
+
+        .category-select-wrapper {
+            width: 110px;
+            position: relative;
+        }
+
+        .category-select {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #aaa;
+            font-size: 13px;
+            appearance: none;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        /* Smart Filter Banner */
+        .smart-filter-banner {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(102, 126, 234, 0.1);
+            border: 1px solid rgba(102, 126, 234, 0.2);
+            padding: 10px 16px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+
+        .smart-filter-banner.active {
+            display: flex;
+        }
+
+        .smart-filter-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #667eea;
+            font-weight: 500;
+        }
+
+        .btn-show-all {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-show-all:hover {
+            background: #764ba2;
+            transform: translateY(-1px);
+        }
+
+        .category-select:focus {
+            border-color: #667eea;
+            color: white;
+        }
+
+        .category-select option {
+            background-color: #1a1a2e;
+            color: white;
+        }
+
+        /* Settings Panel Styles */
+        .settings-panel {
+            background: #1a1a2e;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            max-height: 0;
+            overflow: hidden;
+            transition: all 0.3s ease-out;
+        }
+
+        .settings-panel.open {
+            max-height: 400px;
+            padding: 20px;
+        }
+
+        .settings-section {
+            margin-bottom: 20px;
+        }
+
+        .settings-section h4 {
+            font-size: 11px;
+            color: #667eea;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            font-weight: 700;
+        }
+
+        .category-manage-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 150px;
+            overflow-y: auto;
+            margin-bottom: 12px;
+            padding-right: 4px;
+        }
+
+        .category-manage-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .cat-name-text {
+            font-size: 13px;
+            color: #e0e0e0;
+        }
+
+        .btn-delete-cat {
+            background: none;
+            border: none;
+            color: #555;
+            cursor: pointer;
+            font-size: 12px;
+            transition: color 0.2s;
+        }
+
+        .btn-delete-cat:hover {
+            color: #ef4444;
+        }
+
+        .add-cat-form {
+            display: flex;
+            gap: 8px;
+        }
+
+        .add-cat-input {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: white;
+            font-size: 13px;
+        }
+
+        .add-cat-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn-add-cat {
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0 12px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        /* Backup & Restore Styles */
+        .backup-footer {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-backup {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.03);
+            color: #ccc;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-backup:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-backup.import-btn:hover {
+            color: #10b981;
+            border-color: #10b981;
+        }
+
+        .btn-backup.export-btn:hover {
+            color: #667eea;
+            border-color: #667eea;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 50px 20px;
+        }
+
+        .empty-icon {
+            width: 80px;
+            height: 80px;
+            background: rgba(102, 126, 234, 0.1);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 32px;
+            color: #667eea;
+        }
+
+        .empty-state h3 {
+            font-size: 16px;
+            color: white;
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.5;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 100;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .modal.active {
+            display: block;
+        }
+
+        .modal-content {
+            background: #1a1a2e;
+            border-radius: 20px;
+            padding: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+        }
+
+        .modal-header h3 {
+            font-size: 18px;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .modal-header h3 i {
+            color: #667eea;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: #666;
+            font-size: 20px;
+            cursor: pointer;
+        }
+
+        .modal-close:hover {
+            color: white;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: #888;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .form-input::placeholder {
+            color: #555;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .fields-section {
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .fields-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .fields-header h4 {
+            font-size: 14px;
+            color: white;
+        }
+
+        .btn-add-field {
+            background: rgba(102, 126, 234, 0.2);
+            color: #667eea;
+            border: 1px dashed #667eea;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-add-field:hover {
+            background: rgba(102, 126, 234, 0.3);
+        }
+
+        .field-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+
+        .field-row input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            font-size: 13px;
+        }
+
+        .field-row input::placeholder {
+            color: #555;
+        }
+
+        .field-row input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn-remove-field {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            border: none;
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .btn-remove-field:hover {
+            background: rgba(239, 68, 68, 0.3);
+        }
+
+        .tip {
+            font-size: 11px;
+            color: #555;
+            margin-top: 12px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .modal-actions button {
+            flex: 1;
+            padding: 14px;
+            border: none;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-cancel {
+            background: rgba(255, 255, 255, 0.1);
+            color: #888;
+        }
+
+        .btn-cancel:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+        }
+
+        .btn-save {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-save:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #10b981;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            opacity: 0;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="app">
+        <div class="header">
+            <div class="logo">
+                <div class="logo-icon"><i class="fas fa-bolt"></i></div>
+                <div class="logo-text">
+                    <h1>Form Filler</h1>
+                    <span>Auto-fill test accounts</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button class="header-btn btn-settings" id="settingsBtn" title="Settings">
+                    <i class="fas fa-cog"></i>
+                </button>
+                <button class="header-btn btn-ai" id="aiBtn" title="AI Create Profile">
+                    <i class="fas fa-wand-magic-sparkles"></i>
+                </button>
+                <button class="header-btn btn-record" id="recordBtn" title="Record Form">
+                    <i class="fas fa-circle"></i>
+                </button>
+                <button class="header-btn btn-add" id="addBtn" title="Add Profile Manually">
+                    <i class="fas fa-plus"></i>
+                </button>
+            </div>
+        </div>
+
+
+        <div class="content">
+            <div class="filter-area">
+                <div class="search-container">
+                    <input type="text" id="searchInput" placeholder="Search profiles..."
+                        style="width:100%;padding:12px 16px;border:1px solid rgba(255,255,255,0.1);border-radius:12px;background:rgba(255,255,255,0.05);color:white;font-size:14px; outline:none;">
+                </div>
+                <div class="category-select-wrapper">
+                    <select id="categoryFilter" class="category-select">
+                        <option value="all">All Categories</option>
+                    </select>
+                </div>
+            </div>
+            <div id="smartFilterBanner" class="smart-filter-banner">
+                <div class="smart-filter-info">
+                    <i class="fas fa-magic"></i>
+                    <span id="smartFilterText">Showing profiles for this page</span>
+                </div>
+                <button id="showAllBtn" class="btn-show-all">Show All</button>
+            </div>
+            <div id="profilesList"></div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal" id="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-user-plus"></i> <span id="modalTitle">Add Profile</span></h3>
+                <button class="modal-close" id="closeModal">&times;</button>
+            </div>
+
+            <div class="form-group">
+                <label>Profile Name</label>
+                <input type="text" class="form-input" id="profileName" placeholder="e.g., Admin Account">
+            </div>
+
+            <div class="fields-section">
+                <div class="fields-header">
+                    <h4><i class="fas fa-list-ul"></i> Form Fields</h4>
+                    <button class="btn-add-field" id="addFieldBtn">
+                        <i class="fas fa-plus"></i> Add Field
+                    </button>
+                </div>
+                <div id="fieldsContainer"></div>
+                <div class="tip">
+                    💡 <strong>CSS Selectors:</strong> #id, .class, input[name="field"], [data-testid="test"]
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn-cancel" id="cancelBtn">Cancel</button>
+                <button class="btn-save" id="saveBtn">Save Profile</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast">
+        <i class="fas fa-check-circle"></i>
+        <span>Form filled successfully!</span>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal" id="deleteModal" style="background:rgba(0,0,0,0.85);">
+        <div
+            style="background:#1a1a2e;border-radius:20px;padding:28px;max-width:340px;text-align:center;border:1px solid rgba(255,255,255,0.1);">
+            <div
+                style="width:60px;height:60px;background:rgba(239,68,68,0.2);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;">
+                <i class="fas fa-trash" style="font-size:24px;color:#ef4444;"></i>
+            </div>
+            <h3 style="color:white;font-size:18px;margin-bottom:10px;">Delete Profile?</h3>
+            <p id="deleteModalMessage" style="color:#888;font-size:13px;margin-bottom:24px;">This action cannot be
+                undone.</p>
+            <div style="display:flex;gap:12px;">
+                <button id="cancelDeleteBtn"
+                    style="flex:1;padding:12px;border:none;border-radius:10px;background:rgba(255,255,255,0.1);color:#888;cursor:pointer;font-weight:600;">Cancel</button>
+                <button id="confirmDeleteBtn"
+                    style="flex:1;padding:12px;border:none;border-radius:10px;background:#ef4444;color:white;cursor:pointer;font-weight:600;">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="db.js"></script>
+    <script src="popup.js"></script>
+</body>
+
+</html>

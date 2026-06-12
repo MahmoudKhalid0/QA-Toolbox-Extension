@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Form Filler - Settings</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0f0f23;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .header i {
+            font-size: 28px;
+            color: #667eea;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .settings-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            padding: 24px;
+            margin-bottom: 24px;
+            backdrop-filter: blur(10px);
+        }
+
+        .section-title {
+            font-size: 14px;
+            color: #667eea;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Toggle Styles */
+        .setting-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 12px;
+            margin-bottom: 12px;
+        }
+
+        .setting-info h4 {
+            font-size: 15px;
+            margin-bottom: 4px;
+        }
+
+        .setting-info p {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.1);
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked+.slider {
+            background-color: #10b981;
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(20px);
+        }
+
+        /* Category Styles */
+        .category-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .category-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.02);
+            padding: 10px 16px;
+            border-radius: 10px;
+        }
+
+        .btn-delete-cat {
+            background: none;
+            border: none;
+            color: #555;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .btn-delete-cat:hover {
+            color: #ef4444;
+        }
+
+        .add-cat-form {
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-text {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 10px 16px;
+            color: white;
+            outline: none;
+        }
+
+        .input-text:focus {
+            border-color: #667eea;
+        }
+
+        .select-setting {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: white;
+            outline: none;
+            cursor: pointer;
+            min-width: 200px;
+            font-size: 13px;
+        }
+
+        .select-setting:focus {
+            border-color: #667eea;
+        }
+
+        .select-setting option {
+            background-color: #16213e;
+            color: white;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        /* Backup Styles */
+        .backup-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn-backup {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 14px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.03);
+            color: #ccc;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .btn-backup:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border-color: #667eea;
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #10b981;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <i class="fas fa-cog"></i>
+            <h1>Settings</h1>
+        </div>
+
+        <div class="settings-card">
+            <h3 class="section-title"><i class="fas fa-sliders-h"></i> General</h3>
+            <div class="setting-item">
+                <div class="setting-info">
+                    <h4>Floating Fill Button</h4>
+                    <p>Show a quick-fill icon on matching websites</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="floatingButtonToggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="setting-item">
+                <div class="setting-info">
+                    <h4>Auto-Close Popup</h4>
+                    <p>Close extension window after filling a form</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="autoCloseToggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="setting-item">
+                <div class="setting-info">
+                    <h4>AI Profile Saving</h4>
+                    <p>What happens after the AI fills a form</p>
+                </div>
+                <select id="aiSaveBehaviorSelect" class="select-setting">
+                    <option value="ask">Ask every time</option>
+                    <option value="always">Always save automatically</option>
+                    <option value="never">Never save (fill only)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="settings-card">
+            <h3 class="section-title"><i class="fas fa-tags"></i> Categories</h3>
+            <div class="category-list" id="categoryList">
+                <!-- Categories will be listed here -->
+            </div>
+            <div class="add-cat-form">
+                <input type="text" id="newCategoryInput" class="input-text" placeholder="Add new category...">
+                <button id="addCategoryBtn" class="btn-primary">Add</button>
+            </div>
+        </div>
+
+        <div class="settings-card">
+            <h3 class="section-title"><i class="fas fa-database"></i> Data Management</h3>
+            <p style="font-size: 12px; color: #888; margin-bottom: 20px;">Backup your profiles and categories to a JSON
+                file or restore them from a previous backup.</p>
+            <div class="backup-actions">
+                <button id="exportBtn" class="btn-backup">
+                    <i class="fas fa-file-export"></i> Export Data
+                </button>
+                <button id="importBtn" class="btn-backup">
+                    <i class="fas fa-file-import"></i> Import Data
+                </button>
+            </div>
+            <input type="file" id="importInput" style="display: none;" accept=".json">
+        </div>
+    </div>
+
+    <div id="toast" class="toast">Action completed!</div>
+
+    <script src="db.js"></script>
+    <script src="settings.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,2 @@
+# API key lives here - never commit it. Copy config.example.js to config.js and add your key.
+config.js

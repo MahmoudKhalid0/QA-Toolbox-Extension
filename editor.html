@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Edit Profile - Form Filler</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0a0a1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 40px;
+        }
+
+        .container {
+            max-width: 700px;
+            margin: 0 auto;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 40px;
+        }
+
+        .back-btn {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 18px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .back-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .header h1 {
+            font-size: 28px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .card {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 32px;
+            margin-bottom: 24px;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #888;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 16px 20px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+
+        .form-input::placeholder {
+            color: #555;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        select.form-input option {
+            background-color: #1a1a2e;
+            color: white;
+        }
+
+        .fields-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .fields-header h3 {
+            font-size: 18px;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .fields-header h3 i {
+            color: #667eea;
+        }
+
+        .btn-add-field {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-add-field:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .field-item {
+            margin-bottom: 24px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .field-item:last-child {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        .field-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+            align-items: center;
+        }
+
+        .field-input {
+            flex: 1;
+            padding: 14px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .field-input::placeholder {
+            color: #555;
+        }
+
+        .field-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .field-input.selector {
+            font-family: 'Consolas', monospace;
+        }
+
+        .btn-remove {
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            border: none;
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            cursor: pointer;
+            font-size: 16px;
+            flex-shrink: 0;
+            transition: all 0.2s;
+        }
+
+        .btn-remove:hover {
+            background: rgba(239, 68, 68, 0.4);
+        }
+
+        .field-options {
+            display: flex;
+            gap: 16px;
+            margin-top: 8px;
+            margin-bottom: 16px;
+            padding-left: 10px;
+        }
+
+        .field-option {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #888;
+            cursor: pointer;
+        }
+
+        .field-option input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #667eea;
+            cursor: pointer;
+        }
+
+        .field-option.active {
+            color: #667eea;
+        }
+
+        .digits-input {
+            width: 50px;
+            padding: 4px 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 12px;
+            text-align: center;
+            margin-left: 6px;
+        }
+
+        .digits-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .tip {
+            background: rgba(102, 126, 234, 0.1);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 20px;
+            font-size: 13px;
+            color: #aaa;
+            line-height: 1.6;
+        }
+
+        .tip strong {
+            color: #667eea;
+        }
+
+        .actions {
+            display: flex;
+            gap: 16px;
+            margin-top: 32px;
+        }
+
+        .actions button {
+            flex: 1;
+            padding: 16px;
+            border: none;
+            border-radius: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-cancel {
+            background: rgba(255, 255, 255, 0.1);
+            color: #888;
+        }
+
+        .btn-cancel:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+        }
+
+        .btn-save {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+        }
+
+        .btn-save:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(16, 185, 129, 0.4);
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #10b981;
+            color: white;
+            padding: 14px 28px;
+            border-radius: 14px;
+            font-size: 14px;
+            font-weight: 600;
+            opacity: 0;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .url-tip {
+            background: rgba(102, 126, 234, 0.05);
+            border: 1px solid rgba(102, 126, 234, 0.2);
+            border-radius: 12px;
+            padding: 12px 16px;
+            margin-top: 12px;
+            font-size: 13px;
+            color: #aab4ff;
+            line-height: 1.5;
+        }
+
+        .url-tip i {
+            margin-right: 8px;
+            color: #667eea;
+        }
+
+        .url-tip code {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: white;
+        }
+
+        .date-settings-panel {
+            background: rgba(102, 126, 234, 0.05);
+            border: 1px solid rgba(102, 126, 234, 0.2);
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 12px;
+            margin-bottom: 8px;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 12px;
+            animation: ff-slide-down 0.2s ease-out;
+        }
+
+        @keyframes ff-slide-down {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .date-group label {
+            display: block;
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+        }
+
+        .date-select {
+            width: 100%;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: white;
+            font-size: 13px;
+        }
+
+        .date-select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .date-select option {
+            background-color: #1a1a2e;
+            color: white;
+        }
+
+        /* Automation Actions Styles */
+        .action-type-selector {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 10px;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 4px;
+            border-radius: 8px;
+            width: fit-content;
+        }
+
+        .action-type-btn {
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #888;
+            border: 1px solid transparent;
+            font-weight: 500;
+        }
+
+        .action-type-btn.active {
+            background: rgba(102, 126, 234, 0.2);
+            color: #8899ff;
+            border-color: rgba(102, 126, 234, 0.3);
+        }
+
+        .action-type-btn:hover:not(.active) {
+            background: rgba(255, 255, 255, 0.05);
+            color: #ccc;
+        }
+
+        .action-type-btn i {
+            font-size: 10px;
+        }
+
+        .wait-ms-input {
+            width: 90px !important;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <button class="back-btn" id="backBtn"><i class="fas fa-arrow-left"></i></button>
+            <h1 id="pageTitle">Edit Profile</h1>
+        </div>
+
+        <div class="card">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px;">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>Profile Name <span style="color: #ef4444;">*</span></label>
+                    <input type="text" class="form-input" id="profileName" placeholder="e.g., Admin Account">
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>Category <span style="color: #ef4444;">*</span></label>
+                    <select class="form-input" id="profileCategory">
+                        <!-- Options will be populated from storage -->
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Form Page URL <span style="color: #ef4444;">*</span></label>
+                <div style="position: relative;">
+                    <i class="fas fa-globe"
+                        style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #555; font-size: 14px;"></i>
+                    <input type="text" class="form-input" id="profileUrl" placeholder="e.g., https://example.com/login*"
+                        style="padding-left: 40px;">
+                </div>
+                <div class="url-tip">
+                    <p style="margin-bottom: 6px;">
+                        <i class="fas fa-magic"></i>
+                        Adding the Page URL helps you fill your forms faster by automatically identifying the right
+                        profile for this page.
+                    </p>
+                    <p
+                        style="font-size: 11px; opacity: 0.7; border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 8px; margin-top: 4px;">
+                        <i class="fas fa-info-circle"></i>
+                        Use <code>*</code> as a wildcard (e.g. <code>https://example.com/*</code>) to match all
+                        sub-pages.
+                    </p>
+                </div>
+            </div>
+
+            <!-- Sub-Profile Section -->
+            <div class="sub-profile-section"
+                style="margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
+                <label class="sub-profile-checkbox"
+                    style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; color: #ccc;">
+                    <input type="checkbox" id="isSubProfileCheck"
+                        style="width: 18px; height: 18px; accent-color: #667eea; cursor: pointer;">
+                    <span><i class="fas fa-sitemap" style="margin-right: 6px; color: #667eea;"></i>Set as
+                        Sub-Profile</span>
+                </label>
+
+                <div id="parentProfileSection" style="display: none; margin-top: 16px;">
+                    <label
+                        style="display: block; font-size: 13px; font-weight: 600; color: #888; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px;">Parent
+                        Profile <span style="color: #ef4444;">*</span></label>
+                    <div class="parent-profile-search-container" style="position: relative;">
+                        <div style="position: relative;">
+                            <i class="fas fa-search"
+                                style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #555; font-size: 14px;"></i>
+                            <input type="text" id="parentProfileSearch" class="form-input"
+                                placeholder="Search parent profile..." style="padding-left: 40px;" autocomplete="off">
+                        </div>
+                        <div id="parentProfileDropdown" class="parent-profile-dropdown"
+                            style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #1a1a2e; border: 1px solid rgba(102, 126, 234, 0.3); border-radius: 12px; margin-top: 4px; max-height: 200px; overflow-y: auto; z-index: 100; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                            <!-- Options will be populated dynamically -->
+                        </div>
+                        <input type="hidden" id="parentProfileSelect" value="">
+                        <div id="selectedParentDisplay"
+                            style="display: none; margin-top: 10px; padding: 10px 14px; background: rgba(102, 126, 234, 0.1); border: 1px solid rgba(102, 126, 234, 0.3); border-radius: 10px;">
+                            <div style="display: flex; align-items: center; justify-content: space-between;">
+                                <div style="display: flex; align-items: center; gap: 10px;">
+                                    <i class="fas fa-link" style="color: #667eea;"></i>
+                                    <span id="selectedParentName" style="color: white; font-weight: 500;"></span>
+                                </div>
+                                <button type="button" id="clearParentBtn"
+                                    style="background: none; border: none; color: #888; cursor: pointer; padding: 4px;"><i
+                                        class="fas fa-times"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="fields-header">
+                <h3><i class="fas fa-list-ul"></i> Form Fields</h3>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn-add-field" id="showGuideBtn"
+                        style="background: rgba(102, 126, 234, 0.1); color: #667eea; border: 1px solid rgba(102, 126, 234, 0.3);">
+                        <i class="fas fa-book"></i> Variables Guide
+                    </button>
+                    <button class="btn-add-field" id="copyFieldsBtn"
+                        style="background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3);">
+                        <i class="fas fa-copy"></i> Copy Fields
+                    </button>
+                    <button class="btn-add-field" id="addFieldBtn">
+                        <i class="fas fa-plus"></i> Add Field
+                    </button>
+                </div>
+            </div>
+
+            <!-- Copy Fields Search Section (Hidden by default) -->
+            <div id="copyFieldsSection"
+                style="display: none; margin-bottom: 20px; padding: 16px; background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 12px;">
+                <label
+                    style="display: block; font-size: 12px; font-weight: 600; color: #10b981; margin-bottom: 8px; text-transform: uppercase;">Copy
+                    Fields from Profile</label>
+                <div style="position: relative;">
+                    <i class="fas fa-search"
+                        style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #555; font-size: 14px;"></i>
+                    <input type="text" id="copyProfileSearch" class="form-input"
+                        placeholder="Search profile to copy fields from..."
+                        style="padding-left: 40px; height: 44px; font-size: 14px;" autocomplete="off">
+                    <div id="copyProfileDropdown" class="parent-profile-dropdown"
+                        style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #1a1a2e; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; margin-top: 4px; max-height: 200px; overflow-y: auto; z-index: 100; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                        <!-- Options will be populated dynamically -->
+                    </div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+                    <button id="cancelCopyBtn"
+                        style="background: none; border: none; color: #888; font-size: 12px; cursor: pointer; text-decoration: underline;">Cancel</button>
+                </div>
+            </div>
+
+            <div id="fieldsContainer"></div>
+
+            <div class="tip">
+                💡 <strong>Quick Tips:</strong><br>
+                • <strong>Variables Guide:</strong> Click the button to see all dynamic codes like
+                <code>{{full_name}}</code> or <code>{{date}}</code>.<br>
+                • <strong>Copy Fields:</strong> Import fields from an existing profile to avoid manual entry.<br>
+                • <strong>CSS Selectors:</strong> Use <code>#id</code>, <code>input[name="email"]</code>, or
+                <code>.my-class</code>.<br>
+                • <strong>XPath Selectors:</strong> Use <code>//input[@type='text']</code> or
+                <code>//button[contains(text(), 'Submit')]</code>.
+            </div>
+        </div>
+
+        <div class="actions">
+            <button class="btn-cancel" id="cancelBtn">Cancel</button>
+            <button class="btn-save" id="saveBtn">Save Profile</button>
+        </div>
+    </div>
+
+    <!-- Variables Guide Modal -->
+    <div id="guideModal"
+        style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); display:none; align-items:center; justify-content:center; z-index:1000; padding:20px;">
+        <div class="card"
+            style="max-width:600px; width:100%; max-height:80vh; overflow-y:auto; position:relative; margin-bottom:0;">
+            <button id="closeGuideBtn"
+                style="position:absolute; top:20px; right:20px; background:none; border:none; color:#888; font-size:20px; cursor:pointer;"><i
+                    class="fas fa-times"></i></button>
+            <h2 style="margin-bottom:24px; color:#667eea;"><i class="fas fa-magic"></i> Smart Variables Guide</h2>
+            <p style="color:#888; margin-bottom:20px; font-size:14px;">Use these codes in any value field to generate
+                dynamic data on every fill.</p>
+
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+                <div class="guide-item">
+                    <p style="font-size:12px; color:#667eea; font-weight:bold; margin-bottom:4px;">IDENTITY</p>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Full Name (English/Arabic)">{{full_name}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="First Name (English/Arabic)">{{first_name}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Last Name (English/Arabic)">{{last_name}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random ID Name (e.g. Alpha_123)">{{random_name}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random Username">{{username}}</code>
+                </div>
+                <div class="guide-item">
+                    <p style="font-size:12px; color:#667eea; font-weight:bold; margin-bottom:4px;">CONTACT</p>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random Email Address">{{email}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random Mobile Number">{{phone}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random URL">{{url}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random 5-digit ZIP">{{zip_code}}</code>
+                </div>
+                <div class="guide-item">
+                    <p style="font-size:12px; color:#667eea; font-weight:bold; margin-bottom:4px;">LOCATION</p>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random Street Address">{{address}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="City (English/Arabic)">{{city}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Country (English/Arabic)">{{country}}</code>
+                </div>
+                <div class="guide-item">
+                    <p style="font-size:12px; color:#667eea; font-weight:bold; margin-bottom:4px;">DATES</p>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Current Date (YYYY-MM-DD)">{{date}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Current Time (HH:MM:SS)">{{time}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Current Date & Time">{{datetime}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Current Year">{{year}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Current Month (01-12)">{{month}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Current Day (01-31)">{{day}}</code>
+                </div>
+                <div class="guide-item">
+                    <p style="font-size:12px; color:#667eea; font-weight:bold; margin-bottom:4px;">SYSTEM</p>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Secure 16-char Password">{{password}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random GUID/UUID">{{guid}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random true/false">{{bool}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random Hex Color">{{color}}</code>
+                </div>
+                <div class="guide-item">
+                    <p style="font-size:12px; color:#667eea; font-weight:bold; margin-bottom:4px;">TEXT & WORK</p>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Random Age (18-80)">{{age}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Company (English/Arabic)">{{company}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Job Title (English/Arabic)">{{job_title}}</code>
+                    <code style="background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:6px; display:block; margin-bottom:4px;" title="Lorem Ipsum Placeholder Text">{{long_text}}</code>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast">
+        <i class="fas fa-check-circle"></i>
+        <span>Profile saved!</span>
+    </div>
+
+    <script src="db.js"></script>
+    <script src="editor.js"></script>
+</body>
+
+</html>
