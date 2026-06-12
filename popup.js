@@ -273,6 +273,7 @@ document.getElementById('aiBtn').addEventListener('click', async () => {
             const messages = {
                 no_api_key: 'AI is not configured in this build of the extension',
                 no_fields: 'No form fields found on this page',
+                no_form: 'No fillable form detected on this page',
                 no_values: 'AI could not generate values for this form',
                 profile_limit: 'Limit reached: 5 profiles already exist for this page',
                 // Legacy code from an older service worker (cleared by reloading the extension)

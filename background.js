@@ -466,6 +466,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     if (!pageUrl) pageUrl = scan.url;
                     if (scan.fields.length > 0) sawAnyField = true;
 
+
                     // Only fields not handled in a previous pass, re-indexed for the AI
                     const newScanned = scan.fields
                         .filter(f => !knownSelectors.has(f.selector))
@@ -474,6 +475,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     newScanned.forEach(f => knownSelectors.add(f.selector));
 
                     const ai = await generateProfileWithAI(apiKey, { ...scan, fields: newScanned }, categories, pass > 0);
+
+                    // The AI judges whether the scanned fields are a REAL form or just
+                    // page controls (search box, pagination, page-size select...)
+                    if (pass === 0 && ai.isRealForm === false) {
+                        sendResponse({ success: false, error: 'no_form' });
+                        return;
+                    }
+
                     if (!profileName) {
                         profileName = ai.profileName || 'AI Profile';
                         aiCategory = ai.category;
@@ -726,6 +735,10 @@ async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = fals
     const schema = {
         type: 'object',
         properties: {
+            isRealForm: {
+                type: 'boolean',
+                description: 'true only if the fields form a REAL data-entry form; false if they are just page controls (search box, table pagination, page-size select, list filters)'
+            },
             profileName: {
                 type: 'string',
                 description: 'Short descriptive profile name based on the site and form purpose'
@@ -744,7 +757,7 @@ async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = fals
                 }
             }
         },
-        required: ['profileName', 'category', 'values'],
+        required: ['isRealForm', 'profileName', 'category', 'values'],
         additionalProperties: false
     };
 
@@ -757,6 +770,8 @@ async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = fals
         ] : []),
         '',
         'Rules:',
+        '- FIRST, decide whether the fields form a REAL data-entry form (registration, login, application, contact, content creation, etc.). Standalone page controls - search boxes, table pagination, page-size selects ("show N entries"), list filters - are NOT a form. If there is no real form, set isRealForm to false and return an empty values array.',
+        '- Even when a real form exists, SKIP page-control fields (search/filter/pagination/page-size) - generate values only for the form itself.',
         '- Match the language and locale of the page (e.g. Arabic page -> Arabic names, matching phone formats).',
         '- Data must look realistic but be entirely fictional (fake emails, phone numbers, names).',
         '- For select fields, the value MUST be exactly one of the provided option "value" strings (never the display text, never a placeholder option like "Select...").',

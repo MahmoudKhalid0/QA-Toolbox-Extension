@@ -382,6 +382,10 @@ function scanPageFormFields() {
         if (el.readOnly && !isCombobox) continue;
         if (el.offsetParent === null && !el.getClientRects().length) continue;
 
+        // Note: no DOM-level noise filtering here - the AI itself decides whether
+        // the scanned fields form a real form (isRealForm) and skips page controls
+        // like search boxes and pagination. Keeps the scan free of fragile heuristics.
+
         // Radio buttons: one field entry per GROUP (same name), with the
         // group's options. Nameless radios are skipped (can't be grouped).
         if (type === 'radio') {
