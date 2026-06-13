@@ -40,6 +40,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         chrome.tabs.create({ url: 'settings.html' });
     });
 
+    // Header Login button: opens settings and starts the Google sign-in there
+    document.getElementById('loginBtn').addEventListener('click', () => {
+        chrome.tabs.create({ url: 'settings.html?signin=1' });
+    });
+
     // Smart Filter "Show All"
     document.getElementById('showAllBtn').addEventListener('click', () => {
         smartFilterActive = false;
@@ -269,6 +274,45 @@ chrome.runtime.onMessage.addListener((request) => {
         updateRecordButton();
         renderProfiles();
     }
+    // Profiles changed elsewhere (recording saved, editor, AI, cloud sync) -
+    // reload so the open panel always shows fresh data
+    if (request.action === 'profilesUpdated') {
+        (async () => {
+            await loadProfiles();
+            await loadCategories();
+            renderProfiles();
+        })();
+    }
+    // Cloud sync activity - reflect it in the header indicator
+    if (request.action === 'syncStateChanged') {
+        updateSyncIndicator(request.state);
+    }
+});
+
+function updateSyncIndicator(state) {
+    const el = document.getElementById('syncIndicator');
+    const loginBtn = document.getElementById('loginBtn');
+    if (!el) return;
+    if (state === 'signedout' || state === 'hidden') {
+        el.style.display = 'none';
+        if (loginBtn) loginBtn.style.display = 'inline-flex';
+        return;
+    }
+    if (loginBtn) loginBtn.style.display = 'none';
+    el.style.display = 'inline-flex';
+    el.classList.toggle('syncing', state === 'syncing');
+    el.classList.toggle('error', state === 'error');
+    el.querySelector('i').className = state === 'syncing' ? 'fas fa-arrows-rotate' : 'fas fa-cloud';
+    el.title = state === 'syncing' ? 'Syncing...'
+        : state === 'error' ? 'Sync failed - check Settings'
+            : state === 'done' ? 'Synced just now' : 'Cloud sync is on';
+}
+
+// Show the cloud icon if already signed in to sync, or the Login button if not
+chrome.runtime.sendMessage({ action: 'syncStatus' }, (meta) => {
+    if (chrome.runtime.lastError) return;
+    if (meta && meta.signedIn) updateSyncIndicator(meta.lastError ? 'error' : 'idle');
+    else updateSyncIndicator('signedout');
 });
 
 if (chrome.tabs && chrome.tabs.onActivated) {

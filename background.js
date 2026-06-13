@@ -1,6 +1,7 @@
 // Background script for QA-Toolbox
 importScripts('db.js');
 importScripts('config.js');
+importScripts('sync.js');
 
 // Clicking the toolbar icon opens the side panel (the extension's main surface)
 if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
@@ -23,6 +24,25 @@ if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
         const migrated = await FormFillerDB.migrateFromLocalStorage();
         if (migrated > 0) {
             console.log('Migration to IndexedDB complete:', migrated, 'profiles');
+        }
+
+        // One-time cleanup: drop the old auto-seeded categories (Work, Personal,
+        // Testing, عام) unless a profile uses them. "General" is the only built-in.
+        const flag = await chrome.storage.local.get(['categoriesCleanupV1']);
+        if (!flag.categoriesCleanupV1) {
+            const catResult = await chrome.storage.sync.get(['formFillerCategories']);
+            let cats = catResult.formFillerCategories || [];
+            const profiles = await FormFillerDB.getAllProfiles().catch(() => []);
+            const used = new Set(profiles.map(p => p.category).filter(Boolean));
+            const oldDefaults = ['Work', 'Personal', 'Testing', 'عام'];
+            cats = cats.filter(c => !oldDefaults.includes(c) || used.has(c));
+            if (!cats.includes('General')) cats.unshift('General');
+            await chrome.storage.sync.set({
+                formFillerCategories: cats,
+                formFillerCategoriesUpdatedAt: Date.now()
+            });
+            await chrome.storage.local.set({ categoriesCleanupV1: true });
+            console.log('Categories cleanup done:', cats);
         }
     } catch (e) {
         console.error('Migration error:', e);
@@ -150,6 +170,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'saveProfiles') {
         (async () => {
             try {
+                // Deletions arrive as "the new list is missing some ids".
+                // Record them as tombstones so cloud sync propagates the delete
+                // instead of resurrecting the profile from another device.
+                try {
+                    const before = await FormFillerDB.getAllProfiles();
+                    const newIds = new Set((request.profiles || []).map(p => String(p.id)));
+                    const removed = before.filter(p => !newIds.has(String(p.id)));
+                    if (removed.length > 0) {
+                        const r = await chrome.storage.local.get(['syncTombstones']);
+                        const tombs = r.syncTombstones || {};
+                        removed.forEach(p => { tombs[String(p.id)] = Date.now(); });
+                        await chrome.storage.local.set({ syncTombstones: tombs });
+                    }
+                } catch (e) { }
+
                 await FormFillerDB.saveAllProfiles(request.profiles);
                 broadcastProfilesUpdated();
                 sendResponse({ success: true });
@@ -158,6 +193,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
         })();
         return true;
+    }
+
+    // ---- Cloud Sync (settings page UI) ----
+    if (request.action === 'syncSignIn') {
+        CloudSync.syncSignIn()
+            .then(result => sendResponse(result))
+            .catch(err => sendResponse({ success: false, error: String(err.message || err) }));
+        return true;
+    }
+    if (request.action === 'syncSignOut') {
+        CloudSync.syncSignOut().then(result => sendResponse(result));
+        return true;
+    }
+    if (request.action === 'syncNow') {
+        CloudSync.syncNow().then(result => sendResponse(result));
+        return true;
+    }
+    if (request.action === 'syncStatus') {
+        CloudSync.syncGetMeta().then(meta => sendResponse(meta));
+        return true;
+    }
+    // Settings/categories changed (no profile change involved) - push too
+    if (request.action === 'scheduleCloudPush') {
+        CloudSync.syncSchedulePush();
+        return false;
     }
 
     // Get recording state for content.js on page load
@@ -483,7 +543,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
                 const catResult = await chrome.storage.sync.get(['formFillerCategories']);
                 let categories = catResult.formFillerCategories || [];
-                if (categories.length === 0) categories = ['عام'];
+                if (categories.length === 0) categories = ['General'];
 
                 const settingsRes = await chrome.storage.sync.get(['formFillerSettings']);
                 const settings = settingsRes.formFillerSettings || { randomDigits: 5 };
@@ -561,7 +621,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const profile = {
                     id: profileId,
                     name: profileName || 'AI Profile',
-                    category: categories.includes(aiCategory) ? aiCategory : 'عام',
+                    category: categories.includes(aiCategory) ? aiCategory : 'General',
                     url: pageUrl,
                     fields: allFields,
                     onReload: false,
@@ -867,7 +927,9 @@ async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = fals
     return JSON.parse(textBlock.text);
 }
 
-function broadcastProfilesUpdated() {
+function broadcastProfilesUpdated(skipCloudPush) {
+    // Live-refresh any open extension pages (side panel, settings, editor)
+    chrome.runtime.sendMessage({ action: 'profilesUpdated' }).catch(() => { });
     chrome.tabs.query({}, (tabs) => {
         tabs.forEach(tab => {
             if (tab.url && !tab.url.startsWith('chrome://')) {
@@ -875,7 +937,16 @@ function broadcastProfilesUpdated() {
             }
         });
     });
+    // Every code path that changes profiles announces it here - piggyback the
+    // cloud push (debounced, no-op when not signed in). Skipped when the
+    // change CAME from the cloud - it was just pushed/pulled.
+    if (!skipCloudPush) CloudSync.syncSchedulePush();
 }
+
+// Pull cloud changes when the browser starts (e.g. edits made on another device)
+chrome.runtime.onStartup.addListener(() => {
+    CloudSync.syncNow();
+});
 
 // Auto-fill logic for "On Reload"
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {

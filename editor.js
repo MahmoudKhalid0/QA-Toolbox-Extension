@@ -510,7 +510,7 @@ async function loadProfiles() {
 
 async function populateCategoryDropdown() {
     const result = await chrome.storage.sync.get(['formFillerCategories']);
-    const availableCategories = result.formFillerCategories || ["General", "Work", "Personal", "Testing"];
+    const availableCategories = result.formFillerCategories || ["General"];
 
     const select = document.getElementById('profileCategory');
     select.innerHTML = '<option value="" disabled selected>-- Select Category --</option>' +

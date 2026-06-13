@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // AI Save Behavior Handler
     document.getElementById('aiSaveBehaviorSelect').addEventListener('change', async (e) => {
         await chrome.storage.local.set({ aiSaveBehavior: e.target.value });
+        chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
         showToast('Settings saved!');
     });
 
@@ -21,7 +22,91 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('exportBtn').addEventListener('click', exportData);
     document.getElementById('importBtn').addEventListener('click', () => document.getElementById('importInput').click());
     document.getElementById('importInput').addEventListener('change', importData);
+
+    // Cloud Sync Handlers
+    refreshSyncUi();
+    document.getElementById('syncSignInBtn').addEventListener('click', syncSignIn);
+    document.getElementById('syncNowBtn').addEventListener('click', syncNow);
+    document.getElementById('syncSignOutBtn').addEventListener('click', syncSignOut);
+
+    // Opened via the side panel's Login button - start the Google sign-in directly
+    if (new URLSearchParams(location.search).get('signin')) {
+        const meta = await chrome.runtime.sendMessage({ action: 'syncStatus' }).catch(() => null);
+        if (!meta || !meta.signedIn) {
+            document.getElementById('syncSignedOut').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            syncSignIn();
+        }
+    }
 });
+
+// Data changed elsewhere (cloud sync, recording, editor) - refresh the page UI
+chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'profilesUpdated') {
+        loadSettings();
+        loadCategories();
+        refreshSyncUi();
+    }
+});
+
+// ---- Cloud Sync UI ----
+
+function formatSyncTime(ts) {
+    if (!ts) return 'Not synced yet';
+    const mins = Math.round((Date.now() - ts) / 60000);
+    if (mins < 1) return 'Synced just now';
+    if (mins < 60) return `Synced ${mins} min ago`;
+    return 'Synced ' + new Date(ts).toLocaleString();
+}
+
+async function refreshSyncUi() {
+    const meta = await chrome.runtime.sendMessage({ action: 'syncStatus' }).catch(() => null);
+    const signedOut = document.getElementById('syncSignedOut');
+    const signedIn = document.getElementById('syncSignedIn');
+    if (meta && meta.signedIn) {
+        signedOut.style.display = 'none';
+        signedIn.style.display = 'block';
+        document.getElementById('syncEmail').textContent = meta.email || 'Google account';
+        document.getElementById('syncStatusText').textContent =
+            meta.lastError ? `Sync error: ${meta.lastError}` : formatSyncTime(meta.lastSyncAt);
+    } else {
+        signedOut.style.display = 'block';
+        signedIn.style.display = 'none';
+    }
+}
+
+async function syncSignIn() {
+    const btn = document.getElementById('syncSignInBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in...';
+    const result = await chrome.runtime.sendMessage({ action: 'syncSignIn' }).catch(e => ({ error: String(e) }));
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fab fa-google"></i> Sign in with Google';
+    if (result && result.success) {
+        showToast('Signed in - data synced!');
+        await loadCategories(); // sync may have merged categories from the cloud
+    } else {
+        showToast(result && result.error ? `Sign-in failed: ${result.error}` : 'Sign-in failed');
+    }
+    refreshSyncUi();
+}
+
+async function syncNow() {
+    const btn = document.getElementById('syncNowBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
+    const result = await chrome.runtime.sendMessage({ action: 'syncNow' }).catch(e => ({ error: String(e) }));
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-rotate"></i> Sync Now';
+    showToast(result && result.success ? 'Sync complete!' : 'Sync failed - check your connection');
+    if (result && result.success) await loadCategories();
+    refreshSyncUi();
+}
+
+async function syncSignOut() {
+    await chrome.runtime.sendMessage({ action: 'syncSignOut' }).catch(() => { });
+    showToast('Signed out. Your local data stays on this device.');
+    refreshSyncUi();
+}
 
 async function loadSettings() {
     const result = await chrome.storage.sync.get(['formFillerSettings']);
@@ -47,6 +132,7 @@ async function updateSetting(key, value) {
     }
 
     await chrome.storage.sync.set({ formFillerSettings: settings });
+    chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
     showToast('Settings saved!');
 
     if (key === 'showFloatingButton') {
@@ -61,15 +147,25 @@ async function updateSetting(key, value) {
 
 async function loadCategories() {
     const result = await chrome.storage.sync.get(['formFillerCategories']);
-    availableCategories = result.formFillerCategories || ["General", "Work", "Personal", "Testing", "عام"];
+    availableCategories = result.formFillerCategories || ["General"];
 
-    // Ensure "عام" always exists
-    if (!availableCategories.some(c => c === "عام")) {
-        availableCategories.push("عام");
-        await chrome.storage.sync.set({ formFillerCategories: availableCategories });
+    // "General" is the only built-in category and always exists
+    if (!availableCategories.includes("General")) {
+        availableCategories.unshift("General");
+        await saveCategories();
     }
 
     renderCategories();
+}
+
+// Persist categories with a timestamp so cloud sync can pick the newest list
+// (last-write-wins) instead of resurrecting deleted categories
+async function saveCategories() {
+    await chrome.storage.sync.set({
+        formFillerCategories: availableCategories,
+        formFillerCategoriesUpdatedAt: Date.now()
+    });
+    chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
 }
 
 async function renderCategories() {
@@ -86,16 +182,16 @@ async function renderCategories() {
     const usedCategories = new Set(profiles.map(p => p.category).filter(Boolean));
 
     list.innerHTML = availableCategories.map(cat => {
-        const isAam = cat === "عام";
+        const isGeneral = cat === "General";
         const isUsed = usedCategories.has(cat);
-        const canDelete = !isAam && !isUsed;
+        const canDelete = !isGeneral && !isUsed;
 
         return `
             <div class="category-item">
                 <span>${cat} ${isUsed ? '<small style="color:#666; font-size:10px; margin-left:8px;">(In use)</small>' : ''}</span>
                 ${canDelete ?
                 `<button class="btn-delete-cat" data-name="${cat}"><i class="fas fa-trash"></i></button>` :
-                `<span style="color: #444; font-size: 12px;" title="${isAam ? 'Default category cannot be deleted' : 'Category is in use and cannot be deleted'}"><i class="fas fa-lock"></i></span>`
+                `<span style="color: #444; font-size: 12px;" title="${isGeneral ? 'Default category cannot be deleted' : 'Category is in use and cannot be deleted'}"><i class="fas fa-lock"></i></span>`
             }
             </div>
         `;
@@ -107,7 +203,7 @@ async function renderCategories() {
 }
 
 async function deleteCategory(name) {
-    if (name === "عام") {
+    if (name === "General") {
         showToast('Cannot delete default category');
         return;
     }
@@ -121,7 +217,7 @@ async function deleteCategory(name) {
     }
 
     availableCategories = availableCategories.filter(c => c !== name);
-    await chrome.storage.sync.set({ formFillerCategories: availableCategories });
+    await saveCategories();
     renderCategories();
     showToast('Category deleted');
 }
@@ -135,7 +231,7 @@ async function addCategory() {
         return;
     }
     availableCategories.push(name);
-    await chrome.storage.sync.set({ formFillerCategories: availableCategories });
+    await saveCategories();
     input.value = '';
     renderCategories();
     showToast('Category added');
@@ -246,7 +342,7 @@ async function importData(event) {
 
                     // Ensure category exists
                     if (!profile.category) {
-                        profile.category = 'عام';
+                        profile.category = 'General';
                     }
 
                     // Sanitize fields - preserve all new fields
@@ -311,7 +407,7 @@ async function importData(event) {
                     return {
                         id: `imported_${Date.now()}_${index}`,
                         name: `Imported Profile ${index + 1}`,
-                        category: 'عام',
+                        category: 'General',
                         url: '',
                         fields: [],
                         onReload: false,
@@ -348,7 +444,7 @@ async function importData(event) {
             if (data.categories && Array.isArray(data.categories)) {
                 const catSet = new Set([...availableCategories, ...data.categories]);
                 availableCategories = Array.from(catSet);
-                await chrome.storage.sync.set({ formFillerCategories: availableCategories });
+                await saveCategories();
                 console.log('Merged categories:', availableCategories.length);
             }
 

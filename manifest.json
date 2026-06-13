@@ -9,8 +9,16 @@
         "scripting",
         "webNavigation",
         "sidePanel",
-        "tabs"
+        "tabs",
+        "identity",
+        "identity.email"
     ],
+    "oauth2": {
+        "client_id": "846935486038-t98ecg6oammr0cgjf4g0tn59svcup5hs.apps.googleusercontent.com",
+        "scopes": [
+            "https://www.googleapis.com/auth/drive.appdata"
+        ]
+    },
     "host_permissions": [
         "<all_urls>"
     ],

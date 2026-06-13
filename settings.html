@@ -305,6 +305,35 @@
         </div>
 
         <div class="settings-card">
+            <h3 class="section-title"><i class="fas fa-cloud"></i> Cloud Sync</h3>
+            <p style="font-size: 12px; color: #888; margin-bottom: 16px;">Sign in with Google to keep your profiles and
+                settings backed up in your own Google Drive and synced across devices.</p>
+
+            <div id="syncSignedOut">
+                <button id="syncSignInBtn" class="btn-backup">
+                    <i class="fab fa-google"></i> Sign in with Google
+                </button>
+            </div>
+
+            <div id="syncSignedIn" style="display: none;">
+                <div class="setting-item">
+                    <div class="setting-info">
+                        <h4 id="syncEmail">...</h4>
+                        <p id="syncStatusText">Checking sync status...</p>
+                    </div>
+                </div>
+                <div class="backup-actions">
+                    <button id="syncNowBtn" class="btn-backup">
+                        <i class="fas fa-rotate"></i> Sync Now
+                    </button>
+                    <button id="syncSignOutBtn" class="btn-backup">
+                        <i class="fas fa-right-from-bracket"></i> Sign Out
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-card">
             <h3 class="section-title"><i class="fas fa-database"></i> Data Management</h3>
             <p style="font-size: 12px; color: #888; margin-bottom: 20px;">Backup your profiles and categories to a JSON
                 file or restore them from a previous backup.</p>

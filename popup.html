@@ -28,6 +28,48 @@
             height: 100%;
         }
 
+        /* Login button (header, shown when not signed in to sync) */
+        .login-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.15);
+            border: none;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 0 10px;
+            height: 34px;
+            border-radius: 9px;
+            cursor: pointer;
+            margin-right: 6px;
+            transition: background 0.2s;
+        }
+        .login-btn:hover { background: rgba(255, 255, 255, 0.18); }
+        .login-btn i { color: #38bdf8; }
+
+        /* Cloud sync indicator (header) */
+        .sync-indicator {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            color: rgba(255, 255, 255, 0.45);
+            font-size: 13px;
+            margin-right: 2px;
+        }
+        .sync-indicator.syncing i {
+            animation: syncSpin 1s linear infinite;
+            color: #38bdf8;
+        }
+        .sync-indicator.error { color: #f87171; }
+        @keyframes syncSpin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
         /* Header */
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -41,6 +83,8 @@
             display: flex;
             align-items: center;
             gap: 12px;
+            flex: 1;
+            min-width: 0;
         }
 
         .logo-icon {
@@ -54,20 +98,20 @@
             font-size: 20px;
         }
 
+        .logo-text {
+            min-width: 0;
+        }
+
         .logo-text h1 {
             font-size: 18px;
             font-weight: 700;
             color: white;
-        }
-
-        .logo-text span {
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.7);
+            white-space: nowrap;
         }
 
         .logo-row {
             display: flex;
-            align-items: flex-start;
+            align-items: center;
             justify-content: space-between;
             gap: 10px;
         }
@@ -1107,9 +1151,14 @@
                     <div class="logo-icon"><i class="fas fa-toolbox"></i></div>
                     <div class="logo-text">
                         <h1>QA-Toolbox</h1>
-                        <span>Your QA companion &mdash; auto-fill, AI profiles &amp; inspector</span>
                     </div>
                 </div>
+                <span class="sync-indicator" id="syncIndicator" style="display:none;">
+                    <i class="fas fa-cloud"></i>
+                </span>
+                <button class="login-btn" id="loginBtn" style="display:none;" title="Sign in with Google to sync your data">
+                    <i class="fab fa-google"></i><span>Login</span>
+                </button>
                 <button class="settings-icon-btn" id="settingsBtn" title="Settings">
                     <i class="fas fa-cog"></i>
                 </button>
