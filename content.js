@@ -2625,16 +2625,10 @@ async function fillFormFields(fieldsData) {
                 return Array.from(document.querySelectorAll(selector));
             }
         } catch (e) {
-            console.error('Selector error:', selector, e);
+            // Malformed/unsupported selector for this page - handled by skipping it
+            console.warn('Skipping invalid selector:', selector);
             return [];
         }
-    }
-
-    function isElementVisible(el) {
-        if (!el) return false;
-        // Elements with position: fixed have offsetParent === null but are visible.
-        // offsetWidth/Height check + getClientRects is more robust.
-        return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
     }
 
     // Custom dropdowns (input[role="combobox"]): open the list, then click the
@@ -3056,6 +3050,14 @@ async function fillFormFields(fieldsData) {
             }
         });
     }
+}
+
+// Module-level so both fillFormFields and checkFailedFieldsForProfile can use it.
+// position:fixed elements have offsetParent === null but are visible, so check
+// offsetWidth/Height and client rects.
+function isElementVisible(el) {
+    if (!el) return false;
+    return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
 }
 
 /**

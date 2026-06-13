@@ -826,7 +826,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 await openResultTab('testcases.html');
                 sendResponse({ success: true });
             } catch (err) {
-                console.error('aiGenerateTestCases error:', err);
+                if (err.message !== 'not_a_feature') console.error('aiGenerateTestCases error:', err);
                 sendResponse({ error: String(err.message || err) });
             }
         })();
@@ -843,7 +843,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 await openResultTab('apibuilder.html');
                 sendResponse({ success: true });
             } catch (err) {
-                console.error('aiGenerateApiRequest error:', err);
+                if (err.message !== 'not_a_request') console.error('aiGenerateApiRequest error:', err);
                 sendResponse({ error: String(err.message || err) });
             }
         })();
@@ -860,7 +860,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 await openResultTab('bugreport.html');
                 sendResponse({ success: true });
             } catch (err) {
-                console.error('aiGenerateBugReport error:', err);
+                if (err.message !== 'not_a_bug') console.error('aiGenerateBugReport error:', err);
                 sendResponse({ error: String(err.message || err) });
             }
         })();
