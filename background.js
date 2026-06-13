@@ -791,6 +791,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Element Inspector: AI-generated robust relative XPath (premium candidate)
+    if (request.action === 'aiGenerateXPath') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) {
+                    sendResponse({ error: 'no_api_key' });
+                    return;
+                }
+                const result = await generateRelativeXPathWithAI(AI_CONFIG.apiKey, request.context, request.url, request.extensionXpath, request.feedback);
+                sendResponse({
+                    xpath: result.xpath,
+                    cssSelector: result.cssSelector,
+                    attributeSelector: result.attributeSelector,
+                    recommended: result.recommended,
+                    reason: result.reason
+                });
+            } catch (err) {
+                console.error('aiGenerateXPath error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Right-click fill: generate one valid/invalid value for a single field
     if (request.action === 'aiGenerateFieldValue') {
         (async () => {
@@ -886,6 +910,80 @@ const INVALID_STRATEGIES = [
     'SQL/HTML injection style string (e.g. \' OR 1=1 --, <script>alert(1)</script>)',
     'control characters or formatting: tabs, newlines, null-like sequences in a single-line field'
 ];
+
+// Generate a short, robust RELATIVE XPath for one element (Element Inspector).
+// The model gets the element + its ancestor chain and must anchor on stable
+// attributes instead of brittle absolute paths or positional indexes.
+async function generateRelativeXPathWithAI(apiKey, context, url, extensionXpath, feedback) {
+    const schema = {
+        type: 'object',
+        properties: {
+            xpath: { type: 'string', description: 'A robust relative XPath expression starting with // (always required)' },
+            cssSelector: { type: 'string', description: 'A robust CSS selector for the element, or an EMPTY string if none can be built without brittle parts' },
+            attributeSelector: { type: 'string', description: 'A CSS attribute selector using the element\'s single most stable attribute, e.g. input[name="email"] or [data-testid="login"]. EMPTY string if the element has no stable attribute' },
+            recommended: { type: 'string', enum: ['xpath', 'cssSelector', 'attributeSelector'], description: 'Which of the returned locators is the most reliable for test automation' },
+            reason: { type: 'string', description: 'ONE short sentence explaining why the recommended locator is the best choice here' }
+        },
+        required: ['xpath', 'cssSelector', 'attributeSelector', 'recommended', 'reason'],
+        additionalProperties: false
+    };
+
+    const prompt = [
+        'You are an expert in writing robust locators for UI test automation (Selenium/Playwright).',
+        'For the TARGET element described below, generate up to THREE locators: a relative XPath (always), a CSS selector, and an attribute selector - then recommend the most reliable one.',
+        '',
+        ...(extensionXpath ? [
+            `A locally-generated XPath already exists for this element: ${extensionXpath}`,
+            'Your XPath MUST be a DIFFERENT expression using a DIFFERENT anchoring strategy (different attribute, or anchor on a nearby label/text/ancestor instead). It serves as the backup locator when the first one breaks, so never return the same or a trivially-equivalent expression.',
+            ''
+        ] : []),
+        ...(feedback ? [
+            `FEEDBACK FROM LIVE-PAGE VERIFICATION: ${feedback}`,
+            ''
+        ] : []),
+        'Rules:',
+        '- xpath: must start with // and be RELATIVE (never an absolute /html/body/... path). Anchoring on a nearby label/text or stable ancestor is encouraged, e.g. //label[normalize-space()="Email"]/following::input[1]. Avoid positional indexes like [3] unless there is truly nothing else.',
+        '- cssSelector / attributeSelector: ONLY return them when they can be built from STABLE parts. If the element has no stable attribute or class, return an EMPTY string for that locator instead of inventing a brittle one - do not force it.',
+        '- Prefer the most stable anchors everywhere: data-testid/data-* attributes, name, aria-label, placeholder, a human-readable static id, visible text.',
+        '- SKIP ids/classes that look auto-generated (random hashes, GUIDs, framework suffixes like ng-*, css-1a2b3c, :r1:, b1-b2-...) - they change between builds.',
+        '- Each returned locator must plausibly match ONLY this element on the page (sameTagCount tells you how many elements share its tag).',
+        '- recommended: pick the most stable of the locators you actually returned; reason: one short sentence.',
+        '',
+        `Page URL: ${url || ''}`,
+        `Target element: ${JSON.stringify(context)}`
+    ].join('\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: AI_CONFIG.model,
+            max_tokens: 512,
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content: prompt }]
+        })
+    });
+
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try {
+            const err = await response.json();
+            if (err && err.error && err.error.message) message = err.error.message;
+        } catch (e) { }
+        throw new Error(message);
+    }
+
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
+    const textBlock = (data.content || []).find(b => b.type === 'text');
+    if (!textBlock || !textBlock.text) throw new Error('Empty AI response');
+    return JSON.parse(textBlock.text);
+}
 
 // Generate a single value for one field (right-click fill). mode: 'valid' makes
 // realistic correct data; 'invalid' makes data that should FAIL the field's

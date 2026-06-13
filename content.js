@@ -55,6 +55,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         startInspectMode();
         sendResponse({ success: true });
     }
+    if (request.action === 'startXPathFinder') {
+        const mode = request.mode; // 'extension' | 'ai'
+        closeXPathFinderPanel();
+        startInspectMode((el) => showXPathFinderPanel(el, mode));
+        sendResponse({ success: true });
+    }
     if (request.action === 'contextFill') {
         // Respond immediately so the background knows the page received the
         // command (it retries with a fresh injection otherwise)
@@ -762,7 +768,7 @@ const INSPECTOR_VALUE_KEYWORDS = [
     'transparent', 'currentColor'
 ];
 
-function startInspectMode() {
+function startInspectMode(onPick) {
     stopInspectMode();
     closeInspectorPanel();
 
@@ -802,7 +808,7 @@ function startInspectMode() {
         const target = e.target;
         stopInspectMode();
         if (target && target !== document.documentElement && target !== document.body) {
-            showInspectorPanel(target);
+            (onPick || showInspectorPanel)(target);
         }
     };
 
@@ -1919,6 +1925,293 @@ function collectContextFieldInfo(el) {
         min: el.min || undefined,
         max: el.max || undefined,
         autocomplete: el.autocomplete || undefined
+    };
+}
+
+// ==================== XPath Finder (Tools tab) ====================
+// Two standalone tools: "XPath Finder" (extension-generated, instant) and
+// "AI XPath Finder" (Claude builds a robust relative XPath from stable
+// attributes). Both verify the result against the live page.
+
+let xpathFinderDragCleanup = null;
+
+function closeXPathFinderPanel() {
+    if (xpathFinderDragCleanup) {
+        xpathFinderDragCleanup();
+        xpathFinderDragCleanup = null;
+    }
+    const p = document.getElementById('ff-xpath-panel');
+    if (p) p.remove();
+}
+
+const FFX_COPY_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+const FFX_CHECK_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+// Evaluate an XPath and return all matching nodes (null = invalid syntax)
+function evaluateXPathAll(xp) {
+    try {
+        const r = document.evaluate(xp, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        const nodes = [];
+        for (let i = 0; i < r.snapshotLength; i++) nodes.push(r.snapshotItem(i));
+        return nodes;
+    } catch (e) {
+        return null;
+    }
+}
+
+function showXPathFinderPanel(el, mode) {
+    closeXPathFinderPanel();
+
+    const isAi = mode === 'ai';
+    const cls = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+    const tagLabel = el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (cls ? '.' + cls : '');
+
+    const panel = document.createElement('div');
+    panel.id = 'ff-xpath-panel';
+    panel.innerHTML = `
+        <style>
+            #ff-xpath-panel {
+                position: fixed; top: 16px; right: 16px; width: 340px;
+                z-index: 2147483647;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                border: 2px solid rgba(${isAi ? '139, 92, 246' : '14, 165, 233'}, 0.5); border-radius: 14px;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.7);
+                font-family: 'Segoe UI', Arial, sans-serif; color: #fff; direction: ltr;
+                padding: 14px;
+            }
+            #ff-xpath-panel .ffx-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; cursor: move; user-select: none; }
+            #ff-xpath-panel .ffx-title { font: 700 13px/1.4 'Segoe UI', Arial, sans-serif; }
+            #ff-xpath-panel .ffx-btns { display: flex; gap: 6px; }
+            #ff-xpath-panel .ffx-btns button {
+                background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer;
+                width: 24px; height: 24px; border-radius: 6px; font-size: 12px;
+            }
+            #ff-xpath-panel .ffx-btns button:hover { background: rgba(255,255,255,0.22); }
+            #ff-xpath-panel .ffx-tag { font: 12px/1.5 monospace; color: rgba(255,255,255,0.55); margin-bottom: 10px; word-break: break-all; }
+            #ff-xpath-panel .ffx-out {
+                background: rgba(0,0,0,0.35); border-radius: 7px; padding: 8px 10px;
+                font: 12px/1.6 'Segoe UI', Tahoma, monospace; color: #c7d2fe; word-break: break-all;
+                min-height: 20px; flex: 1;
+            }
+            #ff-xpath-panel .ffx-row { margin-bottom: 10px; }
+            #ff-xpath-panel .ffx-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 11px; }
+            #ff-xpath-panel .ffx-row-label { font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255,255,255,0.6); }
+            #ff-xpath-panel .ffx-badge {
+                background: linear-gradient(135deg, #8b5cf6, #6366f1); color: #fff; font-size: 9px;
+                padding: 2px 7px; border-radius: 8px; margin-left: 6px; text-transform: none; letter-spacing: 0;
+            }
+            #ff-xpath-panel .ffx-rec .ffx-out { border: 1px solid rgba(139, 92, 246, 0.7); }
+            #ff-xpath-panel .ffx-out-wrap { display: flex; gap: 6px; align-items: stretch; }
+            #ff-xpath-panel .ffx-copy-icon {
+                background: rgba(255,255,255,0.1); border: none; color: rgba(255,255,255,0.75);
+                cursor: pointer; border-radius: 7px; width: 30px; flex-shrink: 0;
+                display: flex; align-items: center; justify-content: center;
+            }
+            #ff-xpath-panel .ffx-copy-icon:hover { background: rgba(255,255,255,0.25); color: #fff; }
+            #ff-xpath-panel .ffx-reason { margin-top: 4px; font-size: 11px; color: #c4b5fd; line-height: 1.5; }
+            #ff-xpath-panel .ffx-loading { color: rgba(255,255,255,0.45); font-size: 12px; padding: 6px 0; }
+        </style>
+        <div class="ffx-head">
+            <span class="ffx-title">${isAi ? '&#10024; AI Locator Finder' : '&#127919; XPath Finder'}</span>
+            <div class="ffx-btns">
+                <button id="ffx-repick" title="Pick another element">&#8982;</button>
+                <button id="ffx-close" title="Close">&#10005;</button>
+            </div>
+        </div>
+        <div class="ffx-tag">${escapeHtml(tagLabel)}</div>
+        <div id="ffx-body">${isAi ? '<div class="ffx-loading">&#10024; AI is analyzing the element...</div>' : ''}</div>
+    `;
+    document.body.appendChild(panel);
+
+    const body = panel.querySelector('#ffx-body');
+
+    panel.querySelector('#ffx-close').addEventListener('click', closeXPathFinderPanel);
+    panel.querySelector('#ffx-repick').addEventListener('click', () => {
+        closeXPathFinderPanel();
+        startInspectMode((picked) => showXPathFinderPanel(picked, mode));
+    });
+
+    // Drag the panel around by its header (same as the Element Inspector)
+    let dragOffset = null;
+    const headEl = panel.querySelector('.ffx-head');
+    const onDragStart = (e) => {
+        if (e.target.closest('button')) return;
+        const rect = panel.getBoundingClientRect();
+        dragOffset = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+        e.preventDefault();
+    };
+    const onDragMove = (e) => {
+        if (!dragOffset) return;
+        panel.style.left = Math.max(0, e.clientX - dragOffset.dx) + 'px';
+        panel.style.top = Math.max(0, e.clientY - dragOffset.dy) + 'px';
+        panel.style.right = 'auto';
+    };
+    const onDragEnd = () => { dragOffset = null; };
+    headEl.addEventListener('mousedown', onDragStart);
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
+    xpathFinderDragCleanup = () => {
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+    };
+
+    // Validate any locator against the live page
+    const validate = (type, value) => {
+        if (!value) return { state: 'invalid', count: 0 };
+        let nodes = null;
+        if (type === 'xpath') nodes = evaluateXPathAll(value);
+        else { try { nodes = Array.from(document.querySelectorAll(value)); } catch (e) { nodes = null; } }
+        if (nodes === null) return { state: 'invalid', count: 0 };
+        if (nodes.length === 1 && nodes[0] === el) return { state: 'unique', count: 1 };
+        if (nodes.includes(el)) return { state: 'multi', count: nodes.length };
+        return { state: 'none', count: nodes.length };
+    };
+
+    const statusHtml = (v) =>
+        v.state === 'unique' ? '<span style="color:#4ade80;">&#10003; unique</span>'
+            : v.state === 'multi' ? `<span style="color:#fbbf24;">&#9888; matches ${v.count} elements</span>`
+                : v.state === 'none' ? '<span style="color:#f87171;">&#10007; no match</span>'
+                    : '<span style="color:#f87171;">&#10007; invalid</span>';
+
+    // Copy values are kept in an array (not in HTML attributes) so quotes in
+    // selectors can never break the markup
+    const copyValues = [];
+    const rowHtml = (label, value, v, isRec) => {
+        const idx = copyValues.push(value) - 1;
+        return `
+        <div class="ffx-row${isRec ? ' ffx-rec' : ''}">
+            <div class="ffx-row-head"><span class="ffx-row-label">${label}${isRec ? '<span class="ffx-badge">Recommended</span>' : ''}</span>${v ? statusHtml(v) : ''}</div>
+            <div class="ffx-out-wrap">
+                <div class="ffx-out">${escapeHtml(value)}</div>
+                <button class="ffx-copy-icon" data-idx="${idx}" title="Copy">${FFX_COPY_SVG}</button>
+            </div>
+        </div>`;
+    };
+
+    body.addEventListener('click', (e) => {
+        const btn = e.target.closest('.ffx-copy-icon');
+        if (!btn) return;
+        navigator.clipboard.writeText(copyValues[+btn.dataset.idx] || '').then(() => {
+            btn.innerHTML = FFX_CHECK_SVG;
+            setTimeout(() => { btn.innerHTML = FFX_COPY_SVG; }, 1100);
+        }).catch(() => { });
+    });
+
+    if (!isAi) {
+        // Extension-generated XPath: instant and free (no verification badge -
+        // the live check is part of what makes the AI tool premium)
+        let xpath = '';
+        try { xpath = generateXPath(el) || generateSelector(el); } catch (e) { }
+        body.innerHTML = rowHtml('XPath', xpath || '(could not generate an XPath)', null, false);
+        return;
+    }
+
+    // AI mode: send the element context to Claude, along with what the local
+    // generator produced - the AI must offer a DIFFERENT robust alternative.
+    // Results are verified locally; non-unique ones go BACK to the AI with
+    // feedback (up to 2 retries), then get an index appended as a last resort.
+    const context = collectAiXPathContext(el);
+    let extensionXpath = '';
+    try { extensionXpath = generateXPath(el) || ''; } catch (e) { }
+
+    const askAi = (feedback) => new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+            { action: 'aiGenerateXPath', context, extensionXpath, url: location.href, feedback },
+            (resp) => {
+                if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+                else resolve(resp || { error: 'no response' });
+            }
+        );
+    });
+
+    (async () => {
+        const LOCATOR_KEYS = ['xpath', 'cssSelector', 'attributeSelector'];
+        const LABELS = { xpath: 'XPath', cssSelector: 'CSS Selector', attributeSelector: 'Attribute' };
+        let feedback = null;
+        let result = null;
+        let checks = null;
+        let present = [];
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            if (attempt > 1) {
+                body.innerHTML = `<div class="ffx-loading">Refining locators... (attempt ${attempt}/3)</div>`;
+            }
+            const resp = await askAi(feedback);
+            if (resp.error || !resp.xpath) {
+                body.innerHTML = `<div class="ffx-loading" style="color:#f87171;">Failed: ${escapeHtml(resp.error || 'no response')}</div>`;
+                return;
+            }
+            result = resp;
+            // Only the locator types the AI could build robustly (empty string
+            // = not achievable for this element, e.g. no stable attribute)
+            present = LOCATOR_KEYS.filter(k => result[k] && String(result[k]).trim());
+            checks = {};
+            for (const k of present) checks[k] = validate(k === 'xpath' ? 'xpath' : 'css', result[k]);
+            if (present.every(k => checks[k].state === 'unique')) break;
+
+            // Tell the AI exactly what the live page said about each locator
+            feedback = 'Live verification results: ' + present.map(k => {
+                const c = checks[k];
+                const verdict = c.state === 'unique' ? 'OK, unique'
+                    : c.state === 'multi' ? `matched ${c.count} elements - NOT unique`
+                        : c.state === 'none' ? 'did NOT match the target element'
+                            : 'INVALID syntax';
+                return `${k} ${result[k]} -> ${verdict}`;
+            }).join('; ') + '. Keep the locators that are OK and fix the failing ones so each matches exactly the one target element.';
+        }
+
+        // Last resort: force the XPath unique with an index (same trick the
+        // local generator uses)
+        if (checks.xpath && checks.xpath.state === 'multi') {
+            const nodes = evaluateXPathAll(result.xpath);
+            if (nodes && nodes.includes(el)) {
+                result.xpath = `(${result.xpath})[${nodes.indexOf(el) + 1}]`;
+                checks.xpath = validate('xpath', result.xpath);
+            }
+        }
+
+        // Recommend the AI's pick if it verified unique, otherwise the first
+        // locator that did
+        let rec = result.recommended;
+        if (!present.includes(rec) || !checks[rec] || checks[rec].state !== 'unique') {
+            const firstUnique = present.find(k => checks[k].state === 'unique');
+            if (firstUnique) rec = firstUnique;
+        }
+
+        body.innerHTML =
+            present.map(k => rowHtml(LABELS[k], result[k], checks[k], rec === k)).join('') +
+            (result.reason ? `<div class="ffx-reason">&#128161; ${escapeHtml(result.reason)}</div>` : '');
+    })();
+}
+
+// Compact description of an element + its ancestors for AI XPath generation
+function collectAiXPathContext(el) {
+    const attrs = {};
+    for (const a of Array.from(el.attributes || [])) attrs[a.name] = a.value.slice(0, 80);
+
+    const ancestors = [];
+    let p = el.parentElement;
+    let depth = 0;
+    while (p && p !== document.body && depth < 5) {
+        const pa = Array.from(p.attributes || []).map(a => `${a.name}="${a.value.slice(0, 60)}"`).join(' ');
+        ancestors.push(`<${p.tagName.toLowerCase()}${pa ? ' ' + pa : ''}>`);
+        p = p.parentElement;
+        depth++;
+    }
+
+    let label = '';
+    try {
+        const labelEl = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+        label = ((labelEl && labelEl.innerText) || (el.closest('label') || {}).innerText || '').trim().slice(0, 100);
+    } catch (e) { }
+
+    return {
+        tag: el.tagName.toLowerCase(),
+        attributes: attrs,
+        text: ((el.innerText || el.value || '') + '').trim().slice(0, 100),
+        label,
+        ancestors, // closest ancestor first
+        sameTagCount: document.getElementsByTagName(el.tagName).length
     };
 }
 

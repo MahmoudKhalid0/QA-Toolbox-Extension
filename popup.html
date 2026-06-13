@@ -340,6 +340,59 @@
             line-height: 1.5;
         }
 
+        /* Inspector sub-options (shown when the Inspector card is clicked) */
+        .tool-card-chevron {
+            margin-left: auto;
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 12px;
+            transition: transform 0.2s;
+        }
+        .tool-card.open .tool-card-chevron { transform: rotate(180deg); }
+
+        .tool-options {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin: -6px 0 0 18px;
+            padding: 10px 0 4px 14px;
+            border-left: 2px solid rgba(255, 255, 255, 0.1);
+        }
+        .tool-options.hidden { display: none; }
+
+        .tool-option {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            text-align: left;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 11px;
+            padding: 10px 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .tool-option:hover {
+            background: rgba(14, 165, 233, 0.12);
+            border-color: rgba(14, 165, 233, 0.45);
+        }
+        .tool-option > i {
+            font-size: 14px;
+            width: 18px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .tool-option h5 {
+            font-size: 12px;
+            color: white;
+            margin-bottom: 2px;
+        }
+        .tool-option p {
+            font-size: 10.5px;
+            color: rgba(255, 255, 255, 0.5);
+            line-height: 1.4;
+        }
+
         .tools-coming {
             border: 1px dashed rgba(255, 255, 255, 0.15);
             border-radius: 14px;
@@ -1214,16 +1267,40 @@
 
             <!-- Tools tab -->
             <div class="tab-page hidden" id="tab-tools">
-                <button class="tool-card" id="inspectBtn" title="Inspect Element">
+                <button class="tool-card" id="inspectorToolBtn" title="Inspector">
                     <div class="tool-card-icon" style="background: linear-gradient(135deg, #0ea5e9, #06b6d4);">
                         <i class="fas fa-crosshairs"></i>
                     </div>
                     <div class="tool-card-info">
-                        <h4>Element Inspector</h4>
-                        <p>Pick any element on the page &mdash; view its selector, attributes and styles, and apply
-                            custom CSS live</p>
+                        <h4>Inspector</h4>
+                        <p>Pick an element on the page and choose what you need &mdash; inspect it, get its XPath, or
+                            let AI suggest locators</p>
                     </div>
+                    <i class="fas fa-chevron-down tool-card-chevron"></i>
                 </button>
+                <div class="tool-options hidden" id="inspectorOptions">
+                    <button class="tool-option" id="inspectBtn" title="Element Inspector">
+                        <i class="fas fa-crosshairs" style="color:#06b6d4;"></i>
+                        <div>
+                            <h5>Element Inspector</h5>
+                            <p>Selector, attributes, CSS rules &amp; live style editing</p>
+                        </div>
+                    </button>
+                    <button class="tool-option" id="xpathBtn" title="XPath Finder">
+                        <i class="fas fa-bullseye" style="color:#f59e0b;"></i>
+                        <div>
+                            <h5>XPath Finder</h5>
+                            <p>Instant XPath &mdash; free and works offline</p>
+                        </div>
+                    </button>
+                    <button class="tool-option" id="aiXpathBtn" title="AI Locator Finder">
+                        <i class="fas fa-wand-magic-sparkles" style="color:#8b5cf6;"></i>
+                        <div>
+                            <h5>AI Locator Finder</h5>
+                            <p>XPath, CSS &amp; attribute &mdash; verified live, with a recommendation</p>
+                        </div>
+                    </button>
+                </div>
                 <div class="tools-coming">
                     <i class="fas fa-plus-circle"></i> More QA tools coming soon
                 </div>

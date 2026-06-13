@@ -342,6 +342,12 @@ document.getElementById('addBtn').addEventListener('click', () => {
 });
 
 // Element Inspector button - hover-highlight picking, then a properties/style panel
+// Inspector card: expand/collapse the three inspect-tool options
+document.getElementById('inspectorToolBtn').addEventListener('click', () => {
+    document.getElementById('inspectorToolBtn').classList.toggle('open');
+    document.getElementById('inspectorOptions').classList.toggle('hidden');
+});
+
 document.getElementById('inspectBtn').addEventListener('click', async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -355,6 +361,24 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
 
     showToastMessage('Pick an element on the page (Esc to cancel)', 'success');
 });
+
+// XPath Finder tools (extension-generated / AI-generated)
+async function startXPathFinder(mode) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
+        showToastMessage('Open a website first', 'error');
+        return;
+    }
+
+    await ensureContentScript(tab.id);
+    await chrome.tabs.sendMessage(tab.id, { action: 'startXPathFinder', mode }).catch(() => { });
+
+    showToastMessage('Pick an element on the page (Esc to cancel)', 'success');
+}
+
+document.getElementById('xpathBtn').addEventListener('click', () => startXPathFinder('extension'));
+document.getElementById('aiXpathBtn').addEventListener('click', () => startXPathFinder('ai'));
 
 // AI Create Profile button - scans the form, generates data via Claude, saves and fills
 document.getElementById('aiBtn').addEventListener('click', async () => {
