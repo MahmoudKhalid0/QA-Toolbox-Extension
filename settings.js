@@ -5,7 +5,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadCategories();
 
     // Toggle Handlers
-    document.getElementById('floatingButtonToggle').addEventListener('change', (e) => updateSetting('showFloatingButton', e.target.checked));
+    document.getElementById('floatingButtonToggle').addEventListener('change', (e) => {
+        updateSetting('showFloatingButton', e.target.checked);
+        reflectFloatingAiFillState(e.target.checked);
+    });
+    document.getElementById('floatingAiFillToggle').addEventListener('change', (e) => updateSetting('floatingAiFill', e.target.checked));
 
     // AI Save Behavior Handler
     document.getElementById('aiSaveBehaviorSelect').addEventListener('change', async (e) => {
@@ -113,6 +117,8 @@ async function loadSettings() {
     const settings = result.formFillerSettings || { randomDigits: 5, showFloatingButton: true };
 
     document.getElementById('floatingButtonToggle').checked = !!settings.showFloatingButton;
+    document.getElementById('floatingAiFillToggle').checked = !!settings.floatingAiFill;
+    reflectFloatingAiFillState(!!settings.showFloatingButton);
 
     // AI save behavior lives in local storage (set here or via the on-page prompt)
     const aiResult = await chrome.storage.local.get(['aiSaveBehavior', 'aiAutoSaveProfiles']);
@@ -125,7 +131,7 @@ async function updateSetting(key, value) {
     const settings = result.formFillerSettings || { randomDigits: 5 };
 
     // Explicitly handle boolean types for toggles
-    if (key === 'showFloatingButton') {
+    if (key === 'showFloatingButton' || key === 'floatingAiFill') {
         settings[key] = !!value;
     } else {
         settings[key] = value;
@@ -135,14 +141,23 @@ async function updateSetting(key, value) {
     chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
     showToast('Settings saved!');
 
-    if (key === 'showFloatingButton') {
+    // Re-evaluate the floating button on open pages when either setting changes
+    if (key === 'showFloatingButton' || key === 'floatingAiFill') {
         const tabs = await chrome.tabs.query({});
         tabs.forEach(tab => {
             if (tab.id) {
-                chrome.tabs.sendMessage(tab.id, { action: 'updateFloatingButton', enabled: value }).catch(() => { });
+                chrome.tabs.sendMessage(tab.id, { action: 'recheckFloatingButton' }).catch(() => { });
             }
         });
     }
+}
+
+// The AI-fill sub-setting only applies when the floating button is on
+function reflectFloatingAiFillState(masterOn) {
+    const item = document.getElementById('floatingAiFillItem');
+    const toggle = document.getElementById('floatingAiFillToggle');
+    item.style.opacity = masterOn ? '1' : '0.45';
+    toggle.disabled = !masterOn;
 }
 
 async function loadCategories() {

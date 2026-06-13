@@ -276,6 +276,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         recordingState.isRecording = true;
         recordingState.appendToProfileId = request.appendToProfileId || recordingState.appendToProfileId;
         recordingState.tabId = sender.tab ? sender.tab.id : null;
+        // Tell the side panel so it shows the recording state (e.g. when
+        // recording was started from the on-page re-record modal)
+        chrome.runtime.sendMessage({
+            action: 'recordingUiSync',
+            isRecording: true,
+            appendToProfileId: recordingState.appendToProfileId
+        }).catch(() => { });
         sendResponse({ success: true });
         return true;
     }
@@ -487,7 +494,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === 'getSettings') {
         chrome.storage.sync.get(['formFillerSettings'], (result) => {
-            const defaultSettings = { randomDigits: 5, showFloatingButton: true };
+            const defaultSettings = { randomDigits: 5, showFloatingButton: true, floatingAiFill: false };
             sendResponse({ settings: result.formFillerSettings || defaultSettings });
         });
         return true;
@@ -560,7 +567,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'aiCreateProfile') {
         (async () => {
             try {
-                const tabId = request.tabId;
+                // tabId comes from the popup; from the floating button it is the sender tab
+                const tabId = request.tabId || (sender.tab && sender.tab.id);
 
                 const apiKey = AI_CONFIG.apiKey;
                 if (!apiKey) {

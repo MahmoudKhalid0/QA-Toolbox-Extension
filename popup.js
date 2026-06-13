@@ -274,6 +274,13 @@ chrome.runtime.onMessage.addListener((request) => {
         updateRecordButton();
         renderProfiles();
     }
+    // Recording started elsewhere (e.g. the on-page re-record modal) - reflect it
+    if (request.action === 'recordingUiSync' && request.isRecording) {
+        isRecording = true;
+        appendToId = request.appendToProfileId || null;
+        updateRecordButton();
+        renderProfiles();
+    }
     // Profiles changed elsewhere (recording saved, editor, AI, cloud sync) -
     // reload so the open panel always shows fresh data
     if (request.action === 'profilesUpdated') {

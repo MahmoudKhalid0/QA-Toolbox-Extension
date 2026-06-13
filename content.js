@@ -80,6 +80,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Floating Button Support
 let matchingProfiles = [];
+let fabAiFillEnabled = false; // show the standalone "AI Fill" option in the FAB
 let lastCheckUrl = '';
 let fabInitTimeout = null;
 
@@ -92,19 +93,25 @@ async function initFloatingButton() {
 
         chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
             if (chrome.runtime.lastError) return;
-            if (response && response.settings && response.settings.showFloatingButton) {
-                chrome.runtime.sendMessage({ action: 'getMatchingProfiles', url: currentUrl }, (profRes) => {
-                    if (chrome.runtime.lastError) return;
-                    if (profRes && profRes.profiles && profRes.profiles.length > 0) {
-                        matchingProfiles = profRes.profiles;
-                        createFloatingButton();
-                    } else {
-                        cleanupFloatingButton();
-                    }
-                });
-            } else {
+            const settings = response && response.settings;
+            // The AI-fill option depends on the floating button being enabled
+            if (!settings || !settings.showFloatingButton) {
                 cleanupFloatingButton();
+                return;
             }
+            fabAiFillEnabled = !!settings.floatingAiFill;
+
+            chrome.runtime.sendMessage({ action: 'getMatchingProfiles', url: currentUrl }, (profRes) => {
+                if (chrome.runtime.lastError) return;
+                matchingProfiles = (profRes && profRes.profiles) || [];
+                // Show the FAB when there are matching profiles, OR when AI fill is
+                // enabled (then it shows on every page, even without a profile)
+                if (matchingProfiles.length > 0 || fabAiFillEnabled) {
+                    createFloatingButton();
+                } else {
+                    cleanupFloatingButton();
+                }
+            });
         });
     }, 100);
 }
@@ -2236,6 +2243,40 @@ function setContextFieldValue(el, value) {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
 }
+// On-page status pill for AI fill triggered from the floating button (the side
+// panel can't show progress for a page action, so we surface it on the page).
+let fabAiStatusTimer = null;
+function showFabAiStatus(state, message) {
+    let pill = document.getElementById('ff-ai-status');
+    if (!pill) {
+        pill = document.createElement('div');
+        pill.id = 'ff-ai-status';
+        pill.style.cssText = 'position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:2147483647;' +
+            'display:flex;align-items:center;gap:10px;padding:11px 18px;border-radius:30px;' +
+            'font-family:\'Segoe UI\',Arial,sans-serif;font-size:13px;font-weight:600;color:#fff;' +
+            'box-shadow:0 8px 30px rgba(0,0,0,0.45);transition:opacity 0.3s;';
+        document.body.appendChild(pill);
+    }
+    if (fabAiStatusTimer) { clearTimeout(fabAiStatusTimer); fabAiStatusTimer = null; }
+
+    const icon = state === 'loading'
+        ? '<i class="fas fa-spinner fa-spin"></i>'
+        : state === 'success' ? '<i class="fas fa-check-circle"></i>' : '<i class="fas fa-circle-exclamation"></i>';
+    const bg = state === 'loading'
+        ? 'linear-gradient(135deg,#8b5cf6,#6366f1)'
+        : state === 'success' ? 'linear-gradient(135deg,#10b981,#059669)' : 'linear-gradient(135deg,#ef4444,#dc2626)';
+    pill.style.background = bg;
+    pill.style.opacity = '1';
+    pill.innerHTML = `${icon}<span>${escapeHtml(message)}</span>`;
+
+    if (state !== 'loading') {
+        fabAiStatusTimer = setTimeout(() => {
+            pill.style.opacity = '0';
+            setTimeout(() => pill.remove(), 350);
+        }, state === 'success' ? 2500 : 4500);
+    }
+}
+
 function createFloatingButton() {
     // 1. Style Setup
     if (!document.getElementById('ff-fab-styles')) {
@@ -2371,16 +2412,41 @@ function createFloatingButton() {
         document.body.appendChild(menu);
 
         menu.addEventListener('click', async (e) => {
+            // Standalone "AI Fill" option - scan + AI-fill the current page
+            const aiItem = e.target.closest('#ff-menu-ai-fill');
+            if (aiItem) {
+                menu.style.display = 'none';
+                showFabAiStatus('loading', 'AI is analyzing the form…');
+                chrome.runtime.sendMessage({ action: 'aiCreateProfile' }, (resp) => {
+                    if (chrome.runtime.lastError || !resp || !resp.success) {
+                        const err = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'unknown';
+                        const messages = {
+                            no_form: 'No fillable form found on this page',
+                            no_fields: 'No form fields found on this page',
+                            no_values: 'Could not generate data for this form',
+                            no_api_key: 'AI key is not configured',
+                            profile_limit: 'Profile limit reached for this page'
+                        };
+                        showFabAiStatus('error', messages[err] || ('AI fill failed: ' + err));
+                    } else {
+                        showFabAiStatus('success', `Form filled (${resp.fieldCount} field${resp.fieldCount === 1 ? '' : 's'})`);
+                    }
+                });
+                return;
+            }
+
             const item = e.target.closest('.ff-menu-item');
             if (item && !item.classList.contains('no-click')) {
                 const profileId = item.dataset.id;
                 const profile = matchingProfiles.find(p => String(p.id) === String(profileId));
                 if (profile) {
+                    menu.style.display = 'none';
+                    showFabAiStatus('loading', `Filling "${profile.name}"…`);
                     chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
                         const settings = (response && response.settings) ? response.settings : { randomDigits: 5 };
-                        fillFormFields({ fields: profile.fields, settings, profileId: profile.id, profileUrl: profile.url }).then(() => {
-                            menu.style.display = 'none';
-                        });
+                        fillFormFields({ fields: profile.fields, settings, profileId: profile.id, profileUrl: profile.url })
+                            .then(() => showFabAiStatus('success', `Filled with "${profile.name}"`))
+                            .catch(() => showFabAiStatus('error', 'Could not fill the form'));
                     });
                 }
             }
@@ -2395,18 +2461,32 @@ function createFloatingButton() {
     }
 
     const renderMenuItems = (filter = '') => {
-        let menuHtml = `
-            <div class="ff-menu-header">Matching Profiles</div>
-            <div class="ff-search-container" style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                <div style="position:relative;">
-                    <i class="fas fa-search" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:12px; color:#666;"></i>
-                    <input type="text" id="ff-menu-search" placeholder="Search profiles..." 
-                        style="width:100%; padding:8px 8px 8px 30px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:6px; color:white; font-size:12px; outline:none;" 
-                        value="${filter}">
+        // Standalone "AI Fill" option at the very top (independent of profiles)
+        let menuHtml = '';
+        if (fabAiFillEnabled) {
+            menuHtml += `
+                <div class="ff-menu-item" id="ff-menu-ai-fill" title="Let AI fill this form">
+                    <i class="fas fa-wand-magic-sparkles" style="color:#a78bfa;"></i>
+                    <span style="font-weight:600;">AI Fill this page</span>
                 </div>
-            </div>
-            <div class="ff-menu-list" style="max-height: 400px; overflow-y: auto;">
-        `;
+            `;
+        }
+
+        // The profiles section only appears when there are matching profiles
+        if (matchingProfiles.length > 0) {
+            if (fabAiFillEnabled) menuHtml += `<div style="height:1px; background:rgba(255,255,255,0.08); margin:6px 4px;"></div>`;
+            menuHtml += `
+                <div class="ff-menu-header">Matching Profiles</div>
+                <div class="ff-search-container" style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                    <div style="position:relative;">
+                        <i class="fas fa-search" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:12px; color:#666;"></i>
+                        <input type="text" id="ff-menu-search" placeholder="Search profiles..."
+                            style="width:100%; padding:8px 8px 8px 30px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:6px; color:white; font-size:12px; outline:none;"
+                            value="${filter}">
+                    </div>
+                </div>`;
+        }
+        menuHtml += `<div class="ff-menu-list" style="max-height: 400px; overflow-y: auto;">`;
 
         const truncateName = (name) => {
             if (!name) return '';
@@ -2418,7 +2498,9 @@ function createFloatingButton() {
             (p.category && p.category.toLowerCase().includes(filter.toLowerCase()))
         );
 
-        if (filteredProfiles.length === 0) {
+        if (matchingProfiles.length === 0) {
+            // AI-fill-only mode: nothing else to list
+        } else if (filteredProfiles.length === 0) {
             menuHtml += `<div style="padding:20px; text-align:center; color:#666; font-size:13px;">No profiles found</div>`;
         } else {
             const parents = filteredProfiles.filter(p => !p.parentProfileId);
@@ -3080,12 +3162,12 @@ function showFieldChangeWarningModal(failedFields, profileId) {
                 <div class="ff-modal-warning-icon">
                     <i class="fas fa-exclamation-triangle"></i>
                 </div>
-                <h2 class="ff-modal-title">Selector(s) mismatch detected.</h2>
-                <p class="ff-modal-subtitle">Some fields could not be located because their selectors have changed.</p>
+                <h2 class="ff-modal-title">${failedFields.length} field${failedFields.length === 1 ? '' : 's'} couldn't be filled</h2>
+                <p class="ff-modal-subtitle">These fields weren't found on the page &mdash; it likely changed since you recorded this profile.</p>
             </div>
             <div class="ff-modal-body">
                 <p class="ff-modal-explanation">
-                    Can't locate the following fields:
+                    Skipped field${failedFields.length === 1 ? '' : 's'}:
                 </p>
                 <ul class="ff-failed-fields-list">
                     ${failedFields.map(f => `
@@ -3099,16 +3181,16 @@ function showFieldChangeWarningModal(failedFields, profileId) {
                     `).join('')}
                 </ul>
                 <p class="ff-modal-explanation" style="margin-top: 12px;">
-                    Please re-record the form to update these selectors.
+                    Re-record to fix only these fields &mdash; the rest of your profile stays the same.
                 </p>
             </div>
             <div class="ff-modal-actions">
                 <button class="ff-action-btn ff-btn-register" id="ff-btn-register">
                     <i class="fas fa-circle"></i>
-                    <span>Re-record Fields</span>
+                    <span>Re-record these fields</span>
                 </button>
                 <button class="ff-action-btn ff-btn-close" id="ff-btn-close-alert">
-                    Close
+                    Dismiss
                 </button>
             </div>
         </div>
