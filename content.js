@@ -55,6 +55,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         startInspectMode();
         sendResponse({ success: true });
     }
+    if (request.action === 'contextFill') {
+        // Respond immediately so the background knows the page received the
+        // command (it retries with a fresh injection otherwise)
+        sendResponse({ received: true });
+        handleContextFill(request.mode);
+    }
     if (request.action === 'updateFloatingButton' || request.action === 'recheckFloatingButton') {
         const enabled = request.action === 'updateFloatingButton' ? request.enabled : true;
         if (enabled) {
@@ -1814,7 +1820,7 @@ function hideRecordingIndicator() {
     if (indicator) indicator.remove();
 }
 
-function flashElement(element) {
+function flashElement(element, color = '#10b981') {
     const original = {
         outline: element.style.outline,
         outlineOffset: element.style.outlineOffset,
@@ -1822,7 +1828,7 @@ function flashElement(element) {
     };
 
     element.style.transition = 'all 0.2s';
-    element.style.outline = '3px solid #10b981';
+    element.style.outline = `3px solid ${color}`;
     element.style.outlineOffset = '2px';
 
     setTimeout(() => {
@@ -1830,6 +1836,112 @@ function flashElement(element) {
         element.style.outlineOffset = original.outlineOffset;
         element.style.transition = original.transition;
     }, 600);
+}
+
+// ==================== Right-click Fill (context menu) ====================
+// Right-clicking an editable field offers: fill with valid data (AI) or
+// invalid data (AI, for negative testing).
+
+let lastContextTarget = null;
+document.addEventListener('contextmenu', (e) => { lastContextTarget = e.target; }, true);
+
+async function handleContextFill(mode) {
+    const el = (lastContextTarget && document.contains(lastContextTarget)) ? lastContextTarget : document.activeElement;
+    if (!el) return;
+    if (!el.isContentEditable && !['INPUT', 'TEXTAREA'].includes(el.tagName)) return;
+
+    const info = collectContextFieldInfo(el);
+
+    // Pulse the field while waiting for the AI value
+    const stopPulse = startFieldPulse(el);
+    try {
+        const resp = await new Promise((resolve) => {
+            chrome.runtime.sendMessage(
+                { action: 'aiGenerateFieldValue', field: info, mode, url: location.href },
+                (r) => {
+                    if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+                    else resolve(r || { error: 'no_response' });
+                }
+            );
+        });
+        if (resp.error || resp.value === undefined || resp.value === null) {
+            console.warn('Context fill failed:', resp.error);
+            flashElement(el, '#ef4444');
+            return;
+        }
+        setContextFieldValue(el, resp.value);
+        flashElement(el);
+    } finally {
+        stopPulse();
+    }
+}
+
+function startFieldPulse(el) {
+    const original = {
+        outline: el.style.getPropertyValue('outline'),
+        outlineOffset: el.style.getPropertyValue('outline-offset'),
+        transition: el.style.transition
+    };
+    el.style.transition = 'outline-color 0.45s';
+    // !important so the pulse beats the page's own focus/outline styles
+    el.style.setProperty('outline', '3px dashed #6366f1', 'important');
+    el.style.setProperty('outline-offset', '2px', 'important');
+    let on = true;
+    const iv = setInterval(() => {
+        el.style.setProperty('outline-color', on ? '#c7d2fe' : '#6366f1', 'important');
+        on = !on;
+    }, 450);
+    return () => {
+        clearInterval(iv);
+        el.style.setProperty('outline', original.outline);
+        el.style.setProperty('outline-offset', original.outlineOffset);
+        el.style.transition = original.transition;
+    };
+}
+
+function collectContextFieldInfo(el) {
+    let label = '';
+    try {
+        const labelEl = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+        label = ((labelEl && labelEl.innerText) || (el.closest('label') || {}).innerText || '').trim().slice(0, 120);
+    } catch (e) { }
+    return {
+        tag: el.tagName ? el.tagName.toLowerCase() : 'div',
+        type: el.isContentEditable ? 'richtext' : (el.type || 'text'),
+        name: el.name || '',
+        id: el.id || '',
+        placeholder: el.placeholder || '',
+        label,
+        ariaLabel: (el.getAttribute && el.getAttribute('aria-label')) || '',
+        maxLength: el.maxLength > 0 ? el.maxLength : undefined,
+        pattern: el.pattern || undefined,
+        required: !!el.required,
+        min: el.min || undefined,
+        max: el.max || undefined,
+        autocomplete: el.autocomplete || undefined
+    };
+}
+
+function setContextFieldValue(el, value) {
+    if (el.isContentEditable) {
+        try {
+            el.focus();
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            if (!document.execCommand('insertText', false, value)) {
+                el.innerHTML = '';
+                el.appendChild(document.createTextNode(value));
+                el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+            }
+        } catch (e) { }
+        return;
+    }
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 function createFloatingButton() {
     // 1. Style Setup

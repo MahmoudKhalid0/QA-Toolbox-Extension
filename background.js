@@ -8,6 +8,30 @@ if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => { });
 }
 
+// Right-click menu on form fields: fill the field with valid / invalid data
+chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: 'qa-fill-valid', title: 'Fill with valid data (AI)', contexts: ['editable'] });
+    chrome.contextMenus.create({ id: 'qa-fill-invalid', title: 'Fill with invalid data (AI)', contexts: ['editable'] });
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    const modes = { 'qa-fill-valid': 'valid', 'qa-fill-invalid': 'invalid' };
+    const mode = modes[info.menuItemId];
+    if (!mode || !tab || !tab.id) return;
+    try {
+        await chrome.tabs.sendMessage(tab.id, { action: 'contextFill', mode });
+    } catch (e) {
+        // Content script not alive (extension was reloaded) - inject and retry
+        try {
+            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+            await new Promise(r => setTimeout(r, 150));
+            await chrome.tabs.sendMessage(tab.id, { action: 'contextFill', mode });
+        } catch (e2) {
+            console.warn('Context fill: could not reach the page', e2);
+        }
+    }
+});
+
 // Migration: Move profiles from sync/local storage to IndexedDB
 (async () => {
     try {
@@ -767,6 +791,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Right-click fill: generate one valid/invalid value for a single field
+    if (request.action === 'aiGenerateFieldValue') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) {
+                    sendResponse({ error: 'no_api_key' });
+                    return;
+                }
+                const result = await generateFieldValueWithAI(AI_CONFIG.apiKey, request.field, request.mode, request.url);
+                sendResponse({ value: result.value });
+            } catch (err) {
+                console.error('aiGenerateFieldValue error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Persist the user's AI saving preference ('ask' | 'always' | 'never')
     if (request.action === 'setAiSaveBehavior') {
         (async () => {
@@ -825,6 +867,90 @@ function mapAiValuesToFields(ai, scannedFields) {
         });
     }
     return fields;
+}
+
+// Violation angles for invalid-data generation. One is picked at random per
+// call and forced on the model - otherwise it converges on the same 2-3
+// favorite violations (e.g. always "email without @").
+const INVALID_STRATEGIES = [
+    'missing a required symbol or structural part (e.g. email without @, URL without scheme)',
+    'duplicated symbols or parts (e.g. double @@, double dots, repeated country code)',
+    'illegal special characters injected into the value (e.g. #$%^ inside an email or name)',
+    'whitespace abuse: leading/trailing spaces or spaces in the middle of a no-space value',
+    'wrong data type: letters where digits are expected, or digits where letters are expected',
+    'absurdly long value - exceed maxLength or reasonable length by a lot',
+    'too short / minimal: a single character or just the symbol alone (e.g. "@" only)',
+    'valid-looking but subtly broken: missing TLD, domain without dot, phone one digit short',
+    'unicode tricks: emoji, RTL marks, or non-Latin lookalike characters inside the value',
+    'boundary violation: out-of-range number, impossible date (e.g. Feb 30), age 999',
+    'SQL/HTML injection style string (e.g. \' OR 1=1 --, <script>alert(1)</script>)',
+    'control characters or formatting: tabs, newlines, null-like sequences in a single-line field'
+];
+
+// Generate a single value for one field (right-click fill). mode: 'valid' makes
+// realistic correct data; 'invalid' makes data that should FAIL the field's
+// validation - for negative testing.
+async function generateFieldValueWithAI(apiKey, field, mode, url) {
+    const schema = {
+        type: 'object',
+        properties: {
+            value: { type: 'string', description: 'The generated value for the field' }
+        },
+        required: ['value'],
+        additionalProperties: false
+    };
+
+    const strategy = INVALID_STRATEGIES[Math.floor(Math.random() * INVALID_STRATEGIES.length)];
+
+    const prompt = [
+        'You are generating ONE test value for a single form field in a QA testing browser extension.',
+        '',
+        mode === 'valid'
+            ? 'MODE: VALID - generate a realistic, correctly-formatted value that PASSES validation for this field (analyze its name, type, label, placeholder, pattern, maxLength to understand what it expects). Data must look real but be entirely fictional. Vary your output: do not reuse common placeholder names.'
+            : [
+                'MODE: INVALID - generate a value that should FAIL this field\'s validation, for negative testing.',
+                `Apply EXACTLY this violation strategy: ${strategy}.`,
+                'Adapt the strategy to this specific field type. Only if it genuinely cannot apply to this field, pick the closest alternative violation. The value must still be typeable text.'
+            ].join('\n'),
+        '',
+        '- Match the language and locale of the page (Arabic page -> Arabic text where appropriate).',
+        '- Return ONLY the value itself, no explanations.',
+        '',
+        `Page URL: ${url || ''}`,
+        `Field: ${JSON.stringify(field)}`
+    ].join('\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: AI_CONFIG.model,
+            max_tokens: 1024,
+            temperature: 1, // variety across repeated clicks on the same field
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content: prompt }]
+        })
+    });
+
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try {
+            const err = await response.json();
+            if (err && err.error && err.error.message) message = err.error.message;
+        } catch (e) { }
+        throw new Error(message);
+    }
+
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
+    const textBlock = (data.content || []).find(b => b.type === 'text');
+    if (!textBlock || !textBlock.text) throw new Error('Empty AI response');
+    return JSON.parse(textBlock.text);
 }
 
 // Call the Claude API to generate test data for the scanned form fields.

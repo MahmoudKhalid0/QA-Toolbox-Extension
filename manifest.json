@@ -11,7 +11,8 @@
         "sidePanel",
         "tabs",
         "identity",
-        "identity.email"
+        "identity.email",
+        "contextMenus"
     ],
     "oauth2": {
         "client_id": "846935486038-t98ecg6oammr0cgjf4g0tn59svcup5hs.apps.googleusercontent.com",
