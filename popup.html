@@ -353,7 +353,7 @@
             display: flex;
             flex-direction: column;
             gap: 6px;
-            margin: -6px 0 0 18px;
+            margin: -6px 0 12px 18px;
             padding: 10px 0 4px 14px;
             border-left: 2px solid rgba(255, 255, 255, 0.1);
         }
@@ -392,6 +392,53 @@
             color: rgba(255, 255, 255, 0.5);
             line-height: 1.4;
         }
+
+        /* Inline AI tool forms (input lives in the panel, result opens in a tab) */
+        .tool-form {
+            margin: -6px 0 12px 18px;
+            padding: 12px 14px;
+            border-left: 2px solid rgba(255, 255, 255, 0.1);
+        }
+        .tool-form.hidden,
+        .tool-form-thumb.hidden,
+        #brFile { display: none; }
+        .tool-form textarea {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 9px;
+            color: #fff;
+            font: 13px/1.5 inherit;
+            padding: 9px 11px;
+            outline: none;
+            resize: vertical;
+            min-height: 80px;
+        }
+        .tool-form textarea:focus { border-color: #6366f1; }
+        .tool-form-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+        .tool-form-row label { font-size: 11.5px; color: rgba(255, 255, 255, 0.6); }
+        .tool-form select {
+            background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12);
+            color: #fff; border-radius: 7px; padding: 5px 8px; font-size: 12px; outline: none;
+        }
+        .tool-form select option { background: #1e293b; color: #fff; }
+        .tool-form-gen {
+            margin-left: auto; border: none; border-radius: 8px; padding: 8px 14px;
+            font-size: 12px; font-weight: 700; color: #fff; cursor: pointer;
+            display: inline-flex; align-items: center; gap: 6px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        }
+        .tool-form-gen:hover { filter: brightness(1.12); }
+        .tool-form-gen:disabled { opacity: 0.6; cursor: wait; }
+        .tool-form-drop {
+            border: 2px dashed rgba(255, 255, 255, 0.15); border-radius: 8px; padding: 12px;
+            text-align: center; cursor: pointer; color: #64748b; font-size: 11.5px; margin-top: 10px;
+        }
+        .tool-form-drop:hover { border-color: #6366f1; color: #cbd5e1; }
+        .tool-form-thumb { position: relative; display: inline-block; margin-top: 10px; }
+        .tool-form-thumb img { max-height: 90px; max-width: 100%; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12); display: block; }
+        .tool-form-thumb button { position: absolute; top: -7px; right: -7px; background: #ef4444; border: none; color: #fff; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 10px; }
+        .tool-form-status { font-size: 11.5px; margin-top: 8px; min-height: 14px; }
 
         .tools-coming {
             border: 1px dashed rgba(255, 255, 255, 0.15);
@@ -1300,6 +1347,67 @@
                             <p>XPath, CSS &amp; attribute &mdash; verified live, with a recommendation</p>
                         </div>
                     </button>
+                </div>
+                <button class="tool-card" id="testCasesCard" title="AI Test Case Generator">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #6366f1, #8b5cf6);">
+                        <i class="fas fa-clipboard-list"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>AI Test Case Generator</h4>
+                        <p>Describe a feature or user story &mdash; AI writes structured test cases (opens in a new
+                            tab)</p>
+                    </div>
+                    <i class="fas fa-chevron-down tool-card-chevron"></i>
+                </button>
+                <div class="tool-form hidden" id="testCasesForm">
+                    <textarea id="tcStory" placeholder="As a user, I want to log in with my email and password so that I can access my account."></textarea>
+                    <div class="tool-form-row">
+                        <label for="tcCount">Test cases:</label>
+                        <select id="tcCount"></select>
+                        <button class="tool-form-gen" id="tcGenerate"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
+                    </div>
+                    <div class="tool-form-status" id="tcStatus"></div>
+                </div>
+
+                <button class="tool-card" id="apiBuilderCard" title="AI API Request Builder">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #06b6d4, #6366f1);">
+                        <i class="fas fa-paper-plane"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>AI API Request Builder</h4>
+                        <p>Describe a request in plain words &mdash; AI builds the method, URL, headers &amp; body
+                            with cURL &amp; fetch (opens in a new tab)</p>
+                    </div>
+                    <i class="fas fa-chevron-down tool-card-chevron"></i>
+                </button>
+                <div class="tool-form hidden" id="apiBuilderForm">
+                    <textarea id="apiDesc" placeholder='e.g. POST to create a user with name, email and role, using a Bearer token'></textarea>
+                    <div class="tool-form-row">
+                        <button class="tool-form-gen" id="apiGenerate" style="background:linear-gradient(135deg,#06b6d4,#6366f1);"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
+                    </div>
+                    <div class="tool-form-status" id="apiStatus"></div>
+                </div>
+
+                <button class="tool-card" id="bugReportCard" title="AI Bug Report Writer">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #ef4444, #f97316);">
+                        <i class="fas fa-bug"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>AI Bug Report Writer</h4>
+                        <p>Describe a problem and optionally attach a screenshot &mdash; AI writes a bug report (opens
+                            in a new tab)</p>
+                    </div>
+                    <i class="fas fa-chevron-down tool-card-chevron"></i>
+                </button>
+                <div class="tool-form hidden" id="bugReportForm">
+                    <textarea id="brDesc" placeholder="e.g. When clicking Save on the profile page nothing happens and the data is not saved."></textarea>
+                    <div class="tool-form-drop" id="brDrop"><i class="fas fa-image"></i> Add screenshot (click, drop, or Ctrl+V)</div>
+                    <div class="tool-form-thumb hidden" id="brThumbWrap"><img id="brThumb"><button id="brThumbX"><i class="fas fa-times"></i></button></div>
+                    <input type="file" id="brFile" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden">
+                    <div class="tool-form-row">
+                        <button class="tool-form-gen" id="brGenerate" style="background:linear-gradient(135deg,#ef4444,#f97316);"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
+                    </div>
+                    <div class="tool-form-status" id="brStatus"></div>
                 </div>
                 <div class="tools-coming">
                     <i class="fas fa-plus-circle"></i> More QA tools coming soon

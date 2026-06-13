@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Request — QA-Toolbox</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 32px 20px 60px; }
+        .wrap { max-width: 860px; margin: 0 auto; }
+        .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+        .brand-icon { width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #06b6d4, #6366f1); display: flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; }
+        .brand h1 { font-size: 20px; font-weight: 700; }
+        .brand p { font-size: 12px; color: #94a3b8; }
+
+        .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 18px; margin-bottom: 18px; }
+        .card-title { font-size: 13px; font-weight: 700; color: #cbd5e1; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+        label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 6px; font-weight: 600; }
+        input, select, textarea {
+            width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 8px; color: #fff; font: 13px/1.5 inherit; padding: 9px 11px; outline: none;
+        }
+        input:focus, select:focus, textarea:focus { border-color: #6366f1; }
+        textarea { resize: vertical; min-height: 90px; font-family: monospace; }
+        select option { background: #1e293b; color: #fff; }
+
+        .method-row { display: grid; grid-template-columns: 150px 1fr; gap: 12px; }
+        .kv { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 8px; }
+        .kv .rm { width: 36px; background: rgba(239,68,68,0.15); border: none; color: #fca5a5; border-radius: 8px; cursor: pointer; }
+        .kv .rm:hover { background: rgba(239,68,68,0.3); }
+        .btn { border: none; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; }
+        .btn-outline { background: rgba(255,255,255,0.08); color: #cbd5e1; }
+        .btn-outline:hover { background: rgba(255,255,255,0.16); color: #fff; }
+        .btn-primary { background: linear-gradient(135deg, #06b6d4, #6366f1); color: #fff; }
+        .btn-primary:hover { filter: brightness(1.12); }
+        .row-2 { display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: end; }
+
+        .out { background: #0b1220; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px 14px; font: 12.5px/1.6 monospace; color: #93c5fd; white-space: pre-wrap; word-break: break-all; min-height: 60px; }
+        .out-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+        .desc { font-size: 13px; color: #94a3b8; margin-bottom: 18px; line-height: 1.6; }
+        .desc b { color: #cbd5e1; }
+
+        .empty { text-align: center; padding: 80px 20px; color: #94a3b8; }
+        .empty i { font-size: 32px; color: #ef4444; margin-bottom: 14px; }
+        .hidden { display: none; }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <div id="emptyView" class="empty hidden">
+            <i class="fas fa-triangle-exclamation"></i>
+            <p>No request found. Generate one from the QA-Toolbox Tools tab.</p>
+        </div>
+
+        <div id="mainView" class="hidden">
+            <div class="brand">
+                <div class="brand-icon"><i class="fas fa-paper-plane"></i></div>
+                <div>
+                    <h1>API Request Builder</h1>
+                    <p id="genDate"></p>
+                </div>
+            </div>
+            <div class="desc" id="desc"></div>
+
+            <div class="card">
+                <div class="method-row">
+                    <div><label>Method</label>
+                        <select id="method">
+                            <option>GET</option><option>POST</option><option>PUT</option>
+                            <option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
+                        </select>
+                    </div>
+                    <div><label>URL</label><input type="text" id="url" placeholder="https://api.example.com/endpoint"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title"><i class="fas fa-list"></i> Headers
+                    <button class="btn btn-outline" id="addHeader" style="margin-left:auto;"><i class="fas fa-plus"></i> Add</button>
+                </div>
+                <div id="headers"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-title"><i class="fas fa-code"></i> Request Body</div>
+                <div class="row-2" style="margin-bottom:10px;">
+                    <div><label>Body Type</label>
+                        <select id="bodyType">
+                            <option value="none">None</option>
+                            <option value="json">JSON</option>
+                            <option value="form">Form (x-www-form-urlencoded)</option>
+                            <option value="raw">Raw</option>
+                        </select>
+                    </div>
+                </div>
+                <textarea id="body" placeholder='{"key":"value"}'></textarea>
+            </div>
+
+            <div class="card">
+                <div class="card-title"><i class="fas fa-terminal"></i> cURL</div>
+                <div class="out" id="curlOut"></div>
+                <div class="out-actions">
+                    <button class="btn btn-primary" id="copyCurl"><i class="fas fa-copy"></i> Copy cURL</button>
+                    <button class="btn btn-outline" id="copyFetch"><i class="fab fa-js"></i> Copy as fetch()</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="apibuilder.js"></script>
+</body>
+
+</html>
