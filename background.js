@@ -608,7 +608,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 // Multi-pass: filling fields can reveal new conditional fields,
                 // so re-scan after each fill and handle anything new (max 3 passes)
                 for (let pass = 0; pass < 3; pass++) {
-                    const scan = await chrome.tabs.sendMessage(tabId, { action: 'scanFormFields' });
+                    // Only open comboboxes to read their options on the first pass -
+                    // re-opening them on every re-scan is the main slowdown
+                    const scan = await chrome.tabs.sendMessage(tabId, { action: 'scanFormFields', captureCombo: pass === 0 });
                     if (!scan || !scan.fields) break;
                     if (!pageUrl) pageUrl = scan.url;
                     if (scan.fields.length > 0) sawAnyField = true;
@@ -654,8 +656,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                         break;
                     }
 
-                    // Give the page a moment to render any conditional fields
-                    await new Promise(r => setTimeout(r, 1200));
+                    // Give the page a moment to render any conditional fields - but
+                    // skip the wait on the last pass (we won't re-scan after it)
+                    if (pass < 2) await new Promise(r => setTimeout(r, 500));
                 }
 
                 if (!sawAnyField) {
@@ -1421,8 +1424,9 @@ async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = fals
         '- Data must look realistic but be entirely fictional (fake emails, phone numbers, names).',
         '- COHERENCE: all values together must form ONE consistent, realistic submission. When a free-text field (textarea / notes / message / richtext) clearly depends on another field, write its text to MATCH that field. For example, if a "request type" / "category" select is set to "proposal", the notes must read as a proposal (not a question); if it is set to "complaint", the notes must read as a complaint. Read each field\'s label and the choices made elsewhere on the form, and make dependent text fields consistent with them.',
         ...(predetermined.length ? [
-            '- PREDETERMINED CHOICES: for the field indices listed below you MUST return EXACTLY the given option value (do not pick a different option). Then make any dependent free-text field (notes / message / subject) consistent with these choices:',
-            ...predetermined.map(p => `    - field index ${p.index} (${p.label || 'choice'}): "${p.display}"`)
+            '- PREDETERMINED CHOICES: for the field indices listed below you MUST return EXACTLY the given option value (do not pick a different option). These choices are FIXED INPUTS - build every other dependent field around them, never the other way round:',
+            ...predetermined.map(p => `    - field index ${p.index} (${p.label || 'choice'}): "${p.display}"`),
+            '  Specifically: if one of these is a phone COUNTRY CODE / dialing prefix (e.g. +966, +673), the phone number field MUST be generated to match THAT country\'s real format and length. And any notes/message/subject text must be consistent with the chosen request type/category.'
         ] : []),
         '- For select fields, the value MUST be exactly one of the provided option "value" strings (never the display text, never a placeholder option like "Select...").',
         '- For checkbox fields, return "true" to check the box or "false" to leave it unchecked. Terms, conditions, consent, and agreement checkboxes must be "true".',

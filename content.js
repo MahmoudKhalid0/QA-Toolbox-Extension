@@ -46,7 +46,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Keep channel open for async response
     }
     if (request.action === 'scanFormFields') {
-        (async () => { sendResponse(await scanPageFormFields()); })();
+        (async () => { sendResponse(await scanPageFormFields(request.captureCombo !== false)); })();
         return true;
     }
     if (request.action === 'showAiSavePrompt') {
@@ -387,7 +387,7 @@ async function captureComboboxOptions(el) {
     try {
         el.focus();
         el.click();
-        await new Promise(r => setTimeout(r, 350));
+        await new Promise(r => setTimeout(r, 220));
         const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
         let listbox = listId ? document.getElementById(listId) : null;
         if (!listbox || !isElementVisible(listbox)) {
@@ -402,14 +402,14 @@ async function captureComboboxOptions(el) {
         // Close the dropdown again so it doesn't interfere with the rest of the scan
         el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
         el.blur();
-        await new Promise(r => setTimeout(r, 80));
+        await new Promise(r => setTimeout(r, 40));
         return opts;
     } catch (e) {
         return [];
     }
 }
 
-async function scanPageFormFields() {
+async function scanPageFormFields(captureCombo = true) {
     const skipTypes = ['hidden', 'submit', 'button', 'reset', 'image', 'file'];
     const fields = [];
     const seenSelectors = new Set();
@@ -559,7 +559,7 @@ async function scanPageFormFields() {
                     field.options = opts.map(t => ({ value: t.substring(0, 60), text: t.substring(0, 60) }));
                 }
             }
-            if (!field.options || field.options.length === 0) {
+            if (captureCombo && (!field.options || field.options.length === 0)) {
                 const opts = await captureComboboxOptions(el);
                 if (opts.length > 0) {
                     field.options = opts.map(t => ({ value: t.substring(0, 60), text: t.substring(0, 60) }));
