@@ -46,7 +46,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Keep channel open for async response
     }
     if (request.action === 'scanFormFields') {
-        sendResponse(scanPageFormFields());
+        (async () => { sendResponse(await scanPageFormFields()); })();
+        return true;
     }
     if (request.action === 'showAiSavePrompt') {
         showAiSavePromptModal(request.profile);
@@ -380,7 +381,35 @@ function captureField(element) {
 
 // Scan visible form fields on the page for AI profile generation.
 // Includes text-like inputs, selects, textareas, checkboxes, and radio groups.
-function scanPageFormFields() {
+// Open a custom dropdown, read its options, then close it - so the AI gets the
+// real choices for comboboxes whose listbox isn't in the DOM until opened.
+async function captureComboboxOptions(el) {
+    try {
+        el.focus();
+        el.click();
+        await new Promise(r => setTimeout(r, 350));
+        const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
+        let listbox = listId ? document.getElementById(listId) : null;
+        if (!listbox || !isElementVisible(listbox)) {
+            listbox = Array.from(document.querySelectorAll('[role="listbox"]')).find(lb => isElementVisible(lb)) || null;
+        }
+        let opts = [];
+        if (listbox) {
+            let nodes = Array.from(listbox.querySelectorAll('[role="option"]'));
+            if (nodes.length === 0) nodes = Array.from(listbox.querySelectorAll('li'));
+            opts = nodes.map(o => (o.innerText || '').trim()).filter(Boolean).slice(0, 30);
+        }
+        // Close the dropdown again so it doesn't interfere with the rest of the scan
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        el.blur();
+        await new Promise(r => setTimeout(r, 80));
+        return opts;
+    } catch (e) {
+        return [];
+    }
+}
+
+async function scanPageFormFields() {
     const skipTypes = ['hidden', 'submit', 'button', 'reset', 'image', 'file'];
     const fields = [];
     const seenSelectors = new Set();
@@ -515,8 +544,9 @@ function scanPageFormFields() {
             field.checked = el.checked;
         }
 
-        // Custom dropdowns: try to read the options from the linked listbox (it may
-        // not be in the DOM until the dropdown is opened - that's handled at fill time)
+        // Custom dropdowns: read the options so the AI can pick a real one (and
+        // write dependent text fields to match it). Try the linked listbox first;
+        // if it isn't in the DOM yet, briefly open the dropdown to capture them.
         if (isCombobox) {
             const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
             const listbox = listId ? document.getElementById(listId) : null;
@@ -525,6 +555,12 @@ function scanPageFormFields() {
                     .map(o => (o.innerText || '').trim())
                     .filter(Boolean)
                     .slice(0, 30);
+                if (opts.length > 0) {
+                    field.options = opts.map(t => ({ value: t.substring(0, 60), text: t.substring(0, 60) }));
+                }
+            }
+            if (!field.options || field.options.length === 0) {
+                const opts = await captureComboboxOptions(el);
                 if (opts.length > 0) {
                     field.options = opts.map(t => ({ value: t.substring(0, 60), text: t.substring(0, 60) }));
                 }

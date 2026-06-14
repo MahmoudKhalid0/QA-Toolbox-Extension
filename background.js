@@ -931,6 +931,11 @@ function mapAiValuesToFields(ai, scannedFields) {
 
         let value = String(item.value);
 
+        // Guard against the AI misassigning a checkbox value ('true'/'false') to a
+        // text field - that would dump "true" into a notes/textarea field.
+        const isCheckboxField = scanned.type === 'checkbox';
+        if (!isCheckboxField && /^(true|false)$/i.test(value.trim())) continue;
+
         // Selects & radio groups: the AI sometimes returns the option's visible
         // text instead of its value attribute. Normalize to the real option value.
         if ((scanned.tag === 'select' || scanned.type === 'radio') && Array.isArray(scanned.options) && scanned.options.length > 0) {
@@ -947,10 +952,10 @@ function mapAiValuesToFields(ai, scannedFields) {
             }
         }
 
-        // Selects, radio groups, and custom comboboxes use the Sequential feature:
-        // first fill picks a RANDOM option, then each fill cycles to the next one
-        const isChoiceField = scanned.tag === 'select' || scanned.type === 'radio' || scanned.type === 'combobox';
-
+        // Choice fields keep the AI's chosen value (NOT sequential): the AI picks
+        // each option deliberately and writes dependent text fields (notes, etc.)
+        // to match it, so the actual selected value must stay what the AI decided.
+        // Variety still happens - each new AI Fill regenerates fresh, coherent values.
         fields.push({
             selector: scanned.selector,
             value: value,
@@ -958,7 +963,7 @@ function mapAiValuesToFields(ai, scannedFields) {
             type: scanned.type || 'text',
             uniqueText: false,
             uniqueNumber: false,
-            sequentialSelect: isChoiceField,
+            sequentialSelect: false,
             isSmartDate: false,
             dateDirection: 'future',
             dateFormat: 'DD/MM/YYYY',
@@ -1325,6 +1330,46 @@ async function generateFieldValueWithAI(apiKey, field, mode, url) {
 
 // Call the Claude API to generate test data for the scanned form fields.
 // Uses structured outputs (json_schema) so the response is always valid JSON.
+// For each choice field (select/radio/combobox) with options, pick the NEXT
+// option by rotating a per-field index stored in chrome.storage.local - so every
+// AI fill lands on a different option (your idea: remember + change each time).
+async function pickRotatingChoices(fields) {
+    const KEY = 'ai_choice_rotation';
+    const store = await chrome.storage.local.get([KEY]);
+    const rot = store[KEY] || {};
+    const out = [];
+
+    const isPlaceholder = (t) => {
+        t = (t || '').toLowerCase();
+        return !t || t.includes('select') || t.includes('choose') || t.includes('اختر') || t.includes('حدد') || t.includes('---');
+    };
+
+    for (const f of (fields || [])) {
+        const isChoice = f.tag === 'select' || f.type === 'radio' || f.type === 'combobox';
+        if (!isChoice || !Array.isArray(f.options) || f.options.length === 0) continue;
+
+        // Real options only (drop the "اختر..." placeholder)
+        const pool = f.options.filter(o => !isPlaceholder(o.text));
+        const list = pool.length ? pool : f.options;
+        if (list.length === 0) continue;
+
+        const key = f.selector || f.label || String(f.index);
+        const next = (rot[key] === undefined ? Math.floor(Math.random() * list.length) : (rot[key] + 1) % list.length);
+        rot[key] = next;
+        const choice = list[next];
+
+        out.push({
+            index: f.index,
+            label: f.label,
+            // select/radio match by value; combobox matches by visible text
+            display: f.type === 'combobox' ? choice.text : choice.value
+        });
+    }
+
+    await chrome.storage.local.set({ [KEY]: rot });
+    return out;
+}
+
 async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = false) {
     const schema = {
         type: 'object',
@@ -1355,6 +1400,12 @@ async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = fals
         additionalProperties: false
     };
 
+    // Pre-pick choice-field options OURSELVES by rotating through them (stored per
+    // field selector), so every fill lands on a DIFFERENT option even when the AI
+    // would otherwise keep choosing the same "obvious" one. The AI is then told to
+    // use these exact picks and write dependent text fields to match them.
+    const predetermined = await pickRotatingChoices(scan.fields);
+
     const prompt = [
         'You are generating realistic fake test data for a form-filling browser extension.',
         'Analyze the page context and the form fields below, then generate an appropriate test value for every field.',
@@ -1368,10 +1419,15 @@ async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = fals
         '- Even when a real form exists, SKIP page-control fields (search/filter/pagination/page-size) - generate values only for the form itself.',
         '- Match the language and locale of the page (e.g. Arabic page -> Arabic names, matching phone formats).',
         '- Data must look realistic but be entirely fictional (fake emails, phone numbers, names).',
+        '- COHERENCE: all values together must form ONE consistent, realistic submission. When a free-text field (textarea / notes / message / richtext) clearly depends on another field, write its text to MATCH that field. For example, if a "request type" / "category" select is set to "proposal", the notes must read as a proposal (not a question); if it is set to "complaint", the notes must read as a complaint. Read each field\'s label and the choices made elsewhere on the form, and make dependent text fields consistent with them.',
+        ...(predetermined.length ? [
+            '- PREDETERMINED CHOICES: for the field indices listed below you MUST return EXACTLY the given option value (do not pick a different option). Then make any dependent free-text field (notes / message / subject) consistent with these choices:',
+            ...predetermined.map(p => `    - field index ${p.index} (${p.label || 'choice'}): "${p.display}"`)
+        ] : []),
         '- For select fields, the value MUST be exactly one of the provided option "value" strings (never the display text, never a placeholder option like "Select...").',
         '- For checkbox fields, return "true" to check the box or "false" to leave it unchecked. Terms, conditions, consent, and agreement checkboxes must be "true".',
-        '- For radio fields, the value MUST be exactly one of the provided option "value" strings (pick the most sensible choice for a test submission).',
-        '- For combobox fields (custom dropdowns), return the visible TEXT of the option to choose. If options are provided pick one exactly; if not, return a short plausible choice based on the field label and the extension will pick the closest match.',
+        '- For radio fields, the value MUST be exactly one of the provided option "value" strings (vary the choice across fills, not always the same one).',
+        '- For combobox fields (custom dropdowns), return the visible TEXT of the option to choose. If options are provided pick one (varying your choice across fills); if not, return a short plausible choice based on the field label and the extension will pick the closest match.',
         '- For richtext fields (rich text editors), write 2-4 sentences of realistic PLAIN text (no HTML, no markdown) matching the field label and the page language.',
         '- Respect maxLength and the input type: email -> valid email format, tel -> phone number, number -> digits only, date -> YYYY-MM-DD, password -> strong password.',
         '- If there are password and confirm-password fields, use the same password for both.',
