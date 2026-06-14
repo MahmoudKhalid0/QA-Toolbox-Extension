@@ -62,11 +62,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         startInspectMode((el) => showXPathFinderPanel(el, mode));
         sendResponse({ success: true });
     }
-    if (request.action === 'contextFill') {
-        // Respond immediately so the background knows the page received the
-        // command (it retries with a fresh injection otherwise)
-        sendResponse({ received: true });
-        handleContextFill(request.mode);
+    if (request.action === 'settingsChanged') {
+        refreshFieldAiIconSetting();
     }
     if (request.action === 'updateFloatingButton' || request.action === 'recheckFloatingButton') {
         const enabled = request.action === 'updateFloatingButton' ? request.enabled : true;
@@ -1887,21 +1884,133 @@ function flashElement(element, color = '#10b981') {
     }, 600);
 }
 
-// ==================== Right-click Fill (context menu) ====================
-// Right-clicking an editable field offers: fill with valid data (AI) or
-// invalid data (AI, for negative testing).
+// ==================== Inline AI field icon ====================
+// A small AI icon appears on the focused editable field; clicking it offers
+// "valid data" / "invalid data" AI fills. Toggle via the fieldAiIcon setting.
 
-let lastContextTarget = null;
-document.addEventListener('contextmenu', (e) => { lastContextTarget = e.target; }, true);
+let fieldAiIconEnabled = true;
+let aiIconTarget = null;          // the field the icon currently belongs to
+let aiIconHideTimer = null;
+let aiMenuOpen = false;           // keep icon alive while its menu is open
 
-async function handleContextFill(mode) {
-    const el = (lastContextTarget && document.contains(lastContextTarget)) ? lastContextTarget : document.activeElement;
-    if (!el) return;
-    if (!el.isContentEditable && !['INPUT', 'TEXTAREA'].includes(el.tagName)) return;
+function refreshFieldAiIconSetting() {
+    chrome.runtime.sendMessage({ action: 'getSettings' }, (resp) => {
+        if (chrome.runtime.lastError) return;
+        fieldAiIconEnabled = !(resp && resp.settings && resp.settings.fieldAiIcon === false);
+        if (!fieldAiIconEnabled) hideFieldAiIcon();
+    });
+}
+refreshFieldAiIconSetting();
 
+function isFillableField(el) {
+    if (!el || el.disabled || el.readOnly) return false;
+    if (el.isContentEditable) return true;
+    if (el.tagName === 'TEXTAREA') return true;
+    if (el.tagName === 'INPUT') {
+        const t = (el.type || 'text').toLowerCase();
+        return !['checkbox', 'radio', 'submit', 'button', 'reset', 'file', 'image', 'hidden', 'range', 'color'].includes(t);
+    }
+    return false;
+}
+
+document.addEventListener('focusin', (e) => {
+    if (!fieldAiIconEnabled) return;
+    if (e.target.closest && e.target.closest('#ff-ai-field-icon, #ff-ai-field-menu')) return;
+    if (!isFillableField(e.target)) return;
+    aiIconTarget = e.target;
+    showFieldAiIcon(e.target);
+}, true);
+
+document.addEventListener('focusout', () => {
+    // Delay so a mousedown on the icon/menu isn't lost to the blur
+    clearTimeout(aiIconHideTimer);
+    aiIconHideTimer = setTimeout(hideFieldAiIcon, 200);
+}, true);
+
+function positionFieldAiIcon() {
+    const icon = document.getElementById('ff-ai-field-icon');
+    if (!icon || !aiIconTarget || !document.contains(aiIconTarget)) { hideFieldAiIcon(); return; }
+    const r = aiIconTarget.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) { hideFieldAiIcon(); return; }
+    // Sit OUTSIDE the field (just past its right edge) so it never covers the
+    // text - and flip to the left edge if there's no room on the right
+    const top = r.top + Math.max(0, (r.height - 22) / 2);
+    let left = r.right + 6;
+    if (left + 22 > window.innerWidth - 4) left = r.left - 28;
+    icon.style.top = top + 'px';
+    icon.style.left = left + 'px';
+}
+
+function showFieldAiIcon(el) {
+    clearTimeout(aiIconHideTimer);
+    let icon = document.getElementById('ff-ai-field-icon');
+    if (!icon) {
+        icon = document.createElement('div');
+        icon.id = 'ff-ai-field-icon';
+        icon.title = 'AI fill this field';
+        icon.style.cssText = 'position:fixed;z-index:2147483646;width:22px;height:22px;border-radius:6px;' +
+            'background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;display:flex;align-items:center;justify-content:center;' +
+            'cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.35);font-size:11px;transition:transform 0.15s;';
+        icon.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i>';
+        // mousedown.preventDefault keeps the field focused (no blur) when clicking
+        icon.addEventListener('mousedown', (e) => e.preventDefault());
+        icon.addEventListener('mouseenter', () => { icon.style.transform = 'scale(1.12)'; });
+        icon.addEventListener('mouseleave', () => { icon.style.transform = 'scale(1)'; });
+        icon.addEventListener('click', (e) => { e.stopPropagation(); toggleFieldAiMenu(); });
+        document.body.appendChild(icon);
+        window.addEventListener('scroll', positionFieldAiIcon, true);
+        window.addEventListener('resize', positionFieldAiIcon, true);
+    }
+    icon.style.display = 'flex';
+    positionFieldAiIcon();
+}
+
+function hideFieldAiIcon() {
+    const icon = document.getElementById('ff-ai-field-icon');
+    if (icon) icon.style.display = 'none';
+    const menu = document.getElementById('ff-ai-field-menu');
+    if (menu) menu.remove();
+}
+
+function toggleFieldAiMenu() {
+    const existing = document.getElementById('ff-ai-field-menu');
+    if (existing) { existing.remove(); return; }
+    const icon = document.getElementById('ff-ai-field-icon');
+    if (!icon) return;
+
+    const menu = document.createElement('div');
+    menu.id = 'ff-ai-field-menu';
+    menu.style.cssText = 'position:fixed;z-index:2147483647;background:rgba(15,15,35,0.97);backdrop-filter:blur(8px);' +
+        'border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:5px;box-shadow:0 8px 28px rgba(0,0,0,0.5);' +
+        'font-family:\'Segoe UI\',Arial,sans-serif;min-width:160px;';
+    menu.innerHTML = `
+        <div class="ff-ai-opt" data-mode="valid" style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:7px;cursor:pointer;color:#e0e0e0;font-size:13px;">
+            <i class="fas fa-circle-check" style="color:#4ade80;"></i> Fill with valid data
+        </div>
+        <div class="ff-ai-opt" data-mode="invalid" style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:7px;cursor:pointer;color:#e0e0e0;font-size:13px;">
+            <i class="fas fa-circle-xmark" style="color:#f87171;"></i> Fill with invalid data
+        </div>`;
+    menu.addEventListener('mousedown', (e) => e.preventDefault()); // keep field focused
+    menu.querySelectorAll('.ff-ai-opt').forEach(opt => {
+        opt.addEventListener('mouseenter', () => { opt.style.background = 'rgba(99,102,241,0.25)'; });
+        opt.addEventListener('mouseleave', () => { opt.style.background = 'transparent'; });
+        opt.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const mode = opt.dataset.mode;
+            menu.remove();
+            if (aiIconTarget) runFieldAiFill(aiIconTarget, mode);
+        });
+    });
+    document.body.appendChild(menu);
+    const ir = icon.getBoundingClientRect();
+    // Open below the icon, nudging left so it stays on screen
+    menu.style.top = (ir.bottom + 4) + 'px';
+    menu.style.left = Math.max(4, Math.min(ir.left - 134, window.innerWidth - menu.offsetWidth - 6)) + 'px';
+}
+
+async function runFieldAiFill(el, mode) {
+    if (!el || !document.contains(el)) return;
     const info = collectContextFieldInfo(el);
-
-    // Pulse the field while waiting for the AI value
     const stopPulse = startFieldPulse(el);
     try {
         const resp = await new Promise((resolve) => {
@@ -1914,7 +2023,7 @@ async function handleContextFill(mode) {
             );
         });
         if (resp.error || resp.value === undefined || resp.value === null) {
-            console.warn('Context fill failed:', resp.error);
+            console.warn('AI field fill failed:', resp.error);
             flashElement(el, '#ef4444');
             return;
         }

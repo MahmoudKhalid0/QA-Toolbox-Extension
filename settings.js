@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         reflectFloatingAiFillState(e.target.checked);
     });
     document.getElementById('floatingAiFillToggle').addEventListener('change', (e) => updateSetting('floatingAiFill', e.target.checked));
+    document.getElementById('fieldAiIconToggle').addEventListener('change', (e) => updateSetting('fieldAiIcon', e.target.checked));
 
     // AI Save Behavior Handler
     document.getElementById('aiSaveBehaviorSelect').addEventListener('change', async (e) => {
@@ -118,6 +119,7 @@ async function loadSettings() {
 
     document.getElementById('floatingButtonToggle').checked = !!settings.showFloatingButton;
     document.getElementById('floatingAiFillToggle').checked = !!settings.floatingAiFill;
+    document.getElementById('fieldAiIconToggle').checked = settings.fieldAiIcon !== false;
     reflectFloatingAiFillState(!!settings.showFloatingButton);
 
     // AI save behavior lives in local storage (set here or via the on-page prompt)
@@ -131,7 +133,7 @@ async function updateSetting(key, value) {
     const settings = result.formFillerSettings || { randomDigits: 5 };
 
     // Explicitly handle boolean types for toggles
-    if (key === 'showFloatingButton' || key === 'floatingAiFill') {
+    if (key === 'showFloatingButton' || key === 'floatingAiFill' || key === 'fieldAiIcon') {
         settings[key] = !!value;
     } else {
         settings[key] = value;
@@ -141,15 +143,17 @@ async function updateSetting(key, value) {
     chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
     showToast('Settings saved!');
 
-    // Re-evaluate the floating button on open pages when either setting changes
-    if (key === 'showFloatingButton' || key === 'floatingAiFill') {
-        const tabs = await chrome.tabs.query({});
-        tabs.forEach(tab => {
-            if (tab.id) {
-                chrome.tabs.sendMessage(tab.id, { action: 'recheckFloatingButton' }).catch(() => { });
-            }
-        });
-    }
+    // Push the relevant change to open pages
+    const tabs = await chrome.tabs.query({});
+    tabs.forEach(tab => {
+        if (!tab.id) return;
+        if (key === 'showFloatingButton' || key === 'floatingAiFill') {
+            chrome.tabs.sendMessage(tab.id, { action: 'recheckFloatingButton' }).catch(() => { });
+        }
+        if (key === 'fieldAiIcon') {
+            chrome.tabs.sendMessage(tab.id, { action: 'settingsChanged' }).catch(() => { });
+        }
+    });
 }
 
 // The AI-fill sub-setting only applies when the floating button is on

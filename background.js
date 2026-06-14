@@ -8,30 +8,6 @@ if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => { });
 }
 
-// Right-click menu on form fields: fill the field with valid / invalid data
-chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: 'qa-fill-valid', title: 'Fill with valid data (AI)', contexts: ['editable'] });
-    chrome.contextMenus.create({ id: 'qa-fill-invalid', title: 'Fill with invalid data (AI)', contexts: ['editable'] });
-});
-
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-    const modes = { 'qa-fill-valid': 'valid', 'qa-fill-invalid': 'invalid' };
-    const mode = modes[info.menuItemId];
-    if (!mode || !tab || !tab.id) return;
-    try {
-        await chrome.tabs.sendMessage(tab.id, { action: 'contextFill', mode });
-    } catch (e) {
-        // Content script not alive (extension was reloaded) - inject and retry
-        try {
-            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-            await new Promise(r => setTimeout(r, 150));
-            await chrome.tabs.sendMessage(tab.id, { action: 'contextFill', mode });
-        } catch (e2) {
-            console.warn('Context fill: could not reach the page', e2);
-        }
-    }
-});
-
 // Migration: Move profiles from sync/local storage to IndexedDB
 (async () => {
     try {
@@ -494,7 +470,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === 'getSettings') {
         chrome.storage.sync.get(['formFillerSettings'], (result) => {
-            const defaultSettings = { randomDigits: 5, showFloatingButton: true, floatingAiFill: false };
+            const defaultSettings = { randomDigits: 5, showFloatingButton: true, floatingAiFill: false, fieldAiIcon: true };
             sendResponse({ settings: result.formFillerSettings || defaultSettings });
         });
         return true;
