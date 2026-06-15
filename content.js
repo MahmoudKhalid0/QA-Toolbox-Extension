@@ -1922,9 +1922,10 @@ document.addEventListener('focusin', (e) => {
 }, true);
 
 document.addEventListener('focusout', () => {
+    if (aiMenuOpen) return; // keep the icon while its menu is open
     // Delay so a mousedown on the icon/menu isn't lost to the blur
     clearTimeout(aiIconHideTimer);
-    aiIconHideTimer = setTimeout(hideFieldAiIcon, 200);
+    aiIconHideTimer = setTimeout(() => { if (!aiMenuOpen) hideFieldAiIcon(); }, 200);
 }, true);
 
 function positionFieldAiIcon() {
@@ -1966,6 +1967,7 @@ function showFieldAiIcon(el) {
 }
 
 function hideFieldAiIcon() {
+    aiMenuOpen = false;
     const icon = document.getElementById('ff-ai-field-icon');
     if (icon) icon.style.display = 'none';
     const menu = document.getElementById('ff-ai-field-menu');
@@ -1974,9 +1976,14 @@ function hideFieldAiIcon() {
 
 function toggleFieldAiMenu() {
     const existing = document.getElementById('ff-ai-field-menu');
-    if (existing) { existing.remove(); return; }
+    if (existing) { existing.remove(); aiMenuOpen = false; return; }
     const icon = document.getElementById('ff-ai-field-icon');
     if (!icon) return;
+
+    // Keep the field focused (no blur). We open the menu ABOVE the icon so the
+    // browser's native autocomplete - which renders below the field and always
+    // draws on top - can't cover it.
+    aiMenuOpen = true;
 
     const menu = document.createElement('div');
     menu.id = 'ff-ai-field-menu';
@@ -1997,21 +2004,37 @@ function toggleFieldAiMenu() {
         opt.addEventListener('click', (e) => {
             e.stopPropagation();
             const mode = opt.dataset.mode;
-            menu.remove();
-            if (aiIconTarget) runFieldAiFill(aiIconTarget, mode);
+            const target = aiIconTarget;
+            menu.remove();              // close the menu only
+            aiMenuOpen = false;
+            if (target) runFieldAiFill(target, mode);
         });
     });
     document.body.appendChild(menu);
     const ir = icon.getBoundingClientRect();
-    // Open below the icon, nudging left so it stays on screen
-    menu.style.top = (ir.bottom + 4) + 'px';
-    menu.style.left = Math.max(4, Math.min(ir.left - 134, window.innerWidth - menu.offsetWidth - 6)) + 'px';
+    // Prefer opening ABOVE the icon (away from the autocomplete below the field);
+    // fall back to below only if there's no room above
+    let top = ir.top - menu.offsetHeight - 4;
+    if (top < 4) top = ir.bottom + 4;
+    menu.style.top = top + 'px';
+    menu.style.left = Math.max(4, Math.min(ir.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 6)) + 'px';
+
+    // Close when clicking anywhere outside the icon/menu (the field is blurred,
+    // so focusout won't fire to close it)
+    const onOutside = (ev) => {
+        if (ev.target.closest && ev.target.closest('#ff-ai-field-icon, #ff-ai-field-menu')) return;
+        document.removeEventListener('mousedown', onOutside, true);
+        hideFieldAiIcon();
+    };
+    setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
 }
 
 async function runFieldAiFill(el, mode) {
     if (!el || !document.contains(el)) return;
     const info = collectContextFieldInfo(el);
-    const stopPulse = startFieldPulse(el);
+    // Site-independent progress pill (the field outline pulse is unreliable on
+    // pages with aggressive styles)
+    showFabAiStatus('loading', mode === 'invalid' ? 'Generating invalid data…' : 'Generating valid data…');
     try {
         const resp = await new Promise((resolve) => {
             chrome.runtime.sendMessage(
@@ -2024,38 +2047,27 @@ async function runFieldAiFill(el, mode) {
         });
         if (resp.error || resp.value === undefined || resp.value === null) {
             console.warn('AI field fill failed:', resp.error);
+            const msg = resp.error === 'no_api_key' ? 'AI key is not configured'
+                : resp.error ? ('AI fill failed: ' + resp.error)
+                    : 'AI fill failed';
+            showFabAiStatus('error', msg);
             flashElement(el, '#ef4444');
             return;
         }
         setContextFieldValue(el, resp.value);
+        showFabAiStatus('success', 'Field filled');
         flashElement(el);
-    } finally {
-        stopPulse();
+        // Keep the icon available on the field after filling (don't make the user
+        // click away and back). Re-show if the field is still the active one.
+        if (fieldAiIconEnabled && document.contains(el) && (document.activeElement === el || el.isContentEditable)) {
+            aiIconTarget = el;
+            showFieldAiIcon(el);
+        }
+    } catch (e) {
+        showFabAiStatus('error', 'AI fill failed');
     }
 }
 
-function startFieldPulse(el) {
-    const original = {
-        outline: el.style.getPropertyValue('outline'),
-        outlineOffset: el.style.getPropertyValue('outline-offset'),
-        transition: el.style.transition
-    };
-    el.style.transition = 'outline-color 0.45s';
-    // !important so the pulse beats the page's own focus/outline styles
-    el.style.setProperty('outline', '3px dashed #6366f1', 'important');
-    el.style.setProperty('outline-offset', '2px', 'important');
-    let on = true;
-    const iv = setInterval(() => {
-        el.style.setProperty('outline-color', on ? '#c7d2fe' : '#6366f1', 'important');
-        on = !on;
-    }, 450);
-    return () => {
-        clearInterval(iv);
-        el.style.setProperty('outline', original.outline);
-        el.style.setProperty('outline-offset', original.outlineOffset);
-        el.style.transition = original.transition;
-    };
-}
 
 function collectContextFieldInfo(el) {
     let label = '';
