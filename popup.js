@@ -353,7 +353,8 @@ const TOOL_SECTIONS = [
     { card: 'inspectorToolBtn', panel: 'inspectorOptions' },
     { card: 'testCasesCard', panel: 'testCasesForm' },
     { card: 'apiBuilderCard', panel: 'apiBuilderForm' },
-    { card: 'bugReportCard', panel: 'bugReportForm' }
+    { card: 'bugReportCard', panel: 'bugReportForm' },
+    { card: 'timerCard', panel: 'timerForm' }
 ];
 function toggleToolSection(cardId, panelId) {
     const willOpen = document.getElementById(panelId).classList.contains('hidden');
@@ -531,6 +532,92 @@ document.getElementById('aiXpathBtn').addEventListener('click', () => startXPath
             }
         });
     });
+})();
+
+// ── Countdown Timer (local to the side panel) ──
+(function setupTimer() {
+    const card = document.getElementById('timerCard');
+    card.addEventListener('click', () => toggleToolSection('timerCard', 'timerForm'));
+
+    const display = document.getElementById('timerDisplay');
+    const inputs = document.getElementById('timerInputs');
+    const startBtn = document.getElementById('timerStart');
+    const pauseBtn = document.getElementById('timerPause');
+    const resetBtn = document.getElementById('timerReset');
+    const hIn = document.getElementById('timerH');
+    const mIn = document.getElementById('timerM');
+    const sIn = document.getElementById('timerS');
+
+    const TICK = 100;        // ms - fine-grained so decimals count properly
+    let remainingMs = 0;     // milliseconds left
+    let intervalId = null;
+
+    const fmt = (ms) => {
+        const total = Math.ceil(ms / 1000); // show whole seconds, rounding up
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
+    };
+    const render = () => { display.textContent = fmt(remainingMs); };
+
+    const tick = () => {
+        remainingMs -= TICK;
+        if (remainingMs <= 0) {
+            remainingMs = 0;
+            render();
+            clearInterval(intervalId);
+            intervalId = null;
+            display.classList.add('finished');
+            startBtn.classList.remove('hidden'); startBtn.innerHTML = '<i class="fas fa-play"></i> Start';
+            pauseBtn.classList.add('hidden');
+            return;
+        }
+        render();
+    };
+
+    const start = () => {
+        // Resume if paused mid-countdown; otherwise read the inputs (decimals allowed)
+        if (remainingMs <= 0) {
+            const h = Math.min(99, Math.max(0, parseFloat(hIn.value) || 0));
+            const m = Math.min(59.999, Math.max(0, parseFloat(mIn.value) || 0));
+            const s = Math.min(59.999, Math.max(0, parseFloat(sIn.value) || 0));
+            remainingMs = Math.round((h * 3600 + m * 60 + s) * 1000);
+        }
+        if (remainingMs <= 0) return; // nothing to count
+        display.classList.remove('finished');
+        render();
+        inputs.classList.add('hidden');
+        startBtn.classList.add('hidden');
+        pauseBtn.classList.remove('hidden');
+        resetBtn.classList.remove('hidden');
+        intervalId = setInterval(tick, TICK);
+    };
+
+    const pause = () => {
+        clearInterval(intervalId);
+        intervalId = null;
+        pauseBtn.classList.add('hidden');
+        startBtn.classList.remove('hidden');
+        startBtn.innerHTML = '<i class="fas fa-play"></i> Resume';
+    };
+
+    const reset = () => {
+        clearInterval(intervalId);
+        intervalId = null;
+        remainingMs = 0;
+        display.classList.remove('finished');
+        render();
+        inputs.classList.remove('hidden');
+        startBtn.classList.remove('hidden');
+        startBtn.innerHTML = '<i class="fas fa-play"></i> Start';
+        pauseBtn.classList.add('hidden');
+        resetBtn.classList.add('hidden');
+    };
+
+    startBtn.addEventListener('click', start);
+    pauseBtn.addEventListener('click', pause);
+    resetBtn.addEventListener('click', reset);
 })();
 
 // AI Create Profile button - scans the form, generates data via Claude, saves and fills

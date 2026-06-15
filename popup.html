@@ -440,6 +440,40 @@
         .tool-form-thumb button { position: absolute; top: -7px; right: -7px; background: #ef4444; border: none; color: #fff; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 10px; }
         .tool-form-status { font-size: 11.5px; margin-top: 8px; min-height: 14px; }
 
+        /* Countdown timer */
+        .timer-display {
+            font-size: 34px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            text-align: center;
+            color: #fff;
+            letter-spacing: 2px;
+            margin: 4px 0 12px;
+            font-family: 'Segoe UI', monospace;
+        }
+        .timer-display.finished { animation: timerFlash 0.8s ease-in-out infinite; }
+        @keyframes timerFlash {
+            0%, 100% { color: #fff; }
+            50% { color: #ef4444; }
+        }
+        .timer-inputs { display: flex; gap: 8px; justify-content: center; margin-bottom: 12px; }
+        .timer-inputs.hidden { display: none; }
+        .timer-unit { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .timer-unit input {
+            width: 56px; text-align: center; background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; color: #fff;
+            font-size: 16px; padding: 8px 4px; outline: none;
+        }
+        .timer-unit input:focus { border-color: #f59e0b; }
+        .timer-unit span { font-size: 10px; color: rgba(255, 255, 255, 0.5); text-transform: uppercase; }
+        .timer-btn {
+            border: none; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 700;
+            color: #fff; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+            background: rgba(255, 255, 255, 0.12);
+        }
+        .timer-btn:hover { background: rgba(255, 255, 255, 0.22); }
+        .timer-btn.hidden, .tool-form-gen.hidden { display: none; }
+
         .tools-coming {
             border: 1px dashed rgba(255, 255, 255, 0.15);
             border-radius: 14px;
@@ -1408,6 +1442,38 @@
                         <button class="tool-form-gen" id="brGenerate" style="background:linear-gradient(135deg,#ef4444,#f97316);"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
                     </div>
                     <div class="tool-form-status" id="brStatus"></div>
+                </div>
+                <button class="tool-card" id="timerCard" title="Countdown Timer">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #f59e0b, #ef4444);">
+                        <i class="fas fa-stopwatch"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>Countdown Timer</h4>
+                        <p>Set hours, minutes &amp; seconds and count down &mdash; pause and resume any time</p>
+                    </div>
+                    <i class="fas fa-chevron-down tool-card-chevron"></i>
+                </button>
+                <div class="tool-form hidden" id="timerForm">
+                    <div class="timer-display" id="timerDisplay">00:00:00</div>
+                    <div class="timer-inputs" id="timerInputs">
+                        <div class="timer-unit">
+                            <input type="number" id="timerH" min="0" max="99" placeholder="0">
+                            <span>hours</span>
+                        </div>
+                        <div class="timer-unit">
+                            <input type="number" id="timerM" min="0" max="59" placeholder="0">
+                            <span>min</span>
+                        </div>
+                        <div class="timer-unit">
+                            <input type="number" id="timerS" min="0" max="59" placeholder="0">
+                            <span>sec</span>
+                        </div>
+                    </div>
+                    <div class="tool-form-row">
+                        <button class="tool-form-gen" id="timerStart" style="background:linear-gradient(135deg,#f59e0b,#ef4444);"><i class="fas fa-play"></i> Start</button>
+                        <button class="timer-btn hidden" id="timerPause"><i class="fas fa-pause"></i> Pause</button>
+                        <button class="timer-btn hidden" id="timerReset"><i class="fas fa-rotate-left"></i> Reset</button>
+                    </div>
                 </div>
                 <div class="tools-coming">
                     <i class="fas fa-plus-circle"></i> More QA tools coming soon
