@@ -940,6 +940,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Security: gather facts (SSL + headers + cookies) then let the AI assess them
+    if (request.action === 'aiSecurityScan') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
+                const data = await scanSecurity(request.url);
+                const ai = await securityScanWithAI(AI_CONFIG.apiKey, data, request.url);
+                sendResponse({ data, ai });
+            } catch (err) {
+                console.error('aiSecurityScan error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Selection tools: translate the selected text (smart model)
     if (request.action === 'aiTranslateText') {
         (async () => {
@@ -1254,6 +1270,156 @@ async function explainNetworkWithAI(apiKey, reqs, url) {
         '',
         `Page URL: ${url || ''}`,
         `Failed requests (newest last): ${JSON.stringify(items)}`
+    ].join('\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
+            max_tokens: 4096,
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content: prompt }]
+        })
+    });
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
+        throw new Error(message);
+    }
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
+    const block = (data.content || []).find(b => b.type === 'text');
+    if (!block || !block.text) throw new Error('Empty AI response');
+    return JSON.parse(block.text);
+}
+
+// ===== Security scan: deterministic checks on the current page =====
+const SECURITY_HEADERS = [
+    { name: 'Content-Security-Policy', score: 20, desc: 'Prevents XSS and injection attacks', validate: (v) => ({ pass: true, warning: (/'unsafe-inline'|'unsafe-eval'/.test(v)) ? 'Contains unsafe-inline/unsafe-eval directives' : null }) },
+    { name: 'Strict-Transport-Security', score: 15, desc: 'Forces HTTPS connections', validate: (v) => { const m = v.match(/max-age=(\d+)/i); const age = m ? parseInt(m[1], 10) : 0; return { pass: true, warning: age < 31536000 ? 'max-age should be at least 1 year (31536000)' : (!/includeSubDomains/i.test(v) ? 'Consider adding includeSubDomains' : null) }; } },
+    { name: 'X-Frame-Options', score: 10, desc: 'Prevents clickjacking' },
+    { name: 'X-Content-Type-Options', score: 10, desc: 'Prevents MIME-type sniffing' },
+    { name: 'Referrer-Policy', score: 5, desc: 'Controls referrer information leakage' },
+    { name: 'Permissions-Policy', score: 5, desc: 'Restricts powerful browser features' },
+    { name: 'X-XSS-Protection', score: 2, desc: 'Legacy XSS filter (deprecated but still seen)' },
+    { name: 'Clear-Site-Data', score: 3, desc: 'Allows clearing site data on logout' }
+];
+
+async function scanSecurity(url) {
+    const results = {
+        score: 0, url,
+        ssl: { status: 'Unknown', protocol: 'Unknown' },
+        checks: [],
+        cookies: { total: 0, risky: 0, details: [] }
+    };
+
+    const isHttps = /^https:\/\//i.test(url);
+    const isHttp = /^http:\/\//i.test(url);
+    const isLocal = /^(file|chrome|chrome-extension|edge|about):/i.test(url);
+
+    // 1. SSL / HTTPS
+    if (isLocal) { results.ssl = { status: 'Local/Extension', protocol: 'Local' }; results.score += 20; }
+    else if (isHttps) { results.ssl = { status: 'Secure', protocol: 'HTTPS' }; results.score += 20; }
+    else if (isHttp) { results.ssl = { status: 'Insecure', protocol: 'HTTP' }; }
+
+    // 2. Security headers (re-fetch the document with the extension's host access)
+    let headerMap = {};
+    if (isHttps || isHttp) {
+        try {
+            const resp = await fetch(url, { method: 'GET', credentials: 'include', cache: 'no-store', redirect: 'follow' });
+            resp.headers.forEach((v, k) => { headerMap[k.toLowerCase()] = v; });
+        } catch (e) {
+            results.headersError = 'Could not fetch page headers: ' + (e.message || e);
+        }
+    }
+    SECURITY_HEADERS.forEach(h => {
+        const value = headerMap[h.name.toLowerCase()];
+        let pass = !!value, warning = null;
+        if (h.validate && value) { const r = h.validate(value); pass = r.pass; warning = r.warning; }
+        if (pass) results.score += h.score;
+        results.checks.push({
+            name: h.name, status: pass ? 'Passed' : 'Missing',
+            value: value || 'Not found', description: h.desc,
+            impact: pass ? 'positive' : 'negative', warning
+        });
+    });
+
+    // 3. Cookies
+    try {
+        const cookies = await chrome.cookies.getAll({ url });
+        results.cookies.total = cookies.length;
+        cookies.forEach(c => {
+            const missingHttpOnly = !c.httpOnly;
+            const missingSecure = isHttps && !c.secure;
+            const riskySameSite = (c.sameSite === 'no_restriction' || c.sameSite === 'None') && !c.secure;
+            const risks = [
+                missingHttpOnly ? 'Missing HttpOnly (readable by JS / XSS risk)' : null,
+                missingSecure ? 'Missing Secure flag (sent over HTTP)' : null,
+                riskySameSite ? 'SameSite=None without Secure (CSRF risk)' : null
+            ].filter(Boolean);
+            const risky = risks.length > 0;
+            if (risky) results.cookies.risky++;
+            results.cookies.details.push({ name: c.name, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite || 'lax', risky, risks });
+        });
+        if (cookies.length > 0) results.score += Math.round(((cookies.length - results.cookies.risky) / cookies.length) * 15);
+        else results.score += 15;
+    } catch (e) {
+        results.cookiesError = String(e.message || e);
+    }
+
+    results.score = Math.max(0, Math.min(100, results.score));
+    return results;
+}
+
+// AI: assess the gathered security facts - produce score, grade, summary + findings.
+async function securityScanWithAI(apiKey, scan, url) {
+    const facts = {
+        url,
+        ssl: scan.ssl,
+        headers: (scan.checks || []).map(c => ({ name: c.name, present: c.impact === 'positive', value: c.value, warning: c.warning || '', purpose: c.description })),
+        headersError: scan.headersError || '',
+        cookies: { total: scan.cookies.total, risky: scan.cookies.risky, details: (scan.cookies.details || []).map(c => ({ name: c.name, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite, risks: c.risks })) }
+    };
+
+    const schema = {
+        type: 'object',
+        properties: {
+            score: { type: 'integer', description: 'overall security score from 0 (very weak) to 100 (excellent)' },
+            grade: { type: 'string', enum: ['good', 'medium', 'poor'] },
+            summary: { type: 'string', description: 'one-line plain-language overall verdict' },
+            findings: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        title: { type: 'string', description: 'short title of the issue' },
+                        severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+                        area: { type: 'string', enum: ['connection', 'headers', 'cookies', 'other'] },
+                        cause: { type: 'string', description: 'what the risk is, in plain language' },
+                        fix: { type: 'string', description: 'concrete remediation (for headers, give the exact header and a recommended value)' }
+                    },
+                    required: ['title', 'severity', 'area', 'cause', 'fix'],
+                    additionalProperties: false
+                }
+            }
+        },
+        required: ['score', 'grade', 'summary', 'findings'],
+        additionalProperties: false
+    };
+
+    const prompt = [
+        'You are a senior web security engineer auditing a web page. Below are the gathered facts: SSL/connection, which security headers are present/missing (with values), and cookies with their flags.',
+        'Assess the overall posture: give a score 0-100, a grade, and a one-line summary.',
+        'Then list the concrete issues - for each: a title, severity, the area, the risk in plain language, and a specific fix (for a missing/weak header, give the exact header name and a recommended value).',
+        'Base everything ONLY on the facts provided. Do not invent issues. If the page is solid, return few or no findings and a high score. Write in English.',
+        '',
+        `Facts: ${JSON.stringify(facts)}`
     ].join('\n');
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {

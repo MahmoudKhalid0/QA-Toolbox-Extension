@@ -10,6 +10,7 @@
         "webNavigation",
         "sidePanel",
         "tabs",
+        "cookies",
         "identity",
         "identity.email"
     ],

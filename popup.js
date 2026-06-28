@@ -765,14 +765,94 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
         });
     }
 
-    // ── Console/Network mode switcher ──
+    // ── Security panel: AI-driven scan (gather facts -> AI assessment) ──
+    const secResult = () => document.getElementById('secResult');
+    const secStatus = () => document.getElementById('secStatus');
+
+    function secRow(pass, name, desc, value, warning) {
+        const cls = pass ? (warning ? 'warn' : 'pass') : 'fail';
+        const icon = pass ? (warning ? 'fa-triangle-exclamation' : 'fa-circle-check') : 'fa-circle-xmark';
+        return `<div class="sec-row ${cls}">
+            <i class="fas ${icon}"></i>
+            <div class="sec-body">
+                <div class="sec-name">${dEsc(name)}</div>
+                ${desc ? `<div class="sec-desc">${dEsc(desc)}</div>` : ''}
+                ${warning ? `<div class="sec-warn"><i class="fas fa-triangle-exclamation"></i> ${dEsc(warning)}</div>` : ''}
+                ${value ? `<div class="sec-val">${dEsc(value)}</div>` : ''}
+            </div>
+        </div>`;
+    }
+
+    // The gathered facts, shown as evidence below the AI assessment
+    function factsHtml(s) {
+        const sslPass = s.ssl.protocol === 'HTTPS' || s.ssl.protocol === 'Local';
+        let html = `<div class="sec-group-title">Connection</div>`;
+        html += secRow(sslPass, 'SSL / HTTPS', 'Encrypts traffic between browser and server', s.ssl.status + ' (' + s.ssl.protocol + ')', s.ssl.protocol === 'HTTP' ? 'Page served over insecure HTTP' : null);
+        html += `<div class="sec-group-title">Security headers</div>`;
+        if (s.headersError) html += `<div class="dbg-empty">${dEsc(s.headersError)}</div>`;
+        s.checks.forEach(c => { html += secRow(c.impact === 'positive', c.name, c.description, c.status === 'Passed' ? c.value : c.status, c.warning); });
+        html += `<div class="sec-group-title">Cookies (${s.cookies.total})</div>`;
+        if (s.cookiesError) html += `<div class="dbg-empty">${dEsc(s.cookiesError)}</div>`;
+        else if (!s.cookies.total) html += secRow(true, 'No cookies', 'This page set no cookies', '', null);
+        else s.cookies.details.forEach(c => {
+            const flags = `HttpOnly:${c.httpOnly ? '✓' : '✗'}  Secure:${c.secure ? '✓' : '✗'}  SameSite:${c.sameSite}`;
+            html += secRow(!c.risky, c.name, flags, c.risks.join(' · '), null);
+        });
+        return html;
+    }
+
+    function renderAiScan(ai, data) {
+        const grade = ai.grade === 'good' ? 'good' : ai.grade === 'medium' ? 'mid' : 'bad';
+        const score = Math.max(0, Math.min(100, ai.score || 0));
+        let html = `<div class="sec-score-wrap">
+            <div class="sec-score ${grade}" style="--p:${Math.round(score * 3.6)}deg"><span>${score}</span></div>
+            <div class="sec-score-info"><h4>Security score: ${score}/100</h4><p>${dEsc(ai.summary || '')}</p></div>
+        </div>`;
+
+        const findings = ai.findings || [];
+        if (findings.length) {
+            html += `<div class="sec-group-title">AI findings</div>`;
+            html += findings.map(f => `<div class="dbg-finding">
+                <h5>${dEsc(f.title)} <span class="sev ${dEsc(f.severity)}">${dEsc(f.severity)}</span> <span class="sec-area">${dEsc(f.area || '')}</span></h5>
+                <p>${dEsc(f.cause)}</p>
+                <p class="fix"><i class="fas fa-lightbulb"></i> ${dEsc(f.fix)}</p>
+            </div>`).join('');
+        } else {
+            html += `<div class="dbg-empty">No issues found — the page looks solid. ✅</div>`;
+        }
+
+        html += `<details class="sec-facts"><summary>Scanned details</summary>${factsHtml(data)}</details>`;
+        secResult().innerHTML = html;
+    }
+
+    document.getElementById('secScanBtn').addEventListener('click', async () => {
+        const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!t || !t.url) { secStatus().style.color = '#f87171'; secStatus().textContent = 'No active page.'; return; }
+        const btn = document.getElementById('secScanBtn');
+        btn.disabled = true;
+        secStatus().style.color = '#94a3b8';
+        secStatus().innerHTML = '<i class="fas fa-spinner fa-spin"></i> Scanning & analyzing with AI…';
+        chrome.runtime.sendMessage({ action: 'aiSecurityScan', url: t.url }, (resp) => {
+            btn.disabled = false;
+            if (chrome.runtime.lastError || !resp || resp.error) {
+                secStatus().style.color = '#f87171';
+                secStatus().textContent = (resp && resp.error === 'no_api_key') ? 'AI key not configured (Settings)' : 'Failed: ' + ((resp && resp.error) || 'error');
+                return;
+            }
+            secStatus().textContent = '';
+            renderAiScan(resp.ai || {}, resp.data || { ssl: {}, checks: [], cookies: { total: 0, details: [] } });
+        });
+    });
+
+    // ── Console/Network/Security mode switcher ──
     document.querySelectorAll('.dbg-mode').forEach(b => b.addEventListener('click', () => {
         mode = b.dataset.mode;
         document.querySelectorAll('.dbg-mode').forEach(x => x.classList.toggle('active', x === b));
         document.getElementById('dbg-console-panel').classList.toggle('hidden', mode !== 'console');
         document.getElementById('dbg-network-panel').classList.toggle('hidden', mode !== 'network');
+        document.getElementById('dbg-security-panel').classList.toggle('hidden', mode !== 'security');
         if (mode === 'console') { if (!viewingFindings) render(); }
-        else { if (!netViewingFindings) netRender(); }
+        else if (mode === 'network') { if (!netViewingFindings) netRender(); }
     }));
 
     // Poll always (lightweight) so the tab badge stays live; list re-renders only
