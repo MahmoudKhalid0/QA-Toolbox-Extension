@@ -956,6 +956,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Link Health: check a list of links for broken/dead URLs
+    if (request.action === 'checkLinks') {
+        (async () => {
+            try {
+                const results = await checkLinks(request.links || []);
+                sendResponse({ results });
+            } catch (err) {
+                console.error('checkLinks error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+    // AI: explain/group broken links and suggest fixes
+    if (request.action === 'aiExplainLinks') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
+                const result = await explainLinksWithAI(AI_CONFIG.apiKey, request.broken, request.url);
+                sendResponse({ findings: result.findings });
+            } catch (err) {
+                console.error('aiExplainLinks error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Selection tools: translate the selected text (smart model)
     if (request.action === 'aiTranslateText') {
         (async () => {
@@ -1299,6 +1327,108 @@ async function explainNetworkWithAI(apiKey, reqs, url) {
     return JSON.parse(block.text);
 }
 
+// ===== Link Health: check links for broken/dead URLs (concurrent, capped) =====
+async function checkOneLink(href) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+        let resp = await fetch(href, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal, credentials: 'omit' });
+        // Some servers reject HEAD - retry with GET
+        if (resp.status === 405 || resp.status === 501 || resp.status === 403) {
+            resp = await fetch(href, { method: 'GET', redirect: 'follow', signal: ctrl.signal, credentials: 'omit' });
+        }
+        clearTimeout(timer);
+        return { status: resp.status, ok: resp.ok, redirected: resp.redirected, finalUrl: resp.url };
+    } catch (e) {
+        clearTimeout(timer);
+        return { status: 0, ok: false, error: e.name === 'AbortError' ? 'Timeout' : (e.message || 'Network error') };
+    }
+}
+
+async function checkLinks(links) {
+    const CONCURRENCY = 6;
+    const results = new Array(links.length);
+    let idx = 0;
+    async function worker() {
+        while (idx < links.length) {
+            const i = idx++;
+            const r = await checkOneLink(links[i].href);
+            results[i] = { ...links[i], ...r };
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, links.length) }, worker));
+    return results;
+}
+
+// AI: group/prioritize broken links and suggest likely causes/fixes.
+async function explainLinksWithAI(apiKey, broken, url) {
+    const items = (broken || []).slice(0, 40).map(l => ({
+        href: String(l.href || '').slice(0, 300),
+        text: String(l.text || '').slice(0, 100),
+        status: l.status, error: l.error || ''
+    }));
+    if (!items.length) return { findings: [] };
+
+    const schema = {
+        type: 'object',
+        properties: {
+            findings: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        title: { type: 'string', description: 'short title of the issue/group' },
+                        severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+                        cause: { type: 'string', description: 'likely reason the link(s) are broken' },
+                        fix: { type: 'string', description: 'concrete suggestion (fix the URL, remove it, etc.)' },
+                        relatedMessage: { type: 'string', description: 'the link(s) this is about' }
+                    },
+                    required: ['title', 'severity', 'cause', 'fix', 'relatedMessage'],
+                    additionalProperties: false
+                }
+            }
+        },
+        required: ['findings'],
+        additionalProperties: false
+    };
+
+    const prompt = [
+        'You are a senior web QA engineer. Below are broken/unreachable links found on a web page (HTTP status or network error).',
+        'GROUP related broken links (same domain, same path pattern, same status) and explain them: for each give a title, severity, the likely cause, and a concrete fix.',
+        'A 404 is a missing page; 0/Timeout/Network error may be a dead domain, an offline server, or a link that blocks automated checks; 401/403 may be auth-protected (not truly broken). Note that distinction.',
+        'Base everything only on the data. Do not invent links. Write in English.',
+        '',
+        `Page URL: ${url || ''}`,
+        `Broken links: ${JSON.stringify(items)}`
+    ].join('\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
+            max_tokens: 4096,
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content: prompt }]
+        })
+    });
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
+        throw new Error(message);
+    }
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
+    const block = (data.content || []).find(b => b.type === 'text');
+    if (!block || !block.text) throw new Error('Empty AI response');
+    return JSON.parse(block.text);
+}
+
 // ===== Security scan: deterministic checks on the current page =====
 const SECURITY_HEADERS = [
     { name: 'Content-Security-Policy', score: 20, desc: 'Prevents XSS and injection attacks', validate: (v) => ({ pass: true, warning: (/'unsafe-inline'|'unsafe-eval'/.test(v)) ? 'Contains unsafe-inline/unsafe-eval directives' : null }) },
@@ -1331,11 +1461,17 @@ async function scanSecurity(url) {
     // 2. Security headers (re-fetch the document with the extension's host access)
     let headerMap = {};
     if (isHttps || isHttp) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 8000);
         try {
-            const resp = await fetch(url, { method: 'GET', credentials: 'include', cache: 'no-store', redirect: 'follow' });
+            const resp = await fetch(url, { method: 'GET', credentials: 'include', cache: 'no-store', redirect: 'follow', signal: ctrl.signal });
             resp.headers.forEach((v, k) => { headerMap[k.toLowerCase()] = v; });
         } catch (e) {
-            results.headersError = 'Could not fetch page headers: ' + (e.message || e);
+            results.headersError = e.name === 'AbortError'
+                ? 'Headers request timed out (the server may use a self-signed certificate that blocks background requests).'
+                : 'Could not fetch page headers: ' + (e.message || e);
+        } finally {
+            clearTimeout(timer);
         }
     }
     SECURITY_HEADERS.forEach(h => {

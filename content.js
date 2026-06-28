@@ -67,6 +67,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         startInspectMode(handleImageOcrPick);
         sendResponse({ success: true });
     }
+    if (request.action === 'runLinkHealth') {
+        runLinkHealth();
+        sendResponse({ success: true });
+    }
+    if (request.action === 'runSecurityScan') {
+        runSecurityScan();
+        sendResponse({ success: true });
+    }
     if (request.action === 'settingsChanged') {
         refreshFieldAiIconSetting();
     }
@@ -2483,6 +2491,263 @@ function collectContextFieldInfo(el) {
         max: el.max || undefined,
         autocomplete: el.autocomplete || undefined
     };
+}
+
+// ==================== On-page results panel (Link Health / Security) ====================
+function qaEsc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+function qaClosePanel() {
+    const p = document.getElementById('qa-result-panel');
+    if (p) p.remove();
+}
+
+// Open the floating panel; returns the .qa-body element to fill.
+function qaOpenPanel(titleHtml) {
+    qaClosePanel();
+    const panel = document.createElement('div');
+    panel.id = 'qa-result-panel';
+    panel.innerHTML = `
+        <style>
+            #qa-result-panel {
+                position: fixed; top: 16px; right: 16px; width: 380px; max-height: 84vh;
+                z-index: 2147483647; display: flex; flex-direction: column;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                border: 2px solid rgba(139, 92, 246, 0.5); border-radius: 14px;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff;
+                font-family: 'Segoe UI', Arial, sans-serif; direction: ltr; font-size: 13px;
+            }
+            #qa-result-panel .qa-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+            #qa-result-panel .qa-title { font: 700 13.5px/1.4 'Segoe UI', Arial; display: flex; align-items: center; gap: 8px; }
+            #qa-result-panel .qa-close { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
+            #qa-result-panel .qa-close:hover { background: rgba(255,255,255,0.22); }
+            #qa-result-panel .qa-body { padding: 12px 14px; overflow-y: auto; }
+            #qa-result-panel .qa-empty { text-align: center; color: #94a3b8; padding: 24px 8px; }
+            /* Link rows */
+            #qa-result-panel .qa-sum { display: flex; gap: 8px; margin-bottom: 12px; }
+            #qa-result-panel .qa-stat { flex: 1; background: rgba(255,255,255,0.05); border-radius: 10px; padding: 9px; text-align: center; }
+            #qa-result-panel .qa-stat .n { font-size: 19px; font-weight: 800; }
+            #qa-result-panel .qa-stat .l { font-size: 9.5px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; margin-top: 2px; }
+            #qa-result-panel .qa-stat.ok .n { color: #6ee7b7; } #qa-result-panel .qa-stat.bad .n { color: #f87171; }
+            #qa-result-panel .lhrow { display: flex; gap: 8px; align-items: center; padding: 7px 9px; border-radius: 8px; background: rgba(255,255,255,0.03); border-left: 3px solid #475569; margin-bottom: 4px; }
+            #qa-result-panel .lhst { font-weight: 700; font-size: 10.5px; font-family: Consolas, monospace; min-width: 30px; text-align: center; flex-shrink: 0; }
+            #qa-result-panel .s-ok.lhrow, #qa-result-panel .lhrow.s-ok { border-left-color: #10b981; } #qa-result-panel .lhst.s-ok { color: #6ee7b7; }
+            #qa-result-panel .lhrow.s-redir { border-left-color: #f59e0b; } #qa-result-panel .lhst.s-redir { color: #fcd34d; }
+            #qa-result-panel .lhrow.s-auth { border-left-color: #0ea5e9; } #qa-result-panel .lhst.s-auth { color: #7dd3fc; }
+            #qa-result-panel .lhrow.s-forbid { border-left-color: #a855f7; } #qa-result-panel .lhst.s-forbid { color: #c084fc; }
+            #qa-result-panel .lhrow.s-broken { border-left-color: #ef4444; background: rgba(239,68,68,0.07); } #qa-result-panel .lhst.s-broken { color: #f87171; }
+            #qa-result-panel .lhrow.s-unknown { border-left-color: #64748b; } #qa-result-panel .lhst.s-unknown { color: #94a3b8; }
+            #qa-result-panel .lhinfo { flex: 1; min-width: 0; }
+            #qa-result-panel .lhhref { color: #60a5fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            #qa-result-panel .lhtext { color: #94a3b8; font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+            #qa-result-panel .qa-btn { width: 100%; border: none; border-radius: 8px; padding: 9px; font-size: 12px; font-weight: 600; cursor: pointer; color: #fff; background: linear-gradient(135deg, #8b5cf6, #6366f1); margin-bottom: 10px; }
+            #qa-result-panel .qa-btn:hover { filter: brightness(1.12); }
+            #qa-result-panel .qa-btn:disabled { opacity: .6; cursor: wait; }
+            /* Findings */
+            #qa-result-panel .qa-find { background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.3); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
+            #qa-result-panel .qa-find h5 { font-size: 12.5px; margin: 0 0 4px; display: flex; align-items: center; gap: 7px; }
+            #qa-result-panel .qa-find .sev { font-size: 8.5px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 7px; }
+            #qa-result-panel .qa-find .sev.high { background: rgba(239,68,68,0.2); color: #fca5a5; }
+            #qa-result-panel .qa-find .sev.medium { background: rgba(245,158,11,0.2); color: #fcd34d; }
+            #qa-result-panel .qa-find .sev.low { background: rgba(16,185,129,0.2); color: #6ee7b7; }
+            #qa-result-panel .qa-find p { font-size: 12px; color: #cbd5e1; line-height: 1.6; margin: 4px 0 0; }
+            #qa-result-panel .qa-find .fix { color: #7dd3fc; }
+            /* Security */
+            #qa-result-panel .qa-score-wrap { display: flex; align-items: center; gap: 14px; background: rgba(255,255,255,0.04); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+            #qa-result-panel .qa-score { width: 58px; height: 58px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 800; flex-shrink: 0; }
+            #qa-result-panel .qa-score.good { background: conic-gradient(#10b981 var(--p), rgba(255,255,255,0.08) 0); }
+            #qa-result-panel .qa-score.mid { background: conic-gradient(#f59e0b var(--p), rgba(255,255,255,0.08) 0); }
+            #qa-result-panel .qa-score.bad { background: conic-gradient(#ef4444 var(--p), rgba(255,255,255,0.08) 0); }
+            #qa-result-panel .qa-score span { background: #15152b; width: 46px; height: 46px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+            #qa-result-panel .qa-score-info h4 { font-size: 13px; margin: 0 0 3px; }
+            #qa-result-panel .qa-score-info p { font-size: 11.5px; color: #94a3b8; margin: 0; }
+            #qa-result-panel .qa-secrow { display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px; border-radius: 8px; background: rgba(255,255,255,0.03); margin-bottom: 4px; }
+            #qa-result-panel .qa-secrow.pass { border-left: 3px solid #10b981; } #qa-result-panel .qa-secrow.fail { border-left: 3px solid #ef4444; } #qa-result-panel .qa-secrow.warn { border-left: 3px solid #f59e0b; }
+            #qa-result-panel .qa-secrow .nm { font-weight: 600; }
+            #qa-result-panel .qa-secrow .ds { color: #94a3b8; font-size: 11px; margin-top: 2px; }
+            #qa-result-panel .qa-grp { font-size: 9.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: #64748b; margin: 12px 0 6px; }
+        </style>
+        <div class="qa-head">
+            <span class="qa-title">${titleHtml}</span>
+            <button class="qa-close" id="qa-close" title="Close">&#10005;</button>
+        </div>
+        <div class="qa-body" id="qa-body"><div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Working…</div></div>
+    `;
+    document.body.appendChild(panel);
+    panel.querySelector('#qa-close').addEventListener('click', qaClosePanel);
+    return panel.querySelector('#qa-body');
+}
+
+// ---- Link Health (runs in the page so same-origin cert/session apply) ----
+function lhClassify(r) {
+    const s = r.status;
+    if (s >= 200 && s < 300) return { kind: 's-ok', label: String(s) };
+    if (s >= 300 && s < 400) return { kind: 's-redir', label: String(s) };
+    if (s === 401) return { kind: 's-auth', label: '401' };
+    if (s === 403) return { kind: 's-forbid', label: '403' };
+    if (s >= 400) return { kind: 's-broken', label: String(s) };
+    return { kind: 's-unknown', label: r.error ? 'ERR' : '0' };
+}
+const LH_COLORS = { 's-ok': '#10b981', 's-redir': '#f59e0b', 's-auth': '#0ea5e9', 's-forbid': '#a855f7', 's-broken': '#ef4444', 's-unknown': '#64748b' };
+function lhIsBroken(r) { return (r.status >= 400 && r.status !== 401 && r.status !== 403) || (r.status === 0 && r.error && r.error !== 'Timeout'); }
+
+function qaToolDone(tool) { try { chrome.runtime.sendMessage({ action: 'toolScanDone', tool }); } catch (e) { } }
+
+async function runLinkHealth() {
+    const body = qaOpenPanel('&#128279; Link Health');
+    try {
+        await runLinkHealthInner(body);
+    } finally {
+        qaToolDone('links');
+    }
+}
+
+async function runLinkHealthInner(body) {
+    // Collect unique links + keep element refs (for on-page colouring)
+    const map = new Map();
+    document.querySelectorAll('a[href]').forEach(a => {
+        const href = a.href;
+        if (!href || !/^https?:/i.test(href)) return;
+        if (!map.has(href)) map.set(href, { href, text: (a.textContent || '').trim().slice(0, 100), els: [] });
+        map.get(href).els.push(a);
+    });
+    let links = [...map.values()];
+    if (!links.length) { body.innerHTML = '<div class="qa-empty">No links found on this page.</div>'; return; }
+    const MAX = 200;
+    links = links.slice(0, MAX);
+    body.innerHTML = `<div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Checking ${links.length} link(s)…</div>`;
+
+    const origin = location.origin;
+    const same = links.filter(l => { try { return new URL(l.href).origin === origin; } catch (e) { return false; } });
+    const cross = links.filter(l => !same.includes(l));
+
+    async function checkHere(list) {
+        const out = new Array(list.length); let i = 0;
+        async function worker() {
+            while (i < list.length) {
+                const idx = i++; const href = list[idx].href;
+                const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 8000);
+                try {
+                    let r = await fetch(href, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal });
+                    if (r.status === 405 || r.status === 501) r = await fetch(href, { method: 'GET', redirect: 'follow', signal: ctrl.signal });
+                    clearTimeout(timer); out[idx] = { status: r.status, ok: r.ok, redirected: r.redirected };
+                } catch (e) { clearTimeout(timer); out[idx] = { status: 0, ok: false, error: e.name === 'AbortError' ? 'Timeout' : (e.message || 'Failed') }; }
+            }
+        }
+        await Promise.all(Array.from({ length: Math.min(6, list.length) }, worker));
+        return out;
+    }
+    function checkBg(list) {
+        return new Promise(resolve => {
+            chrome.runtime.sendMessage({ action: 'checkLinks', links: list.map(l => ({ href: l.href })) }, (resp) => {
+                if (chrome.runtime.lastError || !resp || resp.error) { resolve(list.map(() => ({ status: 0, ok: false, error: 'check failed' }))); return; }
+                resolve((resp.results || []).map(r => ({ status: r.status, ok: r.ok, error: r.error, redirected: r.redirected })));
+            });
+        });
+    }
+
+    const [sameRes, crossRes] = await Promise.all([
+        same.length ? checkHere(same) : Promise.resolve([]),
+        cross.length ? checkBg(cross) : Promise.resolve([])
+    ]);
+    same.forEach((l, i) => Object.assign(l, sameRes[i] || { status: 0, ok: false }));
+    cross.forEach((l, i) => Object.assign(l, crossRes[i] || { status: 0, ok: false }));
+
+    // Colour the actual links on the page by status
+    links.forEach(l => {
+        const c = lhClassify(l); const color = LH_COLORS[c.kind];
+        l.els.forEach(el => {
+            if (!el.isConnected) return;
+            el.style.setProperty('outline', `2px solid ${color}`, 'important');
+            el.style.setProperty('outline-offset', '1px', 'important');
+            el.setAttribute('data-qa-link', c.label);
+            el.title = `QA Link Health: ${l.status === 0 ? (l.error || 'Unreachable') : l.status}`;
+        });
+    });
+
+    lhRenderResults(body, links);
+}
+
+let lhBrokenCache = [];
+function lhRenderResults(body, links) {
+    const order = { 's-broken': 0, 's-unknown': 1, 's-redir': 2, 's-auth': 3, 's-forbid': 4, 's-ok': 5 };
+    const rows = links.map(l => ({ l, c: lhClassify(l) })).sort((a, b) => order[a.c.kind] - order[b.c.kind]);
+    lhBrokenCache = links.filter(lhIsBroken).map(l => ({ href: l.href, text: l.text, status: l.status, error: l.error }));
+    const okCount = links.filter(l => l.status >= 200 && l.status < 400).length;
+
+    let html = `<div class="qa-sum">
+        <div class="qa-stat"><div class="n">${links.length}</div><div class="l">Checked</div></div>
+        <div class="qa-stat ok"><div class="n">${okCount}</div><div class="l">OK</div></div>
+        <div class="qa-stat bad"><div class="n">${lhBrokenCache.length}</div><div class="l">Broken</div></div>
+    </div>`;
+    if (lhBrokenCache.length) html += `<button class="qa-btn" id="lh-explain"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Fix (${lhBrokenCache.length})</button>`;
+    html += rows.map(({ l, c }) => `<div class="lhrow ${c.kind}">
+        <span class="lhst ${c.kind}">${qaEsc(c.label)}</span>
+        <div class="lhinfo"><div class="lhhref">${qaEsc(l.href)}</div>${l.text ? `<div class="lhtext">${qaEsc(l.text)}</div>` : ''}</div>
+    </div>`).join('');
+    body.innerHTML = html;
+
+    const ex = body.querySelector('#lh-explain');
+    if (ex) ex.addEventListener('click', () => {
+        ex.disabled = true; ex.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing with AI…';
+        chrome.runtime.sendMessage({ action: 'aiExplainLinks', broken: lhBrokenCache, url: location.href }, (resp) => {
+            if (chrome.runtime.lastError || !resp || resp.error) {
+                ex.disabled = false; ex.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Explain & Fix';
+                alert((resp && resp.error === 'no_api_key') ? 'AI key not configured in the extension settings.' : 'AI failed: ' + ((resp && resp.error) || 'error'));
+                return;
+            }
+            const findings = resp.findings || [];
+            let h = `<button class="qa-btn" id="lh-back" style="background:rgba(255,255,255,0.12);"><i class="fas fa-arrow-left"></i> Back to links</button>`;
+            h += findings.length ? findings.map(f => `<div class="qa-find">
+                <h5>${qaEsc(f.title)} <span class="sev ${qaEsc(f.severity)}">${qaEsc(f.severity)}</span></h5>
+                <p>${qaEsc(f.cause)}</p><p class="fix"><i class="fas fa-lightbulb"></i> ${qaEsc(f.fix)}</p></div>`).join('')
+                : '<div class="qa-empty">The AI found nothing actionable.</div>';
+            body.innerHTML = h;
+            body.querySelector('#lh-back').addEventListener('click', () => lhRenderResults(body, links));
+        });
+    });
+}
+
+// ---- Security scan (panel on the page; scan runs in the background) ----
+function runSecurityScan() {
+    const body = qaOpenPanel('&#128737; Security Scan');
+    body.innerHTML = '<div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Scanning &amp; analyzing with AI…</div>';
+    chrome.runtime.sendMessage({ action: 'aiSecurityScan', url: location.href }, (resp) => {
+        if (chrome.runtime.lastError || !resp || resp.error) {
+            body.innerHTML = `<div class="qa-empty">${(resp && resp.error === 'no_api_key') ? 'AI key not configured in the extension settings.' : 'Scan failed: ' + qaEsc((chrome.runtime.lastError && chrome.runtime.lastError.message) || (resp && resp.error) || 'error')}</div>`;
+            return;
+        }
+        secRenderPanel(body, resp.ai || {}, resp.data || { ssl: {}, checks: [], cookies: { total: 0, details: [] } });
+    });
+}
+
+function secRenderPanel(body, ai, data) {
+    const grade = ai.grade === 'good' ? 'good' : ai.grade === 'medium' ? 'mid' : 'bad';
+    const score = Math.max(0, Math.min(100, ai.score || 0));
+    let html = `<div class="qa-score-wrap">
+        <div class="qa-score ${grade}" style="--p:${Math.round(score * 3.6)}deg"><span>${score}</span></div>
+        <div class="qa-score-info"><h4>Security score: ${score}/100</h4><p>${qaEsc(ai.summary || '')}</p></div>
+    </div>`;
+    const findings = ai.findings || [];
+    if (findings.length) {
+        html += `<div class="qa-grp">AI findings</div>`;
+        html += findings.map(f => `<div class="qa-find">
+            <h5>${qaEsc(f.title)} <span class="sev ${qaEsc(f.severity)}">${qaEsc(f.severity)}</span></h5>
+            <p>${qaEsc(f.cause)}</p><p class="fix"><i class="fas fa-lightbulb"></i> ${qaEsc(f.fix)}</p></div>`).join('');
+    } else {
+        html += `<div class="qa-empty">No issues found — the page looks solid. ✅</div>`;
+    }
+    // Scanned facts
+    const secrow = (cls, nm, ds) => `<div class="qa-secrow ${cls}"><div><div class="nm">${qaEsc(nm)}</div>${ds ? `<div class="ds">${qaEsc(ds)}</div>` : ''}</div></div>`;
+    html += `<div class="qa-grp">Connection</div>`;
+    const sslPass = data.ssl.protocol === 'HTTPS' || data.ssl.protocol === 'Local';
+    html += secrow(sslPass ? 'pass' : 'fail', 'SSL / HTTPS', `${data.ssl.status} (${data.ssl.protocol})`);
+    html += `<div class="qa-grp">Security headers</div>`;
+    if (data.headersError) html += `<div class="qa-empty">${qaEsc(data.headersError)}</div>`;
+    (data.checks || []).forEach(c => html += secrow(c.impact === 'positive' ? (c.warning ? 'warn' : 'pass') : 'fail', c.name, c.warning || (c.status === 'Passed' ? c.value : c.status)));
+    html += `<div class="qa-grp">Cookies (${data.cookies.total})</div>`;
+    if (!data.cookies.total) html += secrow('pass', 'No cookies', 'This page set no cookies');
+    else (data.cookies.details || []).forEach(c => html += secrow(c.risky ? 'fail' : 'pass', c.name, `HttpOnly:${c.httpOnly ? '✓' : '✗'} Secure:${c.secure ? '✓' : '✗'} SameSite:${c.sameSite}${c.risks && c.risks.length ? ' — ' + c.risks.join(' · ') : ''}`));
+    body.innerHTML = html;
 }
 
 // ==================== Image Text Extractor (OCR) ====================

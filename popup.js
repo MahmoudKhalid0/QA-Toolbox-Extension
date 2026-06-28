@@ -389,6 +389,22 @@ document.getElementById('inspectorToolBtn').addEventListener('click', () => {
     toggleToolSection('inspectorToolBtn', 'inspectorOptions');
 });
 
+// ── Link Health card → runs in the page (content.js checks, colours links & shows the panel) ──
+document.getElementById('linksToolBtn').addEventListener('click', async () => {
+    const card = document.getElementById('linksToolBtn');
+    if (card.classList.contains('scanning')) return;
+    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!t || !t.url || /^(chrome|chrome-extension|about|edge|file):/i.test(t.url)) {
+        showToastMessage('Open a website first', 'error'); return;
+    }
+    card.classList.add('scanning');
+    await ensureContentScript(t.id);
+    chrome.tabs.sendMessage(t.id, { action: 'runLinkHealth' }, () => {
+        if (chrome.runtime.lastError) { card.classList.remove('scanning'); showToastMessage('Could not run on this page (reload it)', 'error'); }
+        // otherwise keep "scanning" until content.js reports it finished (toolScanDone)
+    });
+});
+
 document.getElementById('inspectBtn').addEventListener('click', async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -765,82 +781,19 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
         });
     }
 
-    // ── Security panel: AI-driven scan (gather facts -> AI assessment) ──
-    const secResult = () => document.getElementById('secResult');
-    const secStatus = () => document.getElementById('secStatus');
-
-    function secRow(pass, name, desc, value, warning) {
-        const cls = pass ? (warning ? 'warn' : 'pass') : 'fail';
-        const icon = pass ? (warning ? 'fa-triangle-exclamation' : 'fa-circle-check') : 'fa-circle-xmark';
-        return `<div class="sec-row ${cls}">
-            <i class="fas ${icon}"></i>
-            <div class="sec-body">
-                <div class="sec-name">${dEsc(name)}</div>
-                ${desc ? `<div class="sec-desc">${dEsc(desc)}</div>` : ''}
-                ${warning ? `<div class="sec-warn"><i class="fas fa-triangle-exclamation"></i> ${dEsc(warning)}</div>` : ''}
-                ${value ? `<div class="sec-val">${dEsc(value)}</div>` : ''}
-            </div>
-        </div>`;
-    }
-
-    // The gathered facts, shown as evidence below the AI assessment
-    function factsHtml(s) {
-        const sslPass = s.ssl.protocol === 'HTTPS' || s.ssl.protocol === 'Local';
-        let html = `<div class="sec-group-title">Connection</div>`;
-        html += secRow(sslPass, 'SSL / HTTPS', 'Encrypts traffic between browser and server', s.ssl.status + ' (' + s.ssl.protocol + ')', s.ssl.protocol === 'HTTP' ? 'Page served over insecure HTTP' : null);
-        html += `<div class="sec-group-title">Security headers</div>`;
-        if (s.headersError) html += `<div class="dbg-empty">${dEsc(s.headersError)}</div>`;
-        s.checks.forEach(c => { html += secRow(c.impact === 'positive', c.name, c.description, c.status === 'Passed' ? c.value : c.status, c.warning); });
-        html += `<div class="sec-group-title">Cookies (${s.cookies.total})</div>`;
-        if (s.cookiesError) html += `<div class="dbg-empty">${dEsc(s.cookiesError)}</div>`;
-        else if (!s.cookies.total) html += secRow(true, 'No cookies', 'This page set no cookies', '', null);
-        else s.cookies.details.forEach(c => {
-            const flags = `HttpOnly:${c.httpOnly ? '✓' : '✗'}  Secure:${c.secure ? '✓' : '✗'}  SameSite:${c.sameSite}`;
-            html += secRow(!c.risky, c.name, flags, c.risks.join(' · '), null);
-        });
-        return html;
-    }
-
-    function renderAiScan(ai, data) {
-        const grade = ai.grade === 'good' ? 'good' : ai.grade === 'medium' ? 'mid' : 'bad';
-        const score = Math.max(0, Math.min(100, ai.score || 0));
-        let html = `<div class="sec-score-wrap">
-            <div class="sec-score ${grade}" style="--p:${Math.round(score * 3.6)}deg"><span>${score}</span></div>
-            <div class="sec-score-info"><h4>Security score: ${score}/100</h4><p>${dEsc(ai.summary || '')}</p></div>
-        </div>`;
-
-        const findings = ai.findings || [];
-        if (findings.length) {
-            html += `<div class="sec-group-title">AI findings</div>`;
-            html += findings.map(f => `<div class="dbg-finding">
-                <h5>${dEsc(f.title)} <span class="sev ${dEsc(f.severity)}">${dEsc(f.severity)}</span> <span class="sec-area">${dEsc(f.area || '')}</span></h5>
-                <p>${dEsc(f.cause)}</p>
-                <p class="fix"><i class="fas fa-lightbulb"></i> ${dEsc(f.fix)}</p>
-            </div>`).join('');
-        } else {
-            html += `<div class="dbg-empty">No issues found — the page looks solid. ✅</div>`;
-        }
-
-        html += `<details class="sec-facts"><summary>Scanned details</summary>${factsHtml(data)}</details>`;
-        secResult().innerHTML = html;
-    }
-
-    document.getElementById('secScanBtn').addEventListener('click', async () => {
+    // ── Security card → runs in the page (content.js shows the panel) ──
+    const secCard = document.getElementById('securityToolBtn');
+    secCard.addEventListener('click', async () => {
+        if (secCard.classList.contains('scanning')) return;
         const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!t || !t.url) { secStatus().style.color = '#f87171'; secStatus().textContent = 'No active page.'; return; }
-        const btn = document.getElementById('secScanBtn');
-        btn.disabled = true;
-        secStatus().style.color = '#94a3b8';
-        secStatus().innerHTML = '<i class="fas fa-spinner fa-spin"></i> Scanning & analyzing with AI…';
-        chrome.runtime.sendMessage({ action: 'aiSecurityScan', url: t.url }, (resp) => {
-            btn.disabled = false;
-            if (chrome.runtime.lastError || !resp || resp.error) {
-                secStatus().style.color = '#f87171';
-                secStatus().textContent = (resp && resp.error === 'no_api_key') ? 'AI key not configured (Settings)' : 'Failed: ' + ((resp && resp.error) || 'error');
-                return;
-            }
-            secStatus().textContent = '';
-            renderAiScan(resp.ai || {}, resp.data || { ssl: {}, checks: [], cookies: { total: 0, details: [] } });
+        if (!t || !t.url || /^(chrome|chrome-extension|about|edge|file):/i.test(t.url)) {
+            showToastMessage('Open a website first', 'error'); return;
+        }
+        secCard.classList.add('scanning');
+        await ensureContentScript(t.id);
+        chrome.tabs.sendMessage(t.id, { action: 'runSecurityScan' }, () => {
+            if (chrome.runtime.lastError) { secCard.classList.remove('scanning'); showToastMessage('Could not run on this page (reload it)', 'error'); }
+            // otherwise keep "scanning" until content.js reports it finished (toolScanDone)
         });
     });
 
@@ -850,7 +803,6 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
         document.querySelectorAll('.dbg-mode').forEach(x => x.classList.toggle('active', x === b));
         document.getElementById('dbg-console-panel').classList.toggle('hidden', mode !== 'console');
         document.getElementById('dbg-network-panel').classList.toggle('hidden', mode !== 'network');
-        document.getElementById('dbg-security-panel').classList.toggle('hidden', mode !== 'security');
         if (mode === 'console') { if (!viewingFindings) render(); }
         else if (mode === 'network') { if (!netViewingFindings) netRender(); }
     }));
@@ -1428,3 +1380,14 @@ function escapeHtml(text) {
     div.textContent = text || '';
     return div.innerHTML;
 }
+
+// content.js reports when an on-page tool (Link Health / Security) finishes,
+// so the card stays in its "scanning" state (and unclickable) until then.
+chrome.runtime.onMessage.addListener((req) => {
+    if (req && req.action === 'toolScanDone') {
+        const id = req.tool === 'security' ? 'securityToolBtn' : 'linksToolBtn';
+        const c = document.getElementById(id);
+        if (c) c.classList.remove('scanning');
+    }
+});
+

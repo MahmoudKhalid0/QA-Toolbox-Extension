@@ -351,6 +351,22 @@
         }
         .tool-card.open .tool-card-chevron { transform: rotate(180deg); }
 
+        /* Action cards (single-click tools) */
+        .tool-card-go { margin-left: auto; color: rgba(255, 255, 255, 0.5); font-size: 13px; flex-shrink: 0; }
+        .tool-card:hover .tool-card-go { color: #fff; }
+        .tool-card.scanning { cursor: default; }
+        .tool-card.scanning .tool-card-go { animation: ai-spin 1s linear infinite; }
+        .tool-scan { display: none; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: #a5b4fc; margin-top: 6px; }
+        .tool-card.scanning .tool-scan { display: flex; }
+
+        /* Results modal (Security / Link Health) */
+        .res-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); z-index: 100; display: flex; align-items: flex-end; }
+        .res-modal.hidden { display: none; }
+        .res-modal-box { background: #14142b; width: 100%; max-height: 88vh; border-radius: 16px 16px 0 0; display: flex; flex-direction: column; box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.5); }
+        .res-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); flex-shrink: 0; }
+        .res-modal-head h3 { font-size: 15px; color: #fff; }
+        .res-modal-body { padding: 14px 16px; overflow-y: auto; }
+
         .tool-options {
             display: flex;
             flex-direction: column;
@@ -559,6 +575,29 @@
         .sec-facts { margin-top: 14px; }
         .sec-facts > summary { cursor: pointer; color: #94a3b8; font-size: 12px; padding: 6px 0; list-style: revert; }
         .sec-facts > summary:hover { color: #cbd5e1; }
+
+        /* Link Health */
+        .lh-summary { display: flex; gap: 8px; margin-bottom: 12px; }
+        .lh-stat { flex: 1; background: rgba(255,255,255,0.04); border-radius: 10px; padding: 10px; text-align: center; }
+        .lh-stat .n { font-size: 20px; font-weight: 800; }
+        .lh-stat .l { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; margin-top: 2px; }
+        .lh-stat.ok .n { color: #6ee7b7; }
+        .lh-stat.bad .n { color: #f87171; }
+        .lh-stat.total .n { color: #e2e8f0; }
+        .lh-row { display: flex; gap: 8px; align-items: center; padding: 7px 10px; border-radius: 8px; background: rgba(255,255,255,0.03); border-left: 3px solid #475569; font-size: 12px; margin-bottom: 4px; }
+        .lh-status { font-weight: 700; font-size: 10.5px; font-family: 'Consolas', monospace; min-width: 30px; flex-shrink: 0; text-align: center; }
+        /* status colors (match the old tool) */
+        .lh-row.s-ok { border-left-color: #10b981; } .lh-status.s-ok { color: #6ee7b7; }
+        .lh-row.s-redir { border-left-color: #f59e0b; } .lh-status.s-redir { color: #fcd34d; }
+        .lh-row.s-auth { border-left-color: #0ea5e9; } .lh-status.s-auth { color: #7dd3fc; }
+        .lh-row.s-forbid { border-left-color: #a855f7; } .lh-status.s-forbid { color: #c084fc; }
+        .lh-row.s-broken { border-left-color: #ef4444; background: rgba(239,68,68,0.07); } .lh-status.s-broken { color: #f87171; }
+        .lh-row.s-unknown { border-left-color: #64748b; } .lh-status.s-unknown { color: #94a3b8; }
+        .lh-info { flex: 1; min-width: 0; }
+        .lh-href { color: #60a5fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+        .lh-text { color: #94a3b8; font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+        .lh-copy { background: rgba(255,255,255,0.08); border: none; color: rgba(255,255,255,0.6); cursor: pointer; border-radius: 5px; width: 22px; height: 20px; flex-shrink: 0; font-size: 10px; }
+        .lh-copy:hover { background: rgba(255,255,255,0.2); color: #fff; }
         .dbg-mode-switch { display: flex; gap: 4px; background: rgba(255,255,255,0.05); border-radius: 10px; padding: 3px; margin-bottom: 12px; }
         .dbg-mode {
             flex: 1; background: transparent; border: none; color: #94a3b8; cursor: pointer; font-family: inherit;
@@ -1526,6 +1565,31 @@
                         </div>
                     </button>
                 </div>
+
+                <button class="tool-card" id="securityToolBtn" title="Run AI security scan">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #10b981, #059669);">
+                        <i class="fas fa-shield-halved"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>Security Scan</h4>
+                        <p>AI audit of this page &mdash; SSL, security headers &amp; cookie flags, with a score and fixes</p>
+                        <div class="tool-scan"><i class="fas fa-spinner fa-spin"></i> AI is scanning the page…</div>
+                    </div>
+                    <i class="fas fa-play tool-card-go"></i>
+                </button>
+
+                <button class="tool-card" id="linksToolBtn" title="Scan links on this page">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #f59e0b, #f97316);">
+                        <i class="fas fa-link"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>Link Health</h4>
+                        <p>Check every link on the page for broken or dead URLs, with an AI summary of what's wrong</p>
+                        <div class="tool-scan"><i class="fas fa-spinner fa-spin"></i> AI is checking the links…</div>
+                    </div>
+                    <i class="fas fa-play tool-card-go"></i>
+                </button>
+
                 <div class="tools-coming">
                     <i class="fas fa-plus-circle"></i> More QA tools coming soon
                 </div>
@@ -1536,7 +1600,6 @@
                 <div class="dbg-mode-switch">
                     <button class="dbg-mode active" data-mode="console"><i class="fas fa-terminal"></i> Console <span class="dbg-mode-badge" id="dbgConsoleBadge"></span></button>
                     <button class="dbg-mode" data-mode="network"><i class="fas fa-wifi"></i> Network <span class="dbg-mode-badge" id="dbgNetBadge"></span></button>
-                    <button class="dbg-mode" data-mode="security"><i class="fas fa-shield-halved"></i> Security</button>
                 </div>
 
                 <!-- Console panel -->
@@ -1572,15 +1635,6 @@
                     </div>
                     <div class="dbg-status" id="netStatus"></div>
                     <div class="dbg-list" id="netList"></div>
-                </div>
-
-                <!-- Security panel -->
-                <div id="dbg-security-panel" class="hidden">
-                    <div class="dbg-toolbar">
-                        <button class="dbg-btn dbg-explain" id="secScanBtn"><i class="fas fa-wand-magic-sparkles"></i> AI Scan this page</button>
-                    </div>
-                    <div class="dbg-status" id="secStatus"></div>
-                    <div id="secResult"></div>
                 </div>
             </div>
         </div>
