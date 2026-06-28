@@ -62,6 +62,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         startInspectMode((el) => showXPathFinderPanel(el, mode));
         sendResponse({ success: true });
     }
+    if (request.action === 'startImageOcr') {
+        closeImageOcrPanel();
+        startInspectMode(handleImageOcrPick);
+        sendResponse({ success: true });
+    }
     if (request.action === 'settingsChanged') {
         refreshFieldAiIconSetting();
     }
@@ -78,7 +83,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Floating Button Support
 let matchingProfiles = [];
-let fabAiFillEnabled = false; // show the standalone "AI Fill" option in the FAB
+const fabAiFillEnabled = true; // the "AI Fill" option is always available in the FAB
 let lastCheckUrl = '';
 let fabInitTimeout = null;
 
@@ -92,23 +97,16 @@ async function initFloatingButton() {
         chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
             if (chrome.runtime.lastError) return;
             const settings = response && response.settings;
-            // The AI-fill option depends on the floating button being enabled
             if (!settings || !settings.showFloatingButton) {
                 cleanupFloatingButton();
                 return;
             }
-            fabAiFillEnabled = !!settings.floatingAiFill;
-
+            // AI Fill is always available, so the floating button shows on every
+            // page; matching profiles (if any) are listed under it
             chrome.runtime.sendMessage({ action: 'getMatchingProfiles', url: currentUrl }, (profRes) => {
                 if (chrome.runtime.lastError) return;
                 matchingProfiles = (profRes && profRes.profiles) || [];
-                // Show the FAB when there are matching profiles, OR when AI fill is
-                // enabled (then it shows on every page, even without a profile)
-                if (matchingProfiles.length > 0 || fabAiFillEnabled) {
-                    createFloatingButton();
-                } else {
-                    cleanupFloatingButton();
-                }
+                createFloatingButton();
             });
         });
     }, 100);
@@ -1564,7 +1562,7 @@ function showInspectorPanel(el) {
     });
 
     const copyText = (text, btn) => {
-        navigator.clipboard.writeText(text).then(() => {
+        ffCopyText(text).then(() => {
             const old = btn.textContent;
             btn.textContent = 'Copied!';
             setTimeout(() => { btn.textContent = old; }, 1200);
@@ -1896,11 +1894,329 @@ let aiMenuOpen = false;           // keep icon alive while its menu is open
 function refreshFieldAiIconSetting() {
     chrome.runtime.sendMessage({ action: 'getSettings' }, (resp) => {
         if (chrome.runtime.lastError) return;
-        fieldAiIconEnabled = !(resp && resp.settings && resp.settings.fieldAiIcon === false);
+        const s = (resp && resp.settings) || {};
+        fieldAiIconEnabled = s.fieldAiIcon !== false;
         if (!fieldAiIconEnabled) hideFieldAiIcon();
+        charCounterEnabled = s.charCounter !== false;
+        if (!charCounterEnabled) hideCharCounter();
+        selectionAiEnabled = s.selectionAiTools !== false;
+        if (!selectionAiEnabled) hideSelectionTools();
     });
 }
 refreshFieldAiIconSetting();
+
+// ==================== Character Counter ====================
+// When the user selects text on the page, a small box shows the character count
+// (with and without spaces) and the word count. Toggle via the charCounter setting.
+
+let charCounterEnabled = true;
+
+function hideCharCounter() {
+    const box = document.getElementById('ff-char-counter');
+    if (box) box.remove();
+}
+
+function updateCharCounter() {
+    if (!charCounterEnabled) return;
+    const sel = window.getSelection();
+    const raw = sel ? sel.toString() : '';
+    if (!raw.trim()) { hideCharCounter(); return; }
+
+    // Don't show it over our own UI
+    if (sel.anchorNode && sel.anchorNode.parentElement &&
+        sel.anchorNode.parentElement.closest('#ff-char-counter, #ff-ai-field-icon, #ff-ai-field-menu')) return;
+
+    // Ignore leading/trailing whitespace so a double-click and a drag over the
+    // same word give the same count (drag/double-click often grab an extra space)
+    const text = raw.trim();
+    const withSpaces = text.length;
+    const withoutSpaces = text.replace(/\s/g, '').length;
+    const words = text.split(/\s+/).filter(Boolean).length;
+
+    let box = document.getElementById('ff-char-counter');
+    if (!box) {
+        box = document.createElement('div');
+        box.id = 'ff-char-counter';
+        // Fixed in the bottom-right corner, semi-transparent - never covers the
+        // selected text and doesn't jump around with each selection
+        box.style.cssText = 'position:fixed;z-index:2147483647;right:16px;bottom:175px;' +
+            'background:rgba(15,15,35,0.72);backdrop-filter:blur(6px);' +
+            'color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:9px;padding:8px 12px;' +
+            'font-family:\'Segoe UI\',Arial,sans-serif;font-size:12px;line-height:1.7;box-shadow:0 6px 22px rgba(0,0,0,0.4);' +
+            'pointer-events:none;white-space:nowrap;';
+        document.body.appendChild(box);
+    }
+    box.innerHTML =
+        `<div><b style="color:#a78bfa;">${withSpaces}</b> characters</div>` +
+        `<div><b style="color:#38bdf8;">${withoutSpaces}</b> without spaces</div>` +
+        `<div><b style="color:#4ade80;">${words}</b> word${words === 1 ? '' : 's'}</div>`;
+}
+
+document.addEventListener('mouseup', () => setTimeout(() => { updateCharCounter(); updateSelectionTools(); }, 0), true);
+document.addEventListener('keyup', (e) => {
+    // Selection via keyboard (Shift+arrows, Ctrl+A)
+    if (e.shiftKey || e.key === 'a' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        setTimeout(() => { updateCharCounter(); updateSelectionTools(); }, 0);
+    }
+}, true);
+document.addEventListener('selectionchange', () => {
+    // Hide promptly when the selection is cleared
+    const t = window.getSelection() ? window.getSelection().toString() : '';
+    if (!t.trim()) { hideCharCounter(); hideSelectionTools(); }
+});
+
+// ==================== Selection AI tools (translate / review) ====================
+// A small icon appears next to a text selection; clicking it offers Translate
+// (AR<->EN) and Review language (spelling + grammar). Uses the smart model.
+
+let selectionAiEnabled = true;
+let selectedTextForAi = '';
+
+function hideSelectionTools() {
+    const icon = document.getElementById('ff-sel-icon');
+    if (icon) icon.remove();
+    const menu = document.getElementById('ff-sel-menu');
+    if (menu) menu.remove();
+}
+
+function updateSelectionTools() {
+    if (!selectionAiEnabled) return;
+    const sel = window.getSelection();
+    const text = sel ? sel.toString().trim() : '';
+    // Ignore tiny selections and selections inside our own UI
+    if (!text || text.length < 2) { hideSelectionTools(); return; }
+    if (sel.anchorNode && sel.anchorNode.parentElement &&
+        sel.anchorNode.parentElement.closest('#ff-sel-icon, #ff-sel-menu, #ff-char-counter, #ff-ai-field-icon, #ff-ai-field-menu, #ff-sel-result')) return;
+
+    selectedTextForAi = text;
+
+    let icon = document.getElementById('ff-sel-icon');
+    if (!icon) {
+        icon = document.createElement('div');
+        icon.id = 'ff-sel-icon';
+        icon.title = 'Translate or review the selection';
+        icon.style.cssText = 'position:fixed;z-index:2147483646;width:24px;height:24px;border-radius:7px;' +
+            'background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;display:flex;align-items:center;justify-content:center;' +
+            'cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.4);font-size:12px;';
+        icon.innerHTML = '<i class="fas fa-language"></i>';
+        icon.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection
+        icon.addEventListener('click', (e) => { e.stopPropagation(); toggleSelectionMenu(); });
+        document.body.appendChild(icon);
+    }
+    try {
+        const r = sel.getRangeAt(0).getBoundingClientRect();
+        let top = r.top - 30; if (top < 4) top = r.bottom + 6;
+        let left = r.right - 24; left = Math.max(4, Math.min(left, window.innerWidth - 28));
+        icon.style.top = top + 'px';
+        icon.style.left = left + 'px';
+    } catch (e) { }
+}
+
+function toggleSelectionMenu() {
+    const existing = document.getElementById('ff-sel-menu');
+    if (existing) { existing.remove(); return; }
+    const icon = document.getElementById('ff-sel-icon');
+    if (!icon) return;
+
+    const menu = document.createElement('div');
+    menu.id = 'ff-sel-menu';
+    menu.style.cssText = 'position:fixed;z-index:2147483647;background:rgba(15,15,35,0.97);backdrop-filter:blur(8px);' +
+        'border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:5px;box-shadow:0 8px 28px rgba(0,0,0,0.5);' +
+        'font-family:\'Segoe UI\',Arial,sans-serif;min-width:175px;';
+    menu.innerHTML = `
+        <div class="ff-sel-opt" data-act="translate" style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:7px;cursor:pointer;color:#e0e0e0;font-size:13px;">
+            <i class="fas fa-language" style="color:#38bdf8;"></i> Translate (AR &#8596; EN)
+        </div>
+        <div class="ff-sel-opt" data-act="review" style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:7px;cursor:pointer;color:#e0e0e0;font-size:13px;">
+            <i class="fas fa-spell-check" style="color:#4ade80;"></i> Review language
+        </div>`;
+    menu.addEventListener('mousedown', (e) => e.preventDefault());
+    menu.querySelectorAll('.ff-sel-opt').forEach(opt => {
+        opt.addEventListener('mouseenter', () => { opt.style.background = 'rgba(99,102,241,0.25)'; });
+        opt.addEventListener('mouseleave', () => { opt.style.background = 'transparent'; });
+        opt.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const act = opt.dataset.act;
+            const text = selectedTextForAi;
+            hideSelectionTools();
+            runSelectionAi(act, text);
+        });
+    });
+    document.body.appendChild(menu);
+    const ir = icon.getBoundingClientRect();
+    let top = ir.bottom + 4;
+    if (top + menu.offsetHeight > window.innerHeight - 6) top = ir.top - menu.offsetHeight - 4;
+    menu.style.top = top + 'px';
+    menu.style.left = Math.max(4, Math.min(ir.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 6)) + 'px';
+
+    const onOutside = (ev) => {
+        if (ev.target.closest && ev.target.closest('#ff-sel-icon, #ff-sel-menu')) return;
+        document.removeEventListener('mousedown', onOutside, true);
+        hideSelectionTools();
+    };
+    setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+}
+
+function runSelectionAi(act, text) {
+    if (!text) return;
+    const isTranslate = act === 'translate';
+    showFabAiStatus('loading', isTranslate ? 'Translating…' : 'Reviewing language…');
+    chrome.runtime.sendMessage(
+        { action: isTranslate ? 'aiTranslateText' : 'aiReviewText', text },
+        (resp) => {
+            if (chrome.runtime.lastError || !resp || resp.error) {
+                const err = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'unknown';
+                showFabAiStatus('error', err === 'no_api_key' ? 'AI key is not configured' : ('Failed: ' + err));
+                return;
+            }
+            if (isTranslate) {
+                showFabAiStatus('success', 'Translated');
+                showSelectionResult('Translation', resp.text || '');
+            } else {
+                showFabAiStatus('success', 'Reviewed');
+                showReviewResult(resp.review || { isCorrect: true, issues: [] });
+            }
+        }
+    );
+}
+
+const REVIEW_TYPE_COLORS = {
+    spelling: '#fca5a5', grammar: '#fcd34d', 'word-choice': '#c4b5fd', punctuation: '#7dd3fc', spacing: '#fdba74', other: '#cbd5e1'
+};
+// Localized labels for the issue type (shown in the offending text's language)
+const REVIEW_TYPE_LABELS_AR = {
+    spelling: 'إملاء', grammar: 'نحو', 'word-choice': 'اختيار كلمة', punctuation: 'ترقيم', spacing: 'مسافات', other: 'أخرى'
+};
+function reviewTypeLabel(type, rtl) {
+    if (rtl && REVIEW_TYPE_LABELS_AR[type]) return REVIEW_TYPE_LABELS_AR[type];
+    return type;
+}
+
+// Render the structured language review: each mistake as wrong -> correct + why
+function showReviewResult(review) {
+    const old = document.getElementById('ff-sel-result');
+    if (old) old.remove();
+    const issues = review.issues || [];
+
+    const body = (review.isCorrect || issues.length === 0)
+        ? '<div style="padding:16px;text-align:center;color:#6ee7b7;"><i class="fas fa-circle-check"></i> No mistakes found.</div>'
+        : issues.map(it => {
+            const rtl = /[؀-ۿ]/.test((it.context || '') + (it.original || '') + (it.explanation || ''));
+            // Show the surrounding context with the wrong fragment highlighted in place
+            let ctx = '';
+            if (it.context) {
+                const safe = escapeHtml(it.context);
+                const wrong = escapeHtml(it.original);
+                const highlighted = (wrong && safe.includes(wrong))
+                    ? safe.replace(wrong, `<mark class="rv-mark">${wrong}</mark>`)
+                    : safe;
+                ctx = `<div class="rv-ctx">…${highlighted}…</div>`;
+            }
+            return `<div class="rv-item" style="${rtl ? 'direction:rtl;' : ''}">
+                <div class="rv-line"><span class="rv-wrong">${escapeHtml(it.original)}</span>
+                <i class="fas fa-arrow-right rv-arrow"></i>
+                <span class="rv-right">${escapeHtml(it.correction)}</span></div>
+                ${ctx}
+                <div class="rv-meta"><span class="rv-tag" style="color:${REVIEW_TYPE_COLORS[it.type] || '#cbd5e1'};">${escapeHtml(reviewTypeLabel(it.type, rtl))}</span> ${escapeHtml(it.explanation)}</div>
+            </div>`;
+        }).join('');
+
+    const panel = document.createElement('div');
+    panel.id = 'ff-sel-result';
+    panel.innerHTML = `
+        <style>
+            #ff-sel-result { position: fixed; top: 16px; right: 16px; width: 380px; max-height: 82vh; z-index: 2147483647; display: flex; flex-direction: column; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid rgba(139,92,246,0.5); border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff; font-family: 'Segoe UI', Arial, sans-serif; }
+            #ff-sel-result .sr-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
+            #ff-sel-result .sr-title { font: 700 13px/1.4 'Segoe UI', Arial; }
+            #ff-sel-result .sr-btns button { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
+            #ff-sel-result .sr-body { overflow-y: auto; padding: 8px 12px 12px; }
+            #ff-sel-result .rv-item { background: rgba(0,0,0,0.3); border-radius: 9px; padding: 10px 12px; margin-top: 8px; }
+            #ff-sel-result .rv-line { font-size: 14px; line-height: 1.7; word-break: break-word; }
+            #ff-sel-result .rv-wrong { color: #fca5a5; text-decoration: line-through; text-decoration-color: rgba(239,68,68,0.5); }
+            #ff-sel-result .rv-arrow { font-size: 10px; color: #64748b; margin: 0 6px; }
+            #ff-sel-result .rv-right { color: #6ee7b7; font-weight: 600; }
+            #ff-sel-result .rv-ctx { font-size: 12.5px; color: #94a3b8; margin-top: 6px; line-height: 1.7; background: rgba(255,255,255,0.04); border-radius: 6px; padding: 5px 8px; word-break: break-word; }
+            #ff-sel-result .rv-mark { background: rgba(239,68,68,0.3); color: #fecaca; border-radius: 3px; padding: 0 2px; }
+            #ff-sel-result .rv-meta { font-size: 12px; color: #94a3b8; margin-top: 5px; line-height: 1.5; }
+            #ff-sel-result .rv-tag { font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; margin-right: 5px; }
+        </style>
+        <div class="sr-head">
+            <span class="sr-title">&#128221; Language Review${issues.length ? ' (' + issues.length + ')' : ''}</span>
+            <div class="sr-btns"><button id="sr-close" title="Close">&#10005;</button></div>
+        </div>
+        <div class="sr-body">${body}</div>
+    `;
+    document.body.appendChild(panel);
+    panel.querySelector('#sr-close').addEventListener('click', () => panel.remove());
+
+    let drag = null;
+    const head = panel.querySelector('.sr-head');
+    head.addEventListener('mousedown', (e) => {
+        if (e.target.closest('button')) return;
+        const r = panel.getBoundingClientRect();
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => { if (!drag) return; panel.style.left = Math.max(0, e.clientX - drag.dx) + 'px'; panel.style.top = Math.max(0, e.clientY - drag.dy) + 'px'; panel.style.right = 'auto'; });
+    document.addEventListener('mouseup', () => { drag = null; });
+}
+
+function showSelectionResult(title, text) {
+    const old = document.getElementById('ff-sel-result');
+    if (old) old.remove();
+    const panel = document.createElement('div');
+    panel.id = 'ff-sel-result';
+    panel.innerHTML = `
+        <style>
+            #ff-sel-result {
+                position: fixed; top: 16px; right: 16px; width: 360px; max-height: 80vh;
+                z-index: 2147483647; display: flex; flex-direction: column;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                border: 2px solid rgba(139, 92, 246, 0.5); border-radius: 14px;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            #ff-sel-result .sr-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
+            #ff-sel-result .sr-title { font: 700 13px/1.4 'Segoe UI', Arial; }
+            #ff-sel-result .sr-btns button { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; margin-left: 4px; }
+            #ff-sel-result .sr-btns button:hover { background: rgba(255,255,255,0.22); }
+            #ff-sel-result .sr-text { margin: 12px 14px; padding: 10px 12px; background: rgba(0,0,0,0.35); border-radius: 8px; font: 13.5px/1.8 'Segoe UI', Tahoma, sans-serif; color: #e2e8f0; white-space: pre-wrap; word-break: break-word; overflow-y: auto; }
+            #ff-sel-result .sr-copy { margin: 0 14px 14px; border: none; border-radius: 8px; padding: 9px; font-size: 12px; font-weight: 600; cursor: pointer; color: #fff; background: linear-gradient(135deg, #8b5cf6, #6366f1); }
+            #ff-sel-result .sr-copy:hover { filter: brightness(1.12); }
+        </style>
+        <div class="sr-head">
+            <span class="sr-title">${escapeHtml(title)}</span>
+            <div class="sr-btns"><button id="sr-close" title="Close">&#10005;</button></div>
+        </div>
+        <div class="sr-text" id="sr-text"></div>
+        <button class="sr-copy" id="sr-copy"><i class="fas fa-copy"></i> Copy</button>
+    `;
+    document.body.appendChild(panel);
+    const textEl = panel.querySelector('#sr-text');
+    textEl.textContent = text;
+    // Right-align for Arabic output
+    if (/[؀-ۿ]/.test(text)) textEl.style.direction = 'rtl';
+    panel.querySelector('#sr-close').addEventListener('click', () => panel.remove());
+    panel.querySelector('#sr-copy').addEventListener('click', (e) => {
+        ffCopyText(text).then(() => {
+            const b = e.currentTarget; const o = b.innerHTML;
+            b.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            setTimeout(() => { b.innerHTML = o; }, 1400);
+        }).catch(() => { });
+    });
+
+    // Drag by header
+    let drag = null;
+    const head = panel.querySelector('.sr-head');
+    head.addEventListener('mousedown', (e) => {
+        if (e.target.closest('button')) return;
+        const r = panel.getBoundingClientRect();
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => { if (!drag) return; panel.style.left = Math.max(0, e.clientX - drag.dx) + 'px'; panel.style.top = Math.max(0, e.clientY - drag.dy) + 'px'; panel.style.right = 'auto'; });
+    document.addEventListener('mouseup', () => { drag = null; });
+}
 
 function isFillableField(el) {
     if (!el || el.disabled || el.readOnly) return false;
@@ -2092,6 +2408,111 @@ function collectContextFieldInfo(el) {
     };
 }
 
+// ==================== Image Text Extractor (OCR) ====================
+// Pick an image; the AI (smart model, vision) reads its text. Images only -
+// if a non-image element is picked, ask the user to pick an image.
+
+function closeImageOcrPanel() {
+    const p = document.getElementById('ff-ocr-panel');
+    if (p) p.remove();
+}
+
+// Find the image source for a picked element: <img>, or an element with a
+// CSS background-image. Returns null if it isn't an image.
+function getImageSrcFromElement(el) {
+    if (el.tagName === 'IMG' && el.currentSrc) return el.currentSrc;
+    if (el.tagName === 'IMG' && el.src) return el.src;
+    try {
+        const bg = getComputedStyle(el).backgroundImage;
+        const m = bg && bg.match(/url\(["']?(.*?)["']?\)/);
+        if (m && m[1] && !m[1].startsWith('data:image/svg')) return m[1];
+    } catch (e) { }
+    return null;
+}
+
+function handleImageOcrPick(el) {
+    const src = getImageSrcFromElement(el);
+    if (!src) {
+        // Not an image - tell the user and let them pick again
+        showFabAiStatus('error', 'Pick an image (this tool works on images only)');
+        startInspectMode(handleImageOcrPick);
+        return;
+    }
+    showFabAiStatus('loading', 'Reading text from the image…');
+    chrome.runtime.sendMessage({ action: 'aiExtractImageText', src }, (resp) => {
+        if (chrome.runtime.lastError || !resp || resp.error || resp.text === undefined) {
+            const err = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'unknown';
+            showFabAiStatus('error', err === 'no_api_key' ? 'AI key is not configured' : ('Failed: ' + err));
+            return;
+        }
+        showFabAiStatus('success', 'Text extracted');
+        showImageOcrPanel(resp.text || '(no text found)');
+    });
+}
+
+function showImageOcrPanel(text) {
+    closeImageOcrPanel();
+    const panel = document.createElement('div');
+    panel.id = 'ff-ocr-panel';
+    panel.innerHTML = `
+        <style>
+            #ff-ocr-panel {
+                position: fixed; top: 16px; right: 16px; width: 360px; max-height: 80vh;
+                z-index: 2147483647; display: flex; flex-direction: column;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                border: 2px solid rgba(139, 92, 246, 0.5); border-radius: 14px;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff;
+                font-family: 'Segoe UI', Arial, sans-serif; direction: ltr;
+            }
+            #ff-ocr-panel .ocr-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
+            #ff-ocr-panel .ocr-title { font: 700 13px/1.4 'Segoe UI', Arial; display: flex; align-items: center; gap: 8px; }
+            #ff-ocr-panel .ocr-btns { display: flex; gap: 6px; }
+            #ff-ocr-panel .ocr-btns button { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
+            #ff-ocr-panel .ocr-btns button:hover { background: rgba(255,255,255,0.22); }
+            #ff-ocr-panel .ocr-text { margin: 12px 14px; padding: 10px 12px; background: rgba(0,0,0,0.35); border-radius: 8px; font: 13px/1.7 'Segoe UI', Tahoma, sans-serif; color: #e2e8f0; white-space: pre-wrap; word-break: break-word; overflow-y: auto; }
+            #ff-ocr-panel .ocr-copy { margin: 0 14px 14px; border: none; border-radius: 8px; padding: 9px; font-size: 12px; font-weight: 600; cursor: pointer; color: #fff; background: linear-gradient(135deg, #8b5cf6, #6366f1); }
+            #ff-ocr-panel .ocr-copy:hover { filter: brightness(1.12); }
+        </style>
+        <div class="ocr-head">
+            <span class="ocr-title">&#128196; Extracted Text</span>
+            <div class="ocr-btns">
+                <button id="ocr-repick" title="Pick another image">&#8982;</button>
+                <button id="ocr-close" title="Close">&#10005;</button>
+            </div>
+        </div>
+        <div class="ocr-text" id="ocr-text"></div>
+        <button class="ocr-copy" id="ocr-copy"><i class="fas fa-copy"></i> Copy text</button>
+    `;
+    document.body.appendChild(panel);
+    panel.querySelector('#ocr-text').textContent = text;
+    panel.querySelector('#ocr-close').addEventListener('click', closeImageOcrPanel);
+    panel.querySelector('#ocr-repick').addEventListener('click', () => {
+        closeImageOcrPanel();
+        startInspectMode(handleImageOcrPick);
+    });
+    panel.querySelector('#ocr-copy').addEventListener('click', (e) => {
+        ffCopyText(text).then(() => {
+            const b = e.currentTarget; const o = b.innerHTML;
+            b.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            setTimeout(() => { b.innerHTML = o; }, 1400);
+        }).catch(() => { });
+    });
+
+    // Drag by the header
+    let drag = null;
+    const head = panel.querySelector('.ocr-head');
+    head.addEventListener('mousedown', (e) => {
+        if (e.target.closest('button')) return;
+        const r = panel.getBoundingClientRect();
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+        e.preventDefault();
+    });
+    const move = (e) => { if (!drag) return; panel.style.left = Math.max(0, e.clientX - drag.dx) + 'px'; panel.style.top = Math.max(0, e.clientY - drag.dy) + 'px'; panel.style.right = 'auto'; };
+    const up = () => { drag = null; };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+}
+
 // ==================== XPath Finder (Tools tab) ====================
 // Two standalone tools: "XPath Finder" (extension-generated, instant) and
 // "AI XPath Finder" (Claude builds a robust relative XPath from stable
@@ -2255,7 +2676,7 @@ function showXPathFinderPanel(el, mode) {
     body.addEventListener('click', (e) => {
         const btn = e.target.closest('.ffx-copy-icon');
         if (!btn) return;
-        navigator.clipboard.writeText(copyValues[+btn.dataset.idx] || '').then(() => {
+        ffCopyText(copyValues[+btn.dataset.idx] || '').then(() => {
             btn.innerHTML = FFX_CHECK_SVG;
             setTimeout(() => { btn.innerHTML = FFX_COPY_SVG; }, 1100);
         }).catch(() => { });
@@ -2400,6 +2821,37 @@ function setContextFieldValue(el, value) {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
 }
+// Brief on-page "Copied" toast (bottom-center), shown after any copy action.
+let ffCopyToastTimer = null;
+function ffShowCopyToast() {
+    let t = document.getElementById('ff-copy-toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'ff-copy-toast';
+        t.style.cssText = 'position:fixed;left:50%;bottom:32px;transform:translateX(-50%);z-index:2147483647;' +
+            'background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:9px 18px;border-radius:24px;' +
+            'font-family:\'Segoe UI\',Arial,sans-serif;font-size:13px;font-weight:600;box-shadow:0 8px 26px rgba(0,0,0,0.4);' +
+            'display:flex;align-items:center;gap:8px;pointer-events:none;transition:opacity 0.25s;';
+        t.innerHTML = '<i class="fas fa-check"></i><span>Copied</span>';
+        document.body.appendChild(t);
+    }
+    t.style.opacity = '1';
+    if (ffCopyToastTimer) clearTimeout(ffCopyToastTimer);
+    ffCopyToastTimer = setTimeout(() => {
+        t.style.opacity = '0';
+        setTimeout(() => t.remove(), 300);
+    }, 1400);
+}
+
+// Copy helper: copies text and shows the toast. Returns the promise so callers
+// can still chain their own button feedback. (bracket call avoids being caught
+// by the writeText -> ffCopyText replacement)
+function ffCopyText(t) {
+    const p = navigator.clipboard['writeText'](t == null ? '' : t);
+    p.then(() => ffShowCopyToast()).catch(() => { });
+    return p;
+}
+
 // On-page status pill for AI fill triggered from the floating button (the side
 // panel can't show progress for a page action, so we surface it on the page).
 let fabAiStatusTimer = null;
@@ -2442,7 +2894,7 @@ function createFloatingButton() {
         style.textContent = `
         #ff-floating-btn {
             position: fixed;
-            bottom: 25px;
+            bottom: 110px;
             right: 25px;
             width: 54px;
             height: 54px;
@@ -2465,7 +2917,7 @@ function createFloatingButton() {
         }
         #ff-floating-menu {
             position: fixed;
-            bottom: 95px;
+            bottom: 180px;
             right: 30px;
             background: rgba(15, 15, 35, 0.95);
             backdrop-filter: blur(10px);

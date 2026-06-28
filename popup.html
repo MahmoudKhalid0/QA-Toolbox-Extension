@@ -1381,99 +1381,13 @@
                             <p>XPath, CSS &amp; attribute &mdash; verified live, with a recommendation</p>
                         </div>
                     </button>
-                </div>
-                <button class="tool-card" id="testCasesCard" title="AI Test Case Generator">
-                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #6366f1, #8b5cf6);">
-                        <i class="fas fa-clipboard-list"></i>
-                    </div>
-                    <div class="tool-card-info">
-                        <h4>AI Test Case Generator</h4>
-                        <p>Describe a feature or user story &mdash; AI writes structured test cases (opens in a new
-                            tab)</p>
-                    </div>
-                    <i class="fas fa-chevron-down tool-card-chevron"></i>
-                </button>
-                <div class="tool-form hidden" id="testCasesForm">
-                    <textarea id="tcStory" placeholder="As a user, I want to log in with my email and password so that I can access my account."></textarea>
-                    <div class="tool-form-row">
-                        <label for="tcCount">Test cases:</label>
-                        <select id="tcCount"></select>
-                        <button class="tool-form-gen" id="tcGenerate"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
-                    </div>
-                    <div class="tool-form-status" id="tcStatus"></div>
-                </div>
-
-                <button class="tool-card" id="apiBuilderCard" title="AI API Request Builder">
-                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #06b6d4, #6366f1);">
-                        <i class="fas fa-paper-plane"></i>
-                    </div>
-                    <div class="tool-card-info">
-                        <h4>AI API Request Builder</h4>
-                        <p>Describe a request in plain words &mdash; AI builds the method, URL, headers &amp; body
-                            with cURL &amp; fetch (opens in a new tab)</p>
-                    </div>
-                    <i class="fas fa-chevron-down tool-card-chevron"></i>
-                </button>
-                <div class="tool-form hidden" id="apiBuilderForm">
-                    <textarea id="apiDesc" placeholder='e.g. POST to create a user with name, email and role, using a Bearer token'></textarea>
-                    <div class="tool-form-row">
-                        <button class="tool-form-gen" id="apiGenerate" style="background:linear-gradient(135deg,#06b6d4,#6366f1);"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
-                    </div>
-                    <div class="tool-form-status" id="apiStatus"></div>
-                </div>
-
-                <button class="tool-card" id="bugReportCard" title="AI Bug Report Writer">
-                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #ef4444, #f97316);">
-                        <i class="fas fa-bug"></i>
-                    </div>
-                    <div class="tool-card-info">
-                        <h4>AI Bug Report Writer</h4>
-                        <p>Describe a problem and optionally attach a screenshot &mdash; AI writes a bug report (opens
-                            in a new tab)</p>
-                    </div>
-                    <i class="fas fa-chevron-down tool-card-chevron"></i>
-                </button>
-                <div class="tool-form hidden" id="bugReportForm">
-                    <textarea id="brDesc" placeholder="e.g. When clicking Save on the profile page nothing happens and the data is not saved."></textarea>
-                    <div class="tool-form-drop" id="brDrop"><i class="fas fa-image"></i> Add screenshot (click, drop, or Ctrl+V)</div>
-                    <div class="tool-form-thumb hidden" id="brThumbWrap"><img id="brThumb"><button id="brThumbX"><i class="fas fa-times"></i></button></div>
-                    <input type="file" id="brFile" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden">
-                    <div class="tool-form-row">
-                        <button class="tool-form-gen" id="brGenerate" style="background:linear-gradient(135deg,#ef4444,#f97316);"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
-                    </div>
-                    <div class="tool-form-status" id="brStatus"></div>
-                </div>
-                <button class="tool-card" id="timerCard" title="Countdown Timer">
-                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #f59e0b, #ef4444);">
-                        <i class="fas fa-stopwatch"></i>
-                    </div>
-                    <div class="tool-card-info">
-                        <h4>Countdown Timer</h4>
-                        <p>Set hours, minutes &amp; seconds and count down &mdash; pause and resume any time</p>
-                    </div>
-                    <i class="fas fa-chevron-down tool-card-chevron"></i>
-                </button>
-                <div class="tool-form hidden" id="timerForm">
-                    <div class="timer-display" id="timerDisplay">00:00:00</div>
-                    <div class="timer-inputs" id="timerInputs">
-                        <div class="timer-unit">
-                            <input type="number" id="timerH" min="0" max="99" placeholder="0">
-                            <span>hours</span>
+                    <button class="tool-option" id="ocrBtn" title="Image Text Extractor">
+                        <i class="fas fa-image" style="color:#ec4899;"></i>
+                        <div>
+                            <h5>Image Text Extractor</h5>
+                            <p>Pick an image &mdash; AI reads the text inside it (OCR)</p>
                         </div>
-                        <div class="timer-unit">
-                            <input type="number" id="timerM" min="0" max="59" placeholder="0">
-                            <span>min</span>
-                        </div>
-                        <div class="timer-unit">
-                            <input type="number" id="timerS" min="0" max="59" placeholder="0">
-                            <span>sec</span>
-                        </div>
-                    </div>
-                    <div class="tool-form-row">
-                        <button class="tool-form-gen" id="timerStart" style="background:linear-gradient(135deg,#f59e0b,#ef4444);"><i class="fas fa-play"></i> Start</button>
-                        <button class="timer-btn hidden" id="timerPause"><i class="fas fa-pause"></i> Pause</button>
-                        <button class="timer-btn hidden" id="timerReset"><i class="fas fa-rotate-left"></i> Reset</button>
-                    </div>
+                    </button>
                 </div>
                 <div class="tools-coming">
                     <i class="fas fa-plus-circle"></i> More QA tools coming soon

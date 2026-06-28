@@ -350,11 +350,7 @@ document.getElementById('addBtn').addEventListener('click', () => {
 
 // Tools tab accordion: opening one expandable tool collapses the others
 const TOOL_SECTIONS = [
-    { card: 'inspectorToolBtn', panel: 'inspectorOptions' },
-    { card: 'testCasesCard', panel: 'testCasesForm' },
-    { card: 'apiBuilderCard', panel: 'apiBuilderForm' },
-    { card: 'bugReportCard', panel: 'bugReportForm' },
-    { card: 'timerCard', panel: 'timerForm' }
+    { card: 'inspectorToolBtn', panel: 'inspectorOptions' }
 ];
 function toggleToolSection(cardId, panelId) {
     const willOpen = document.getElementById(panelId).classList.contains('hidden');
@@ -403,222 +399,17 @@ async function startXPathFinder(mode) {
 document.getElementById('xpathBtn').addEventListener('click', () => startXPathFinder('extension'));
 document.getElementById('aiXpathBtn').addEventListener('click', () => startXPathFinder('ai'));
 
-// ── AI Test Case Generator (input in panel, result opens in a new tab) ──
-(function setupTestCases() {
-    const card = document.getElementById('testCasesCard');
-    const form = document.getElementById('testCasesForm');
-    const countSel = document.getElementById('tcCount');
-    for (let i = 1; i <= 10; i++) {
-        const o = document.createElement('option');
-        o.value = i; o.textContent = i; if (i === 3) o.selected = true;
-        countSel.appendChild(o);
+// Image Text Extractor (OCR) - pick an image, AI reads its text
+document.getElementById('ocrBtn').addEventListener('click', async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
+        showToastMessage('Open a website first', 'error');
+        return;
     }
-    card.addEventListener('click', () => toggleToolSection('testCasesCard', 'testCasesForm'));
-
-    const status = document.getElementById('tcStatus');
-    const btn = document.getElementById('tcGenerate');
-    btn.addEventListener('click', () => {
-        const story = document.getElementById('tcStory').value.trim();
-        if (!story) { status.textContent = 'Enter a user story first.'; status.style.color = '#f87171'; return; }
-        btn.disabled = true;
-        status.style.color = '#94a3b8';
-        status.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating with AI…';
-        chrome.runtime.sendMessage({ action: 'aiGenerateTestCases', story, count: +countSel.value || 3 }, (resp) => {
-            btn.disabled = false;
-            if (chrome.runtime.lastError || !resp || resp.error) {
-                const err = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'unknown error';
-                status.textContent = err === 'no_api_key' ? 'AI key not configured'
-                    : err === 'not_a_feature' ? 'That is not a testable feature or user story.'
-                        : 'Failed: ' + err;
-                status.style.color = '#f87171';
-            } else {
-                status.innerHTML = '<i class="fas fa-check"></i> Opened in a new tab';
-                status.style.color = '#4ade80';
-            }
-        });
-    });
-})();
-
-// ── AI API Request Builder (input in panel, result opens in a new tab) ──
-(function setupApiBuilder() {
-    const card = document.getElementById('apiBuilderCard');
-    card.addEventListener('click', () => toggleToolSection('apiBuilderCard', 'apiBuilderForm'));
-
-    const status = document.getElementById('apiStatus');
-    const btn = document.getElementById('apiGenerate');
-    btn.addEventListener('click', () => {
-        const description = document.getElementById('apiDesc').value.trim();
-        if (!description) { status.textContent = 'Describe the request first.'; status.style.color = '#f87171'; return; }
-        btn.disabled = true;
-        status.style.color = '#94a3b8';
-        status.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Building the request with AI…';
-        chrome.runtime.sendMessage({ action: 'aiGenerateApiRequest', description }, (resp) => {
-            btn.disabled = false;
-            if (chrome.runtime.lastError || !resp || resp.error) {
-                const err = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'unknown error';
-                status.textContent = err === 'no_api_key' ? 'AI key not configured'
-                    : err === 'not_a_request' ? 'That does not describe an API request.'
-                        : 'Failed: ' + err;
-                status.style.color = '#f87171';
-            } else {
-                status.innerHTML = '<i class="fas fa-check"></i> Opened in a new tab';
-                status.style.color = '#4ade80';
-            }
-        });
-    });
-})();
-
-// ── AI Bug Report Writer (input + optional screenshot in panel) ──
-(function setupBugReport() {
-    const card = document.getElementById('bugReportCard');
-    const form = document.getElementById('bugReportForm');
-    card.addEventListener('click', () => toggleToolSection('bugReportCard', 'bugReportForm'));
-
-    let image = null, imageType = null;
-    const drop = document.getElementById('brDrop');
-    const fileInput = document.getElementById('brFile');
-    const thumbWrap = document.getElementById('brThumbWrap');
-    const status = document.getElementById('brStatus');
-
-    const loadImage = (file) => {
-        if (!file || !file.type.startsWith('image/')) return;
-        if (file.size > 5 * 1024 * 1024) { status.textContent = 'Image larger than 5 MB.'; status.style.color = '#f87171'; return; }
-        const reader = new FileReader();
-        reader.onload = () => {
-            imageType = file.type;
-            image = reader.result.split(',')[1];
-            document.getElementById('brThumb').src = reader.result;
-            thumbWrap.classList.remove('hidden');
-            drop.classList.add('hidden');
-        };
-        reader.readAsDataURL(file);
-    };
-    drop.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', () => { if (fileInput.files[0]) loadImage(fileInput.files[0]); });
-    drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.borderColor = '#6366f1'; });
-    drop.addEventListener('dragleave', () => { drop.style.borderColor = ''; });
-    drop.addEventListener('drop', e => { e.preventDefault(); drop.style.borderColor = ''; if (e.dataTransfer.files[0]) loadImage(e.dataTransfer.files[0]); });
-    // Only capture pastes while the bug-report form is open
-    document.addEventListener('paste', e => {
-        if (form.classList.contains('hidden')) return;
-        const item = Array.from(e.clipboardData.items).find(i => i.type.startsWith('image/'));
-        if (item) loadImage(item.getAsFile());
-    });
-    document.getElementById('brThumbX').addEventListener('click', (e) => {
-        e.stopPropagation();
-        image = null; imageType = null; fileInput.value = '';
-        thumbWrap.classList.add('hidden');
-        drop.classList.remove('hidden');
-    });
-
-    const btn = document.getElementById('brGenerate');
-    btn.addEventListener('click', () => {
-        const description = document.getElementById('brDesc').value.trim();
-        if (!description) { status.textContent = 'Describe the bug first.'; status.style.color = '#f87171'; return; }
-        btn.disabled = true;
-        status.style.color = '#94a3b8';
-        status.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Writing the report with AI…';
-        chrome.runtime.sendMessage({ action: 'aiGenerateBugReport', description, image, imageType }, (resp) => {
-            btn.disabled = false;
-            if (chrome.runtime.lastError || !resp || resp.error) {
-                const err = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'unknown error';
-                status.textContent = err === 'no_api_key' ? 'AI key not configured'
-                    : err === 'not_a_bug' ? 'That does not describe a software bug.'
-                        : 'Failed: ' + err;
-                status.style.color = '#f87171';
-            } else {
-                status.innerHTML = '<i class="fas fa-check"></i> Opened in a new tab';
-                status.style.color = '#4ade80';
-            }
-        });
-    });
-})();
-
-// ── Countdown Timer (local to the side panel) ──
-(function setupTimer() {
-    const card = document.getElementById('timerCard');
-    card.addEventListener('click', () => toggleToolSection('timerCard', 'timerForm'));
-
-    const display = document.getElementById('timerDisplay');
-    const inputs = document.getElementById('timerInputs');
-    const startBtn = document.getElementById('timerStart');
-    const pauseBtn = document.getElementById('timerPause');
-    const resetBtn = document.getElementById('timerReset');
-    const hIn = document.getElementById('timerH');
-    const mIn = document.getElementById('timerM');
-    const sIn = document.getElementById('timerS');
-
-    const TICK = 100;        // ms - fine-grained so decimals count properly
-    let remainingMs = 0;     // milliseconds left
-    let intervalId = null;
-
-    const fmt = (ms) => {
-        const total = Math.ceil(ms / 1000); // show whole seconds, rounding up
-        const h = Math.floor(total / 3600);
-        const m = Math.floor((total % 3600) / 60);
-        const s = total % 60;
-        return [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
-    };
-    const render = () => { display.textContent = fmt(remainingMs); };
-
-    const tick = () => {
-        remainingMs -= TICK;
-        if (remainingMs <= 0) {
-            remainingMs = 0;
-            render();
-            clearInterval(intervalId);
-            intervalId = null;
-            display.classList.add('finished');
-            startBtn.classList.remove('hidden'); startBtn.innerHTML = '<i class="fas fa-play"></i> Start';
-            pauseBtn.classList.add('hidden');
-            return;
-        }
-        render();
-    };
-
-    const start = () => {
-        // Resume if paused mid-countdown; otherwise read the inputs (decimals allowed)
-        if (remainingMs <= 0) {
-            const h = Math.min(99, Math.max(0, parseFloat(hIn.value) || 0));
-            const m = Math.min(59.999, Math.max(0, parseFloat(mIn.value) || 0));
-            const s = Math.min(59.999, Math.max(0, parseFloat(sIn.value) || 0));
-            remainingMs = Math.round((h * 3600 + m * 60 + s) * 1000);
-        }
-        if (remainingMs <= 0) return; // nothing to count
-        display.classList.remove('finished');
-        render();
-        inputs.classList.add('hidden');
-        startBtn.classList.add('hidden');
-        pauseBtn.classList.remove('hidden');
-        resetBtn.classList.remove('hidden');
-        intervalId = setInterval(tick, TICK);
-    };
-
-    const pause = () => {
-        clearInterval(intervalId);
-        intervalId = null;
-        pauseBtn.classList.add('hidden');
-        startBtn.classList.remove('hidden');
-        startBtn.innerHTML = '<i class="fas fa-play"></i> Resume';
-    };
-
-    const reset = () => {
-        clearInterval(intervalId);
-        intervalId = null;
-        remainingMs = 0;
-        display.classList.remove('finished');
-        render();
-        inputs.classList.remove('hidden');
-        startBtn.classList.remove('hidden');
-        startBtn.innerHTML = '<i class="fas fa-play"></i> Start';
-        pauseBtn.classList.add('hidden');
-        resetBtn.classList.add('hidden');
-    };
-
-    startBtn.addEventListener('click', start);
-    pauseBtn.addEventListener('click', pause);
-    resetBtn.addEventListener('click', reset);
-})();
+    await ensureContentScript(tab.id);
+    await chrome.tabs.sendMessage(tab.id, { action: 'startImageOcr' }).catch(() => { });
+    showToastMessage('Pick an image on the page (Esc to cancel)', 'success');
+});
 
 // AI Create Profile button - scans the form, generates data via Claude, saves and fills
 document.getElementById('aiBtn').addEventListener('click', async () => {

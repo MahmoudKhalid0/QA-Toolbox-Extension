@@ -5,12 +5,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadCategories();
 
     // Toggle Handlers
-    document.getElementById('floatingButtonToggle').addEventListener('change', (e) => {
-        updateSetting('showFloatingButton', e.target.checked);
-        reflectFloatingAiFillState(e.target.checked);
-    });
-    document.getElementById('floatingAiFillToggle').addEventListener('change', (e) => updateSetting('floatingAiFill', e.target.checked));
+    document.getElementById('floatingButtonToggle').addEventListener('change', (e) => updateSetting('showFloatingButton', e.target.checked));
     document.getElementById('fieldAiIconToggle').addEventListener('change', (e) => updateSetting('fieldAiIcon', e.target.checked));
+    document.getElementById('charCounterToggle').addEventListener('change', (e) => updateSetting('charCounter', e.target.checked));
+    document.getElementById('selectionAiToggle').addEventListener('change', (e) => updateSetting('selectionAiTools', e.target.checked));
 
     // AI Save Behavior Handler
     document.getElementById('aiSaveBehaviorSelect').addEventListener('change', async (e) => {
@@ -118,9 +116,9 @@ async function loadSettings() {
     const settings = result.formFillerSettings || { randomDigits: 5, showFloatingButton: true };
 
     document.getElementById('floatingButtonToggle').checked = !!settings.showFloatingButton;
-    document.getElementById('floatingAiFillToggle').checked = !!settings.floatingAiFill;
     document.getElementById('fieldAiIconToggle').checked = settings.fieldAiIcon !== false;
-    reflectFloatingAiFillState(!!settings.showFloatingButton);
+    document.getElementById('charCounterToggle').checked = settings.charCounter !== false;
+    document.getElementById('selectionAiToggle').checked = settings.selectionAiTools !== false;
 
     // AI save behavior lives in local storage (set here or via the on-page prompt)
     const aiResult = await chrome.storage.local.get(['aiSaveBehavior', 'aiAutoSaveProfiles']);
@@ -133,7 +131,7 @@ async function updateSetting(key, value) {
     const settings = result.formFillerSettings || { randomDigits: 5 };
 
     // Explicitly handle boolean types for toggles
-    if (key === 'showFloatingButton' || key === 'floatingAiFill' || key === 'fieldAiIcon') {
+    if (key === 'showFloatingButton' || key === 'fieldAiIcon' || key === 'charCounter' || key === 'selectionAiTools') {
         settings[key] = !!value;
     } else {
         settings[key] = value;
@@ -147,21 +145,13 @@ async function updateSetting(key, value) {
     const tabs = await chrome.tabs.query({});
     tabs.forEach(tab => {
         if (!tab.id) return;
-        if (key === 'showFloatingButton' || key === 'floatingAiFill') {
+        if (key === 'showFloatingButton') {
             chrome.tabs.sendMessage(tab.id, { action: 'recheckFloatingButton' }).catch(() => { });
         }
-        if (key === 'fieldAiIcon') {
+        if (key === 'fieldAiIcon' || key === 'charCounter' || key === 'selectionAiTools') {
             chrome.tabs.sendMessage(tab.id, { action: 'settingsChanged' }).catch(() => { });
         }
     });
-}
-
-// The AI-fill sub-setting only applies when the floating button is on
-function reflectFloatingAiFillState(masterOn) {
-    const item = document.getElementById('floatingAiFillItem');
-    const toggle = document.getElementById('floatingAiFillToggle');
-    item.style.opacity = masterOn ? '1' : '0.45';
-    toggle.disabled = !masterOn;
 }
 
 async function loadCategories() {
