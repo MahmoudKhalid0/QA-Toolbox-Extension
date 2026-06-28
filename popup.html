@@ -376,6 +376,18 @@
             background: rgba(14, 165, 233, 0.12);
             border-color: rgba(14, 165, 233, 0.45);
         }
+        .tool-option.active {
+            background: rgba(139, 92, 246, 0.22);
+            border-color: rgba(139, 92, 246, 0.7);
+            box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.4) inset;
+        }
+        .tool-option.active::after {
+            content: 'picking…';
+            margin-left: auto;
+            font-size: 10px;
+            color: #c4b5fd;
+            font-weight: 600;
+        }
         .tool-option > i {
             font-size: 14px;
             width: 18px;

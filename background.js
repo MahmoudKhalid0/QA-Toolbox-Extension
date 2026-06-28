@@ -807,8 +807,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         (async () => {
             try {
                 if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
-                const img = await fetchImageAsBase64(request.src);
-                const text = await extractImageTextWithAI(AI_CONFIG.apiKey, img.data, img.mediaType);
+                // Prefer the base64 captured in the page; fall back to fetching the src
+                let data = request.imageData, mediaType = request.mediaType;
+                if (!data) { const img = await fetchImageAsBase64(request.src); data = img.data; mediaType = img.mediaType; }
+                const text = await extractImageTextWithAI(AI_CONFIG.apiKey, data, mediaType);
                 sendResponse({ text });
             } catch (err) {
                 console.error('aiExtractImageText error:', err);
@@ -1169,7 +1171,8 @@ async function generateRelativeXPathWithAI(apiKey, context, url, extensionXpath,
             'anthropic-dangerous-direct-browser-access': 'true'
         },
         body: JSON.stringify({
-            model: AI_CONFIG.model,
+            // Sonnet: locator accuracy matters more than cost here
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
             max_tokens: 512,
             output_config: { format: { type: 'json_schema', schema } },
             messages: [{ role: 'user', content: prompt }]

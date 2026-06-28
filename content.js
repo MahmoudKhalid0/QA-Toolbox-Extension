@@ -822,7 +822,8 @@ function startInspectMode(onPick) {
 
     const onMove = (e) => {
         const t = e.target;
-        if (!t || t === hl || t === badge || t === document.documentElement || t === document.body) {
+        if (!t || t === hl || t === badge || t === document.documentElement || t === document.body ||
+            (t.closest && t.closest('#ff-insp-cancel'))) {
             hl.style.display = 'none';
             badge.style.display = 'none';
             return;
@@ -841,6 +842,8 @@ function startInspectMode(onPick) {
     };
 
     const onClick = (e) => {
+        // Ignore clicks on our own cancel bar (its own handler deals with it)
+        if (e.target.closest && e.target.closest('#ff-insp-cancel')) return;
         e.preventDefault();
         e.stopPropagation();
         const target = e.target;
@@ -854,10 +857,25 @@ function startInspectMode(onPick) {
         if (e.key === 'Escape') stopInspectMode();
     };
 
+    // Cancel bar (top-center) so the user can exit without having to pick an element
+    const cancel = document.createElement('div');
+    cancel.id = 'ff-insp-cancel';
+    cancel.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:2147483647;' +
+        'background:rgba(15,15,35,0.95);color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:24px;' +
+        'padding:8px 16px;font-family:\'Segoe UI\',Arial,sans-serif;font-size:13px;display:flex;align-items:center;gap:12px;' +
+        'box-shadow:0 6px 22px rgba(0,0,0,0.5);';
+    cancel.innerHTML = '<span><i class="fas fa-crosshairs" style="color:#8b5cf6;margin-left:4px;"></i> Pick an element</span>' +
+        '<button id="ff-insp-cancel-btn" style="background:#ef4444;border:none;color:#fff;border-radius:14px;padding:4px 12px;cursor:pointer;font-size:12px;font-weight:600;">Cancel (Esc)</button>';
+    document.body.appendChild(cancel);
+    cancel.querySelector('#ff-insp-cancel-btn').addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        stopInspectMode();
+    });
+
     document.addEventListener('mousemove', onMove, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKey, true);
-    inspectState = { hl, badge, onMove, onClick, onKey };
+    inspectState = { hl, badge, cancel, onMove, onClick, onKey };
 }
 
 function stopInspectMode() {
@@ -867,7 +885,10 @@ function stopInspectMode() {
     document.removeEventListener('keydown', inspectState.onKey, true);
     inspectState.hl.remove();
     inspectState.badge.remove();
+    if (inspectState.cancel) inspectState.cancel.remove();
     inspectState = null;
+    // Let the side panel clear the active-tool highlight
+    chrome.runtime.sendMessage({ action: 'inspectModeEnded' }).catch(() => { });
 }
 
 let inspectorDragCleanup = null;
@@ -2003,14 +2024,35 @@ function updateSelectionTools() {
         icon.addEventListener('click', (e) => { e.stopPropagation(); toggleSelectionMenu(); });
         document.body.appendChild(icon);
     }
+    positionSelectionIcon();
+}
+
+// Keep the selection icon pinned to the selection - recompute on scroll/resize
+function positionSelectionIcon() {
+    const icon = document.getElementById('ff-sel-icon');
+    if (!icon || icon.style.display === 'none') return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.toString().trim()) return;
     try {
         const r = sel.getRangeAt(0).getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) return;
         let top = r.top - 30; if (top < 4) top = r.bottom + 6;
         let left = r.right - 24; left = Math.max(4, Math.min(left, window.innerWidth - 28));
         icon.style.top = top + 'px';
         icon.style.left = left + 'px';
+        // The open menu moves with the icon too
+        const menu = document.getElementById('ff-sel-menu');
+        if (menu) {
+            const ir = icon.getBoundingClientRect();
+            let mt = ir.bottom + 4;
+            if (mt + menu.offsetHeight > window.innerHeight - 6) mt = ir.top - menu.offsetHeight - 4;
+            menu.style.top = mt + 'px';
+            menu.style.left = Math.max(4, Math.min(ir.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 6)) + 'px';
+        }
     } catch (e) { }
 }
+window.addEventListener('scroll', positionSelectionIcon, true);
+window.addEventListener('resize', positionSelectionIcon, true);
 
 function toggleSelectionMenu() {
     const existing = document.getElementById('ff-sel-menu');
@@ -2092,6 +2134,27 @@ function reviewTypeLabel(type, rtl) {
     return type;
 }
 
+// Download the review issues as a CSV file (UTF-8 with BOM for Excel/Arabic)
+function downloadReviewCsv(issues) {
+    const rows = [['#', 'Type', 'Original', 'Correction', 'Context', 'Explanation']];
+    issues.forEach((it, i) => rows.push([
+        i + 1, it.type || '', it.original || '', it.correction || '', it.context || '', it.explanation || ''
+    ]));
+    const csv = rows.map(r => r.map(c => {
+        const s = String(c == null ? '' : c).replace(/"/g, '""');
+        return /[",\n]/.test(s) ? `"${s}"` : s;
+    }).join(',')).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `language-review-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
 // Render the structured language review: each mistake as wrong -> correct + why
 function showReviewResult(review) {
     const old = document.getElementById('ff-sel-result');
@@ -2128,7 +2191,9 @@ function showReviewResult(review) {
             #ff-sel-result { position: fixed; top: 16px; right: 16px; width: 380px; max-height: 82vh; z-index: 2147483647; display: flex; flex-direction: column; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid rgba(139,92,246,0.5); border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff; font-family: 'Segoe UI', Arial, sans-serif; }
             #ff-sel-result .sr-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
             #ff-sel-result .sr-title { font: 700 13px/1.4 'Segoe UI', Arial; }
+            #ff-sel-result .sr-btns { display: flex; gap: 6px; }
             #ff-sel-result .sr-btns button { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
+            #ff-sel-result .sr-btns button:hover { background: rgba(255,255,255,0.22); }
             #ff-sel-result .sr-body { overflow-y: auto; padding: 8px 12px 12px; }
             #ff-sel-result .rv-item { background: rgba(0,0,0,0.3); border-radius: 9px; padding: 10px 12px; margin-top: 8px; }
             #ff-sel-result .rv-line { font-size: 14px; line-height: 1.7; word-break: break-word; }
@@ -2142,12 +2207,17 @@ function showReviewResult(review) {
         </style>
         <div class="sr-head">
             <span class="sr-title">&#128221; Language Review${issues.length ? ' (' + issues.length + ')' : ''}</span>
-            <div class="sr-btns"><button id="sr-close" title="Close">&#10005;</button></div>
+            <div class="sr-btns">
+                ${issues.length ? '<button id="sr-csv" title="Download as CSV"><i class="fas fa-file-csv"></i></button>' : ''}
+                <button id="sr-close" title="Close">&#10005;</button>
+            </div>
         </div>
         <div class="sr-body">${body}</div>
     `;
     document.body.appendChild(panel);
     panel.querySelector('#sr-close').addEventListener('click', () => panel.remove());
+    const csvBtn = panel.querySelector('#sr-csv');
+    if (csvBtn) csvBtn.addEventListener('click', () => downloadReviewCsv(issues));
 
     let drag = null;
     const head = panel.querySelector('.sr-head');
@@ -2430,7 +2500,49 @@ function getImageSrcFromElement(el) {
     return null;
 }
 
-function handleImageOcrPick(el) {
+// Get the image as base64 FROM THE PAGE CONTEXT (it's already loaded here, with
+// the right cookies/session) - more reliable than fetching it in the background.
+async function getImageBase64(el, src) {
+    const dataMatch = /^data:(image\/[a-zA-Z+]+);base64,(.+)$/.exec(src || '');
+    if (dataMatch) return { data: dataMatch[2], mediaType: dataMatch[1] };
+
+    // 1) Fetch in the page origin (carries the page's cookies)
+    try {
+        const res = await fetch(src);
+        if (res.ok) {
+            const blob = await res.blob();
+            if (/^image\/(jpeg|png|gif|webp)$/.test(blob.type)) {
+                return { data: await blobToBase64(blob), mediaType: blob.type };
+            }
+        }
+    } catch (e) { /* fall through to canvas */ }
+
+    // 2) Canvas from the <img> (works for same-origin or CORS-enabled images)
+    try {
+        const img = el.tagName === 'IMG' ? el : null;
+        if (img && img.complete && img.naturalWidth) {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            const dataUrl = canvas.toDataURL('image/png'); // throws if tainted
+            return { data: dataUrl.split(',')[1], mediaType: 'image/png' };
+        }
+    } catch (e) { /* tainted/cross-origin */ }
+
+    return null;
+}
+
+function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(',')[1]);
+        r.onerror = reject;
+        r.readAsDataURL(blob);
+    });
+}
+
+async function handleImageOcrPick(el) {
     const src = getImageSrcFromElement(el);
     if (!src) {
         // Not an image - tell the user and let them pick again
@@ -2439,7 +2551,14 @@ function handleImageOcrPick(el) {
         return;
     }
     showFabAiStatus('loading', 'Reading text from the image…');
-    chrome.runtime.sendMessage({ action: 'aiExtractImageText', src }, (resp) => {
+
+    const img = await getImageBase64(el, src);
+    if (!img) {
+        showFabAiStatus('error', "Couldn't read this image (it may be protected)");
+        return;
+    }
+
+    chrome.runtime.sendMessage({ action: 'aiExtractImageText', imageData: img.data, mediaType: img.mediaType }, (resp) => {
         if (chrome.runtime.lastError || !resp || resp.error || resp.text === undefined) {
             const err = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'unknown';
             showFabAiStatus('error', err === 'no_api_key' ? 'AI key is not configured' : ('Failed: ' + err));

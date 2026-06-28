@@ -361,6 +361,28 @@ function toggleToolSection(cardId, panelId) {
     });
 }
 
+// Highlight which inspect tool is currently picking; cleared when picking ends
+const INSPECT_TOOL_IDS = ['inspectBtn', 'xpathBtn', 'aiXpathBtn', 'ocrBtn'];
+let inspectStartingGuard = false;
+function markActiveTool(id) {
+    INSPECT_TOOL_IDS.forEach(t => {
+        const el = document.getElementById(t);
+        if (el) el.classList.toggle('active', t === id);
+    });
+    // Ignore the immediate "ended" that fires from the content script's internal reset
+    inspectStartingGuard = true;
+    setTimeout(() => { inspectStartingGuard = false; }, 500);
+}
+function clearActiveTool() {
+    INSPECT_TOOL_IDS.forEach(t => {
+        const el = document.getElementById(t);
+        if (el) el.classList.remove('active');
+    });
+}
+chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'inspectModeEnded' && !inspectStartingGuard) clearActiveTool();
+});
+
 // Element Inspector button - hover-highlight picking, then a properties/style panel
 // Inspector card: expand/collapse the three inspect-tool options
 document.getElementById('inspectorToolBtn').addEventListener('click', () => {
@@ -376,6 +398,7 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
     }
 
     await ensureContentScript(tab.id);
+    markActiveTool('inspectBtn');
     await chrome.tabs.sendMessage(tab.id, { action: 'startInspectMode' }).catch(() => { });
 
     showToastMessage('Pick an element on the page (Esc to cancel)', 'success');
@@ -391,6 +414,7 @@ async function startXPathFinder(mode) {
     }
 
     await ensureContentScript(tab.id);
+    markActiveTool(mode === 'ai' ? 'aiXpathBtn' : 'xpathBtn');
     await chrome.tabs.sendMessage(tab.id, { action: 'startXPathFinder', mode }).catch(() => { });
 
     showToastMessage('Pick an element on the page (Esc to cancel)', 'success');
@@ -407,6 +431,7 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
         return;
     }
     await ensureContentScript(tab.id);
+    markActiveTool('ocrBtn');
     await chrome.tabs.sendMessage(tab.id, { action: 'startImageOcr' }).catch(() => { });
     showToastMessage('Pick an image on the page (Esc to cancel)', 'success');
 });
