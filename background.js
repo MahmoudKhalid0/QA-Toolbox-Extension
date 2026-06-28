@@ -8,6 +8,46 @@ if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => { });
 }
 
+// ===== Console logs: in-memory ring buffer per tab (avoids the storage
+// read-modify-write that made the old tool hang on log-heavy pages) =====
+const consoleLogs = new Map();   // tabId -> [{ level, message, source, ts, count }]
+const CONSOLE_CAP = 1000;
+
+function addConsoleBatch(tabId, batch) {
+    if (tabId == null) return;
+    let arr = consoleLogs.get(tabId);
+    if (!arr) { arr = []; consoleLogs.set(tabId, arr); }
+    for (const item of batch) {
+        const last = arr[arr.length - 1];
+        if (last && last.level === item.level && last.message === item.message) {
+            last.count += (item.count || 1);
+            last.ts = item.ts;
+        } else {
+            arr.push(item);
+        }
+    }
+    if (arr.length > CONSOLE_CAP) arr.splice(0, arr.length - CONSOLE_CAP);
+    updateConsoleBadge(tabId);
+}
+
+// Show the error count for a tab on the toolbar icon
+function updateConsoleBadge(tabId) {
+    const arr = consoleLogs.get(tabId) || [];
+    let errors = 0;
+    arr.forEach(l => { if (l.level === 'error') errors += 1; }); // distinct error rows (matches the panel)
+    const text = errors > 0 ? (errors > 999 ? '999+' : String(errors)) : '';
+    try {
+        chrome.action.setBadgeText({ tabId, text });
+        if (text) chrome.action.setBadgeBackgroundColor({ tabId, color: '#ef4444' });
+    } catch (e) { }
+}
+
+// Clear a tab's logs when it navigates to a new page (main frame)
+chrome.webNavigation && chrome.webNavigation.onCommitted && chrome.webNavigation.onCommitted.addListener((d) => {
+    if (d.frameId === 0) { consoleLogs.delete(d.tabId); updateConsoleBadge(d.tabId); }
+});
+chrome.tabs.onRemoved.addListener((tabId) => consoleLogs.delete(tabId));
+
 // Migration: Move profiles from sync/local storage to IndexedDB
 (async () => {
     try {
@@ -820,6 +860,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Console logs: receive a batch from a tab's page
+    if (request.action === 'consoleBatch') {
+        if (sender.tab) addConsoleBatch(sender.tab.id, request.batch || []);
+        return false;
+    }
+    if (request.action === 'getConsoleLogs') {
+        sendResponse({ logs: consoleLogs.get(request.tabId) || [] });
+        return true;
+    }
+    if (request.action === 'clearConsoleLogs') {
+        consoleLogs.delete(request.tabId);
+        updateConsoleBadge(request.tabId);
+        sendResponse({ success: true });
+        return true;
+    }
+    // AI: explain console errors and suggest fixes
+    if (request.action === 'aiExplainConsole') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
+                const result = await explainConsoleWithAI(AI_CONFIG.apiKey, request.logs, request.url);
+                sendResponse({ findings: result.findings });
+            } catch (err) {
+                console.error('aiExplainConsole error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Selection tools: translate the selected text (smart model)
     if (request.action === 'aiTranslateText') {
         (async () => {
@@ -1015,6 +1085,76 @@ async function extractImageTextWithAI(apiKey, base64, mediaType) {
     if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
     const textBlock = (data.content || []).find(b => b.type === 'text');
     return (textBlock && textBlock.text ? textBlock.text : '').trim();
+}
+
+// Explain console errors/warnings and suggest fixes (smart model, structured).
+async function explainConsoleWithAI(apiKey, logs, url) {
+    // Only send errors/warnings, deduped, capped - keeps the prompt small/fast
+    const items = (logs || [])
+        .filter(l => l.level === 'error' || l.level === 'warn')
+        .slice(-40)
+        .map(l => ({ level: l.level, message: String(l.message || '').slice(0, 500), source: l.source || '', count: l.count || 1 }));
+
+    if (items.length === 0) return { findings: [] };
+
+    const schema = {
+        type: 'object',
+        properties: {
+            findings: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        title: { type: 'string', description: 'short title of the problem' },
+                        severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+                        cause: { type: 'string', description: 'likely root cause in plain language' },
+                        fix: { type: 'string', description: 'concrete suggested fix' },
+                        relatedMessage: { type: 'string', description: 'the console message this finding is about' }
+                    },
+                    required: ['title', 'severity', 'cause', 'fix', 'relatedMessage'],
+                    additionalProperties: false
+                }
+            }
+        },
+        required: ['findings'],
+        additionalProperties: false
+    };
+
+    const prompt = [
+        'You are a senior web debugging assistant. Below are console errors/warnings captured from a web page.',
+        'GROUP related messages and explain them: for each distinct problem give a title, severity, the likely root cause, and a concrete fix.',
+        'Be practical and specific (mention the API/resource/selector involved when visible). Do not invent errors that are not in the list.',
+        'Write in English.',
+        '',
+        `Page URL: ${url || ''}`,
+        `Console messages (newest last): ${JSON.stringify(items)}`
+    ].join('\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
+            max_tokens: 4096,
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content: prompt }]
+        })
+    });
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
+        throw new Error(message);
+    }
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
+    const block = (data.content || []).find(b => b.type === 'text');
+    if (!block || !block.text) throw new Error('Empty AI response');
+    return JSON.parse(block.text);
 }
 
 // Plain text completion via Claude (smart model) - used by the selection tools.

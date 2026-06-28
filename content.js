@@ -81,6 +81,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
 });
 
+// Relay console-capture batches (from the MAIN-world script) to the background
+window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || !e.data.__qaConsole || !Array.isArray(e.data.batch)) return;
+    chrome.runtime.sendMessage({ action: 'consoleBatch', batch: e.data.batch }).catch(() => { });
+}, false);
+
 // Floating Button Support
 let matchingProfiles = [];
 const fabAiFillEnabled = true; // the "AI Fill" option is always available in the FAB

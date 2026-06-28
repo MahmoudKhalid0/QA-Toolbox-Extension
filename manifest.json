@@ -41,6 +41,17 @@
                 "<all_urls>"
             ],
             "js": [
+                "modules/console-capture.js"
+            ],
+            "run_at": "document_start",
+            "world": "MAIN",
+            "all_frames": true
+        },
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
                 "content.js"
             ],
             "run_at": "document_idle"

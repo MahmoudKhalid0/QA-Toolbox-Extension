@@ -255,6 +255,8 @@
             display: flex;
             background: #16162e;
             border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            position: relative;
+            z-index: 5;
         }
 
         .tab-btn {
@@ -485,6 +487,50 @@
         }
         .timer-btn:hover { background: rgba(255, 255, 255, 0.22); }
         .timer-btn.hidden, .tool-form-gen.hidden { display: none; }
+
+        /* Debug tab (Console) */
+        .dbg-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+        .dbg-filters { display: flex; gap: 5px; flex-wrap: wrap; }
+        .dbg-filter {
+            background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #cbd5e1;
+            padding: 5px 9px; border-radius: 14px; font-size: 11px; cursor: pointer; font-family: inherit;
+        }
+        .dbg-filter span { opacity: 0.7; margin-left: 2px; }
+        .dbg-filter.active { background: rgba(99, 102, 241, 0.25); border-color: rgba(99, 102, 241, 0.6); color: #fff; }
+        .dbg-actions { display: flex; gap: 6px; }
+        .dbg-btn {
+            background: rgba(255, 255, 255, 0.1); border: none; color: #fff; cursor: pointer;
+            padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;
+        }
+        .dbg-btn:hover { background: rgba(255, 255, 255, 0.2); }
+        .dbg-explain { background: linear-gradient(135deg, #8b5cf6, #6366f1); }
+        .dbg-explain:disabled { opacity: 0.6; cursor: wait; }
+        .dbg-status { font-size: 11.5px; color: #94a3b8; min-height: 14px; margin-bottom: 6px; }
+        .dbg-list { display: flex; flex-direction: column; gap: 4px; }
+        .dbg-row {
+            display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-radius: 8px;
+            background: rgba(255, 255, 255, 0.03); border-left: 3px solid transparent; font-size: 12px;
+        }
+        .dbg-row.error { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.07); }
+        .dbg-row.warn { border-left-color: #f59e0b; background: rgba(245, 158, 11, 0.06); }
+        .dbg-row.log { border-left-color: #475569; }
+        .dbg-row .dbg-msg { flex: 1; color: #e2e8f0; white-space: pre-wrap; word-break: break-word; font-family: 'Consolas', monospace; line-height: 1.5; }
+        .dbg-row .dbg-src { color: #60a5fa; font-size: 10.5px; white-space: nowrap; cursor: pointer; font-family: 'Consolas', monospace; align-self: flex-start; }
+        .dbg-row .dbg-src:hover { text-decoration: underline; }
+        .dbg-row .dbg-count { background: rgba(255,255,255,0.15); color: #fff; border-radius: 10px; padding: 0 6px; font-size: 10px; height: 16px; display: inline-flex; align-items: center; flex-shrink: 0; }
+        .dbg-row .dbg-copy { background: rgba(255,255,255,0.08); border: none; color: rgba(255,255,255,0.6); cursor: pointer; border-radius: 5px; width: 22px; height: 20px; flex-shrink: 0; font-size: 10px; }
+        .dbg-row .dbg-copy:hover { background: rgba(255,255,255,0.2); color: #fff; }
+        .dbg-tab-badge { background: #ef4444; color: #fff; border-radius: 10px; min-width: 16px; height: 16px; padding: 0 5px; font-size: 10px; font-weight: 700; align-items: center; justify-content: center; margin-left: 5px; }
+        .dbg-empty { text-align: center; color: #64748b; padding: 30px 10px; font-size: 13px; }
+        /* AI findings */
+        .dbg-finding { background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.3); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+        .dbg-finding h5 { font-size: 13px; color: #fff; margin-bottom: 4px; display: flex; align-items: center; gap: 7px; }
+        .dbg-finding .sev { font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 2px 7px; border-radius: 8px; }
+        .dbg-finding .sev.high { background: rgba(239,68,68,0.2); color: #fca5a5; }
+        .dbg-finding .sev.medium { background: rgba(245,158,11,0.2); color: #fcd34d; }
+        .dbg-finding .sev.low { background: rgba(16,185,129,0.2); color: #6ee7b7; }
+        .dbg-finding p { font-size: 12px; color: #cbd5e1; line-height: 1.6; margin-top: 4px; }
+        .dbg-finding .fix { color: #7dd3fc; }
 
         .tools-coming {
             border: 1px dashed rgba(255, 255, 255, 0.15);
@@ -1313,10 +1359,14 @@
 
         <div class="tab-bar">
             <button class="tab-btn active" data-tab="profiles">
-                <i class="fas fa-users"></i> Profiles
+                <i class="fas fa-keyboard"></i> Form Filler
             </button>
             <button class="tab-btn" data-tab="tools">
                 <i class="fas fa-toolbox"></i> Tools
+            </button>
+            <button class="tab-btn" data-tab="debug">
+                <i class="fas fa-bug"></i> Debug
+                <span id="dbgTabBadge" class="dbg-tab-badge" style="display:none;"></span>
             </button>
         </div>
 
@@ -1404,6 +1454,24 @@
                 <div class="tools-coming">
                     <i class="fas fa-plus-circle"></i> More QA tools coming soon
                 </div>
+            </div>
+
+            <!-- Debug tab -->
+            <div class="tab-page hidden" id="tab-debug">
+                <div class="dbg-toolbar">
+                    <div class="dbg-filters">
+                        <button class="dbg-filter active" data-level="all">All <span id="dbg-c-all">0</span></button>
+                        <button class="dbg-filter" data-level="error">Errors <span id="dbg-c-error">0</span></button>
+                        <button class="dbg-filter" data-level="warn">Warnings <span id="dbg-c-warn">0</span></button>
+                        <button class="dbg-filter" data-level="log">Logs <span id="dbg-c-log">0</span></button>
+                    </div>
+                    <div class="dbg-actions">
+                        <button class="dbg-btn dbg-explain" id="dbgExplainBtn"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Fix</button>
+                        <button class="dbg-btn" id="dbgClearBtn" title="Clear"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>
+                <div class="dbg-status" id="dbgStatus"></div>
+                <div class="dbg-list" id="dbgList"></div>
             </div>
         </div>
     </div>

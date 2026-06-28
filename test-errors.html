@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QA-Toolbox — Console Test Page</title>
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; background: #0f172a; color: #e2e8f0; }
+        h1 { font-size: 22px; }
+        p { color: #94a3b8; line-height: 1.6; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+        button { padding: 12px 14px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; color: #fff; }
+        .log { background: #475569; }
+        .info { background: #0ea5e9; }
+        .warn { background: #f59e0b; }
+        .err { background: #ef4444; }
+        .ref { background: #dc2626; }
+        .prom { background: #8b5cf6; }
+        .spam { background: #6366f1; grid-column: span 2; }
+        .net { background: #0891b2; grid-column: span 2; }
+        small { color: #64748b; display: block; margin-top: 4px; }
+    </style>
+</head>
+
+<body>
+    <h1>🧪 QA-Toolbox — Console Test Page</h1>
+    <p>Some logs/warnings/errors fire automatically on load. Use the buttons to fire more <b>after load</b>,
+        then open QA-Toolbox → <b>Debug</b> to see them and try <b>Explain &amp; Fix</b>.</p>
+
+    <div class="grid">
+        <button class="log" onclick="console.log('A normal log', { user: 'mahmoud', id: 42 })">console.log</button>
+        <button class="info" onclick="console.info('An info message')">console.info</button>
+        <button class="warn" onclick="console.warn('Deprecation warning: foo() is deprecated')">console.warn</button>
+        <button class="err" onclick="console.error('Manual error: payment failed', { code: 500 })">console.error</button>
+        <button class="ref" onclick="brokenFunctionThatDoesNotExist()">Uncaught ReferenceError</button>
+        <button class="ref" onclick="(null).x = 1">Uncaught TypeError</button>
+        <button class="prom" onclick="Promise.reject(new Error('Async DB connection refused'))">Unhandled Promise Rejection</button>
+        <button class="err" onclick="JSON.parse('{bad json}')">Uncaught SyntaxError</button>
+        <button class="net" onclick="fetch('https://example.com/does-not-exist-404').then(r=>console.log('fetch status', r.status)).catch(e=>console.error('Fetch failed:', e.message))">Failed fetch (404 / error)</button>
+        <button class="spam" onclick="spam()">Spam 2000 logs (hang test)</button>
+    </div>
+    <small>The spam button fires 2000 logs at once — the old tool would freeze; this one shouldn't.</small>
+
+    <script>
+        // Fire automatically on page load
+        console.log('Test page loaded');
+        console.info('Build version 1.0.3');
+        console.warn('Warning: running in test mode');
+        console.error('Startup error: config "apiUrl" is missing');
+        setTimeout(() => { undefinedAtLoad(); }, 50); // uncaught error shortly after load
+        Promise.reject(new Error('Unhandled rejection on load'));
+
+        function spam() {
+            for (let i = 0; i < 2000; i++) console.log('Spam log #' + i, { i });
+            console.warn('Done spamming 2000 logs');
+        }
+    </script>
+</body>
+
+</html>

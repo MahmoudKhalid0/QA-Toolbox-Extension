@@ -249,7 +249,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 try {
     const savedTab = localStorage.getItem('qaToolboxActiveTab');
-    if (savedTab === 'tools') switchTab(savedTab);
+    if (savedTab === 'tools' || savedTab === 'debug') switchTab(savedTab);
 } catch (e) { }
 
 // The side panel stays open across tab switches - keep the smart filter and
@@ -435,6 +435,152 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
     await chrome.tabs.sendMessage(tab.id, { action: 'startImageOcr' }).catch(() => { });
     showToastMessage('Pick an image on the page (Esc to cancel)', 'success');
 });
+
+// ── Debug tab: Console logs (in-memory, capped) + AI explain ──
+(function setupDebug() {
+    let currentLevel = 'all';
+    let logsCache = [];
+    let viewingFindings = false;
+
+    const dEsc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+    const list = () => document.getElementById('dbgList');
+    const status = () => document.getElementById('dbgStatus');
+    async function activeTabId() { const [t] = await chrome.tabs.query({ active: true, currentWindow: true }); return t ? t.id : null; }
+
+    let filteredCache = [];
+
+    function updateCounts() {
+        const counts = { error: 0, warn: 0, log: 0 };
+        logsCache.forEach(l => { counts[l.level] = (counts[l.level] || 0) + 1; });
+        document.getElementById('dbg-c-all').textContent = logsCache.length;
+        document.getElementById('dbg-c-error').textContent = counts.error;
+        document.getElementById('dbg-c-warn').textContent = counts.warn;
+        document.getElementById('dbg-c-log').textContent = counts.log;
+        // Badge on the Debug tab button (errors)
+        const badge = document.getElementById('dbgTabBadge');
+        if (badge) {
+            badge.textContent = counts.error ? counts.error : '';
+            badge.style.display = counts.error ? 'inline-flex' : 'none';
+        }
+    }
+
+    function render() {
+        viewingFindings = false;
+        updateCounts();
+        const filtered = currentLevel === 'all' ? logsCache : logsCache.filter(l => l.level === currentLevel);
+        // Newest first
+        filteredCache = filtered.slice().reverse();
+        if (!filteredCache.length) {
+            list().innerHTML = '<div class="dbg-empty">No console messages captured yet.<br>Interact with the page and they\'ll show here.</div>';
+            return;
+        }
+        list().innerHTML = filteredCache.map((l, i) =>
+            `<div class="dbg-row ${dEsc(l.level)}">
+                <span class="dbg-msg">${dEsc(l.message)}</span>
+                ${l.count > 1 ? `<span class="dbg-count">×${l.count}</span>` : ''}
+                ${l.source ? `<span class="dbg-src" data-src="${dEsc(l.source)}" title="Click to copy location">${dEsc(l.source)}</span>` : ''}
+                <button class="dbg-copy" data-i="${i}" title="Copy"><i class="fas fa-copy"></i></button>
+            </div>`).join('');
+    }
+
+    // Click the file:line location to copy just the location
+    list().addEventListener('click', (e) => {
+        const src = e.target.closest('.dbg-src');
+        if (!src) return;
+        navigator.clipboard.writeText(src.dataset.src || src.textContent).then(() => {
+            const o = src.textContent;
+            src.textContent = 'copied!';
+            setTimeout(() => { src.textContent = o; }, 1000);
+        }).catch(() => { });
+    });
+
+    // Copy a single row (message + source)
+    list().addEventListener('click', (e) => {
+        const btn = e.target.closest('.dbg-copy');
+        if (!btn) return;
+        const l = filteredCache[+btn.dataset.i];
+        if (!l) return;
+        const txt = l.message + (l.source ? '\n@ ' + l.source : '');
+        navigator.clipboard.writeText(txt).then(() => {
+            const o = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check"></i>';
+            setTimeout(() => { btn.innerHTML = o; }, 1200);
+        }).catch(() => { });
+    });
+
+    function refresh() {
+        activeTabId().then(id => {
+            if (id == null) return;
+            chrome.runtime.sendMessage({ action: 'getConsoleLogs', tabId: id }, (resp) => {
+                if (chrome.runtime.lastError || !resp) return;
+                logsCache = resp.logs || [];
+                updateCounts(); // keep the tab badge live even when not on the Debug tab
+                const visible = !document.getElementById('tab-debug').classList.contains('hidden');
+                if (visible && !viewingFindings) render();
+            });
+        });
+    }
+
+    document.querySelectorAll('.dbg-filter').forEach(b => b.addEventListener('click', () => {
+        currentLevel = b.dataset.level;
+        document.querySelectorAll('.dbg-filter').forEach(x => x.classList.toggle('active', x === b));
+        if (!viewingFindings) render();
+    }));
+
+    document.getElementById('dbgClearBtn').addEventListener('click', async () => {
+        const id = await activeTabId(); if (id == null) return;
+        chrome.runtime.sendMessage({ action: 'clearConsoleLogs', tabId: id }, () => {
+            logsCache = []; status().textContent = ''; render();
+        });
+    });
+
+    document.getElementById('dbgExplainBtn').addEventListener('click', async () => {
+        const ew = logsCache.filter(l => l.level === 'error' || l.level === 'warn');
+        if (!ew.length) { status().style.color = '#f87171'; status().textContent = 'No errors or warnings to explain.'; return; }
+        const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const btn = document.getElementById('dbgExplainBtn');
+        btn.disabled = true;
+        status().style.color = '#94a3b8';
+        status().innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing ' + ew.length + ' issue(s) with AI…';
+        chrome.runtime.sendMessage({ action: 'aiExplainConsole', logs: logsCache, url: t && t.url }, (resp) => {
+            btn.disabled = false;
+            if (chrome.runtime.lastError || !resp || resp.error) {
+                status().style.color = '#f87171';
+                status().textContent = (resp && resp.error === 'no_api_key') ? 'AI key not configured' : 'Failed: ' + ((resp && resp.error) || 'error');
+                return;
+            }
+            status().textContent = '';
+            renderFindings(resp.findings || []);
+        });
+    });
+
+    function renderFindings(findings) {
+        viewingFindings = true;
+        const head = '<div style="margin-bottom:8px;"><button class="dbg-btn" id="dbgBackBtn"><i class="fas fa-arrow-left"></i> Back to logs</button></div>';
+        if (!findings.length) {
+            list().innerHTML = head + '<div class="dbg-empty">The AI found nothing actionable.</div>';
+        } else {
+            list().innerHTML = head + findings.map(f =>
+                `<div class="dbg-finding">
+                    <h5>${dEsc(f.title)} <span class="sev ${dEsc(f.severity)}">${dEsc(f.severity)}</span></h5>
+                    <p>${dEsc(f.cause)}</p>
+                    <p class="fix"><i class="fas fa-lightbulb"></i> ${dEsc(f.fix)}</p>
+                </div>`).join('');
+        }
+        document.getElementById('dbgBackBtn').addEventListener('click', () => {
+            viewingFindings = false;
+            render();        // show the logs we already have immediately
+            refresh();       // and pull any that arrived during analysis
+        });
+    }
+
+    // Poll always (lightweight) so the tab badge stays live; list re-renders only
+    // when the Debug tab is visible
+    setInterval(refresh, 1500);
+    refresh();
+    const dtab = document.querySelector('.tab-btn[data-tab="debug"]');
+    if (dtab) dtab.addEventListener('click', () => { viewingFindings = false; refresh(); });
+})();
 
 // AI Create Profile button - scans the form, generates data via Claude, saves and fills
 document.getElementById('aiBtn').addEventListener('click', async () => {
