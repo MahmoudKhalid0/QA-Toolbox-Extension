@@ -30,23 +30,43 @@ function addConsoleBatch(tabId, batch) {
     updateConsoleBadge(tabId);
 }
 
-// Show the error count for a tab on the toolbar icon
-function updateConsoleBadge(tabId) {
-    const arr = consoleLogs.get(tabId) || [];
-    let errors = 0;
-    arr.forEach(l => { if (l.level === 'error') errors += 1; }); // distinct error rows (matches the panel)
-    const text = errors > 0 ? (errors > 999 ? '999+' : String(errors)) : '';
+// ===== Network requests: same per-tab in-memory ring buffer (fetch/XHR only,
+// captured in the page; webRequest-on-all_urls is what hung the old tool) =====
+const networkReqs = new Map();   // tabId -> [{ kind, method, url, status, ... }]
+const NETWORK_CAP = 500;
+
+function addNetworkBatch(tabId, batch) {
+    if (tabId == null) return;
+    let arr = networkReqs.get(tabId);
+    if (!arr) { arr = []; networkReqs.set(tabId, arr); }
+    for (const item of batch) arr.push(item);
+    if (arr.length > NETWORK_CAP) arr.splice(0, arr.length - NETWORK_CAP);
+    updateBadge(tabId);
+}
+
+function isFailedReq(r) { return r.status === 0 || r.status >= 400; }
+
+// Toolbar icon badge = console error rows + failed network requests for the tab
+function updateBadge(tabId) {
+    const logs = consoleLogs.get(tabId) || [];
+    const reqs = networkReqs.get(tabId) || [];
+    let count = 0;
+    logs.forEach(l => { if (l.level === 'error') count += 1; }); // distinct error rows (matches the panel)
+    reqs.forEach(r => { if (isFailedReq(r)) count += 1; });
+    const text = count > 0 ? (count > 999 ? '999+' : String(count)) : '';
     try {
         chrome.action.setBadgeText({ tabId, text });
         if (text) chrome.action.setBadgeBackgroundColor({ tabId, color: '#ef4444' });
     } catch (e) { }
 }
+// Back-compat alias (console code still calls updateConsoleBadge)
+const updateConsoleBadge = updateBadge;
 
-// Clear a tab's logs when it navigates to a new page (main frame)
+// Clear a tab's data when it navigates to a new page (main frame)
 chrome.webNavigation && chrome.webNavigation.onCommitted && chrome.webNavigation.onCommitted.addListener((d) => {
-    if (d.frameId === 0) { consoleLogs.delete(d.tabId); updateConsoleBadge(d.tabId); }
+    if (d.frameId === 0) { consoleLogs.delete(d.tabId); networkReqs.delete(d.tabId); updateBadge(d.tabId); }
 });
-chrome.tabs.onRemoved.addListener((tabId) => consoleLogs.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => { consoleLogs.delete(tabId); networkReqs.delete(tabId); });
 
 // Migration: Move profiles from sync/local storage to IndexedDB
 (async () => {
@@ -890,6 +910,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Network: receive a batch of captured requests from a tab's page
+    if (request.action === 'networkBatch') {
+        if (sender.tab) addNetworkBatch(sender.tab.id, request.batch || []);
+        return false;
+    }
+    if (request.action === 'getNetworkReqs') {
+        sendResponse({ reqs: networkReqs.get(request.tabId) || [] });
+        return true;
+    }
+    if (request.action === 'clearNetworkReqs') {
+        networkReqs.delete(request.tabId);
+        updateBadge(request.tabId);
+        sendResponse({ success: true });
+        return true;
+    }
+    // AI: explain failed network requests and suggest fixes
+    if (request.action === 'aiExplainNetwork') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
+                const result = await explainNetworkWithAI(AI_CONFIG.apiKey, request.reqs, request.url);
+                sendResponse({ findings: result.findings });
+            } catch (err) {
+                console.error('aiExplainNetwork error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Selection tools: translate the selected text (smart model)
     if (request.action === 'aiTranslateText') {
         (async () => {
@@ -1128,6 +1178,82 @@ async function explainConsoleWithAI(apiKey, logs, url) {
         '',
         `Page URL: ${url || ''}`,
         `Console messages (newest last): ${JSON.stringify(items)}`
+    ].join('\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
+            max_tokens: 4096,
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content: prompt }]
+        })
+    });
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
+        throw new Error(message);
+    }
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
+    const block = (data.content || []).find(b => b.type === 'text');
+    if (!block || !block.text) throw new Error('Empty AI response');
+    return JSON.parse(block.text);
+}
+
+// Explain failed network requests (4xx/5xx/network errors) and suggest fixes.
+async function explainNetworkWithAI(apiKey, reqs, url) {
+    // Only send failed requests, capped, with trimmed bodies - keeps it small/fast
+    const items = (reqs || [])
+        .filter(r => r.status === 0 || r.status >= 400)
+        .slice(-25)
+        .map(r => ({
+            method: r.method, url: String(r.url || '').slice(0, 300),
+            status: r.status, statusText: r.statusText || '', error: r.error || '',
+            kind: r.kind, contentType: r.contentType || '',
+            reqBody: r.reqBody ? String(r.reqBody).slice(0, 400) : '',
+            resBody: r.resBody ? String(r.resBody).slice(0, 600) : ''
+        }));
+
+    if (items.length === 0) return { findings: [] };
+
+    const schema = {
+        type: 'object',
+        properties: {
+            findings: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        title: { type: 'string', description: 'short title of the problem' },
+                        severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+                        cause: { type: 'string', description: 'likely root cause in plain language' },
+                        fix: { type: 'string', description: 'concrete suggested fix' },
+                        relatedMessage: { type: 'string', description: 'the request this finding is about (method + url + status)' }
+                    },
+                    required: ['title', 'severity', 'cause', 'fix', 'relatedMessage'],
+                    additionalProperties: false
+                }
+            }
+        },
+        required: ['findings'],
+        additionalProperties: false
+    };
+
+    const prompt = [
+        'You are a senior web/API debugging assistant. Below are FAILED network requests (HTTP 4xx/5xx or network errors) captured from a web page.',
+        'GROUP related failures and explain them: for each distinct problem give a title, severity, the likely root cause, and a concrete fix.',
+        'Use the status code, the response body and headers to be specific (e.g. 401 -> auth/token, 403 -> permissions, 404 -> wrong endpoint, 422 -> validation, 5xx -> server, status 0 -> CORS/DNS/offline).',
+        'Be practical and specific. Do not invent requests that are not in the list. Write in English.',
+        '',
+        `Page URL: ${url || ''}`,
+        `Failed requests (newest last): ${JSON.stringify(items)}`
     ].join('\n');
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {

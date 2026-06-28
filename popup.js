@@ -442,6 +442,16 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
     let logsCache = [];
     let viewingFindings = false;
 
+    let mode = 'console';            // 'console' | 'network'
+    let netCache = [];
+    let netFilter = 'all';           // 'all' | 'failed' | 'xhr'
+    let netFilteredCache = [];
+    let netViewingFindings = false;
+    let lastConsoleSig = '';
+    let lastNetSig = '';
+    const isFailed = (r) => r.status === 0 || r.status >= 400;
+    const sigOf = (arr) => { const l = arr[arr.length - 1]; return arr.length + ':' + (l ? (l.ts || '') + ':' + (l.count || '') : ''); };
+
     const dEsc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
     const list = () => document.getElementById('dbgList');
     const status = () => document.getElementById('dbgStatus');
@@ -456,11 +466,21 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
         document.getElementById('dbg-c-error').textContent = counts.error;
         document.getElementById('dbg-c-warn').textContent = counts.warn;
         document.getElementById('dbg-c-log').textContent = counts.log;
-        // Badge on the Debug tab button (errors)
+        // Console mode badge (error count)
+        const cb = document.getElementById('dbgConsoleBadge');
+        if (cb) { cb.textContent = counts.error || ''; cb.classList.toggle('show', counts.error > 0); }
+        updateTabBadge();
+    }
+
+    // The Debug tab button badge = console errors + failed network requests
+    function updateTabBadge() {
+        const consoleErrors = logsCache.filter(l => l.level === 'error').length;
+        const netFailed = netCache.filter(isFailed).length;
+        const total = consoleErrors + netFailed;
         const badge = document.getElementById('dbgTabBadge');
         if (badge) {
-            badge.textContent = counts.error ? counts.error : '';
-            badge.style.display = counts.error ? 'inline-flex' : 'none';
+            badge.textContent = total ? total : '';
+            badge.style.display = total ? 'inline-flex' : 'none';
         }
     }
 
@@ -511,12 +531,23 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
     function refresh() {
         activeTabId().then(id => {
             if (id == null) return;
+            const visible = !document.getElementById('tab-debug').classList.contains('hidden');
             chrome.runtime.sendMessage({ action: 'getConsoleLogs', tabId: id }, (resp) => {
                 if (chrome.runtime.lastError || !resp) return;
                 logsCache = resp.logs || [];
                 updateCounts(); // keep the tab badge live even when not on the Debug tab
-                const visible = !document.getElementById('tab-debug').classList.contains('hidden');
-                if (visible && !viewingFindings) render();
+                const sig = sigOf(logsCache);
+                // Re-render only when the data actually changed, so clicks/selection survive the poll
+                if (visible && mode === 'console' && !viewingFindings && sig !== lastConsoleSig) { lastConsoleSig = sig; render(); }
+                else lastConsoleSig = sig;
+            });
+            chrome.runtime.sendMessage({ action: 'getNetworkReqs', tabId: id }, (resp) => {
+                if (chrome.runtime.lastError || !resp) return;
+                netCache = resp.reqs || [];
+                netUpdateCounts();
+                const sig = sigOf(netCache);
+                if (visible && mode === 'network' && !netViewingFindings && sig !== lastNetSig) { lastNetSig = sig; netRender(); }
+                else lastNetSig = sig;
             });
         });
     }
@@ -574,12 +605,182 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
         });
     }
 
+    // ── Network panel ──
+    const netList = () => document.getElementById('netList');
+    const netStatus = () => document.getElementById('netStatus');
+
+    function statusClass(r) {
+        if (r.status === 0) return 'serr';
+        if (r.status >= 500) return 's5xx';
+        if (r.status >= 400) return 's4xx';
+        if (r.status >= 300) return 's3xx';
+        return 's2xx';
+    }
+
+    function netUpdateCounts() {
+        const failed = netCache.filter(isFailed).length;
+        document.getElementById('net-c-all').textContent = netCache.length;
+        document.getElementById('net-c-failed').textContent = failed;
+        document.getElementById('net-c-xhr').textContent = netCache.length;
+        const nb = document.getElementById('dbgNetBadge');
+        if (nb) { nb.textContent = failed || ''; nb.classList.toggle('show', failed > 0); }
+        updateTabBadge();
+    }
+
+    function netRender() {
+        netViewingFindings = false;
+        let filtered = netCache;
+        if (netFilter === 'failed') filtered = netCache.filter(isFailed);
+        netFilteredCache = filtered.slice().reverse(); // newest first
+        if (!netFilteredCache.length) {
+            netList().innerHTML = '<div class="dbg-empty">No fetch/XHR requests captured yet.<br>Interact with the page and they\'ll show here.</div>';
+            return;
+        }
+        netList().innerHTML = netFilteredCache.map((r, i) => {
+            const dur = r.duration != null ? Math.round(r.duration) + 'ms' : '';
+            const statusLabel = r.status === 0 ? (r.error || 'ERR') : r.status;
+            return `<div class="net-row ${isFailed(r) ? 'failed' : ''}" data-i="${i}">
+                <span class="net-method">${dEsc(r.method || '')}</span>
+                <span class="net-status ${statusClass(r)}">${dEsc(statusLabel)}</span>
+                <span class="net-url" title="${dEsc(r.url || '')}">${dEsc(r.url || '')}</span>
+                <span class="net-dur">${dEsc(dur)}</span>
+                <button class="net-copy" data-i="${i}" title="Copy"><i class="fas fa-copy"></i></button>
+            </div>
+            <div class="net-detail hidden" data-detail="${i}"></div>`;
+        }).join('');
+    }
+
+    function prettyJson(str) {
+        if (!str || typeof str !== 'string') return '';
+        const t = str.trim();
+        if (t[0] !== '{' && t[0] !== '[') return '';
+        try { return JSON.stringify(JSON.parse(t), null, 2); } catch (e) { return ''; }
+    }
+
+    // Syntax-highlight a JSON string (input is raw text; returns safe HTML)
+    function highlightJson(json) {
+        const esc = dEsc(json);
+        return esc.replace(/("(?:\\.|[^"\\])*"(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g, (m) => {
+            let cls = 'j-num';
+            if (m[0] === '"') cls = /:\s*$/.test(m) ? 'j-key' : 'j-str';
+            else if (m === 'true' || m === 'false') cls = 'j-bool';
+            else if (m === 'null') cls = 'j-null';
+            return `<span class="${cls}">${m}</span>`;
+        });
+    }
+
+    function netDetailHtml(r) {
+        const secH = (label, html) => html ? `<div class="nd-sec">${label}</div><pre>${html}</pre>` : '';
+        const headersH = (h) => h && Object.keys(h).length
+            ? Object.entries(h).map(([k, v]) => `<span class="nd-key">${dEsc(k)}</span>: <span class="nd-val">${dEsc(v)}</span>`).join('\n') : '';
+        const bodyH = (b) => { const p = prettyJson(b); return p ? highlightJson(p) : dEsc(b || ''); };
+        const statusH = r.status === 0
+            ? `<span class="net-status serr">Failed</span>${r.error ? ' — <span class="nd-err">' + dEsc(r.error) + '</span>' : ''}`
+            : `<span class="net-status ${statusClass(r)}">${r.status}</span> ${dEsc(r.statusText || '')}`;
+        const preview = prettyJson(r.resBody);
+        return `<div class="nd-sec">URL</div><pre class="nd-url">${dEsc(r.url || '')}</pre>`
+            + secH('Status', statusH)
+            + secH('Request Headers', headersH(r.reqHeaders))
+            + secH('Request Body', bodyH(r.reqBody))
+            + secH('Response Headers', headersH(r.resHeaders))
+            + (preview ? secH('Preview', highlightJson(preview)) : '')
+            + secH('Response Body', bodyH(r.resBody))
+            + (r.initiator ? secH('Initiator', `<span class="nd-init">${dEsc(r.initiator)}</span>`) : '');
+    }
+
+    netList().addEventListener('click', (e) => {
+        const copy = e.target.closest('.net-copy');
+        if (copy) {
+            e.stopPropagation();
+            const r = netFilteredCache[+copy.dataset.i];
+            if (!r) return;
+            const txt = `${r.method} ${r.url}\nStatus: ${r.status === 0 ? 'Failed ' + (r.error || '') : r.status + ' ' + (r.statusText || '')}\n\nResponse:\n${r.resBody || ''}`;
+            navigator.clipboard.writeText(txt).then(() => {
+                const o = copy.innerHTML; copy.innerHTML = '<i class="fas fa-check"></i>';
+                setTimeout(() => { copy.innerHTML = o; }, 1200);
+            }).catch(() => { });
+            return;
+        }
+        const row = e.target.closest('.net-row');
+        if (!row) return;
+        const i = +row.dataset.i;
+        const detail = netList().querySelector(`[data-detail="${i}"]`);
+        if (!detail) return;
+        if (detail.classList.contains('hidden')) {
+            detail.innerHTML = netDetailHtml(netFilteredCache[i]);
+            detail.classList.remove('hidden');
+        } else {
+            detail.classList.add('hidden');
+        }
+    });
+
+    document.querySelectorAll('.net-filter').forEach(b => b.addEventListener('click', () => {
+        netFilter = b.dataset.nf;
+        document.querySelectorAll('.net-filter').forEach(x => x.classList.toggle('active', x === b));
+        if (!netViewingFindings) netRender();
+    }));
+
+    document.getElementById('netClearBtn').addEventListener('click', async () => {
+        const id = await activeTabId(); if (id == null) return;
+        chrome.runtime.sendMessage({ action: 'clearNetworkReqs', tabId: id }, () => {
+            netCache = []; netStatus().textContent = ''; netUpdateCounts(); netRender();
+        });
+    });
+
+    document.getElementById('netExplainBtn').addEventListener('click', async () => {
+        const failed = netCache.filter(isFailed);
+        if (!failed.length) { netStatus().style.color = '#f87171'; netStatus().textContent = 'No failed requests to explain.'; return; }
+        const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const btn = document.getElementById('netExplainBtn');
+        btn.disabled = true;
+        netStatus().style.color = '#94a3b8';
+        netStatus().innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing ' + failed.length + ' failed request(s) with AI…';
+        chrome.runtime.sendMessage({ action: 'aiExplainNetwork', reqs: netCache, url: t && t.url }, (resp) => {
+            btn.disabled = false;
+            if (chrome.runtime.lastError || !resp || resp.error) {
+                netStatus().style.color = '#f87171';
+                netStatus().textContent = (resp && resp.error === 'no_api_key') ? 'AI key not configured' : 'Failed: ' + ((resp && resp.error) || 'error');
+                return;
+            }
+            netStatus().textContent = '';
+            netRenderFindings(resp.findings || []);
+        });
+    });
+
+    function netRenderFindings(findings) {
+        netViewingFindings = true;
+        const head = '<div style="margin-bottom:8px;"><button class="dbg-btn" id="netBackBtn"><i class="fas fa-arrow-left"></i> Back to requests</button></div>';
+        if (!findings.length) {
+            netList().innerHTML = head + '<div class="dbg-empty">The AI found nothing actionable.</div>';
+        } else {
+            netList().innerHTML = head + findings.map(f =>
+                `<div class="dbg-finding">
+                    <h5>${dEsc(f.title)} <span class="sev ${dEsc(f.severity)}">${dEsc(f.severity)}</span></h5>
+                    <p>${dEsc(f.cause)}</p>
+                    <p class="fix"><i class="fas fa-lightbulb"></i> ${dEsc(f.fix)}</p>
+                </div>`).join('');
+        }
+        document.getElementById('netBackBtn').addEventListener('click', () => {
+            netViewingFindings = false; netRender(); refresh();
+        });
+    }
+
+    // ── Console/Network mode switcher ──
+    document.querySelectorAll('.dbg-mode').forEach(b => b.addEventListener('click', () => {
+        mode = b.dataset.mode;
+        document.querySelectorAll('.dbg-mode').forEach(x => x.classList.toggle('active', x === b));
+        document.getElementById('dbg-console-panel').classList.toggle('hidden', mode !== 'console');
+        document.getElementById('dbg-network-panel').classList.toggle('hidden', mode !== 'network');
+        if (mode === 'console') { if (!viewingFindings) render(); }
+        else { if (!netViewingFindings) netRender(); }
+    }));
+
     // Poll always (lightweight) so the tab badge stays live; list re-renders only
     // when the Debug tab is visible
     setInterval(refresh, 1500);
     refresh();
     const dtab = document.querySelector('.tab-btn[data-tab="debug"]');
-    if (dtab) dtab.addEventListener('click', () => { viewingFindings = false; refresh(); });
+    if (dtab) dtab.addEventListener('click', () => { viewingFindings = false; netViewingFindings = false; refresh(); });
 })();
 
 // AI Create Profile button - scans the form, generates data via Claude, saves and fills

@@ -83,8 +83,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Relay console-capture batches (from the MAIN-world script) to the background
 window.addEventListener('message', (e) => {
-    if (e.source !== window || !e.data || !e.data.__qaConsole || !Array.isArray(e.data.batch)) return;
-    chrome.runtime.sendMessage({ action: 'consoleBatch', batch: e.data.batch }).catch(() => { });
+    if (e.source !== window || !e.data || !Array.isArray(e.data.batch)) return;
+    if (e.data.__qaConsole) chrome.runtime.sendMessage({ action: 'consoleBatch', batch: e.data.batch }).catch(() => { });
+    else if (e.data.__qaNetwork) chrome.runtime.sendMessage({ action: 'networkBatch', batch: e.data.batch }).catch(() => { });
 }, false);
 
 // Floating Button Support

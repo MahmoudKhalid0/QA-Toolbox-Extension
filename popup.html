@@ -532,6 +532,56 @@
         .dbg-finding p { font-size: 12px; color: #cbd5e1; line-height: 1.6; margin-top: 4px; }
         .dbg-finding .fix { color: #7dd3fc; }
 
+        /* Debug: Console/Network switcher */
+        #dbg-console-panel.hidden, #dbg-network-panel.hidden, .net-detail.hidden { display: none; }
+        .dbg-mode-switch { display: flex; gap: 4px; background: rgba(255,255,255,0.05); border-radius: 10px; padding: 3px; margin-bottom: 12px; }
+        .dbg-mode {
+            flex: 1; background: transparent; border: none; color: #94a3b8; cursor: pointer; font-family: inherit;
+            padding: 7px 8px; border-radius: 8px; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        }
+        .dbg-mode.active { background: rgba(99,102,241,0.25); color: #fff; }
+        .dbg-mode-badge { background: #ef4444; color: #fff; border-radius: 9px; min-width: 15px; height: 15px; padding: 0 4px; font-size: 9.5px; font-weight: 700; display: none; align-items: center; justify-content: center; }
+        .dbg-mode-badge.show { display: inline-flex; }
+
+        /* Network rows */
+        .net-filter {
+            background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #cbd5e1;
+            padding: 5px 9px; border-radius: 14px; font-size: 11px; cursor: pointer; font-family: inherit;
+        }
+        .net-filter span { opacity: 0.7; margin-left: 2px; }
+        .net-filter.active { background: rgba(99, 102, 241, 0.25); border-color: rgba(99, 102, 241, 0.6); color: #fff; }
+        .net-row {
+            display: flex; gap: 8px; align-items: center; padding: 7px 10px; border-radius: 8px; cursor: pointer;
+            background: rgba(255, 255, 255, 0.03); border-left: 3px solid #475569; font-size: 12px;
+        }
+        .net-row.failed { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.07); }
+        .net-method { font-weight: 700; font-size: 10px; color: #a5b4fc; min-width: 38px; font-family: 'Consolas', monospace; }
+        .net-status { font-weight: 700; font-size: 11px; font-family: 'Consolas', monospace; min-width: 26px; }
+        .net-status.s2xx { color: #6ee7b7; }
+        .net-status.s3xx { color: #fcd34d; }
+        .net-status.s4xx { color: #fca5a5; }
+        .net-status.s5xx, .net-status.serr { color: #ef4444; }
+        .net-url { flex: 1; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+        .net-dur { color: #64748b; font-size: 10.5px; white-space: nowrap; }
+        .net-copy { background: rgba(255,255,255,0.08); border: none; color: rgba(255,255,255,0.6); cursor: pointer; border-radius: 5px; width: 22px; height: 20px; flex-shrink: 0; font-size: 10px; }
+        .net-copy:hover { background: rgba(255,255,255,0.2); color: #fff; }
+        .net-detail { background: rgba(0,0,0,0.25); border-radius: 8px; margin: 2px 0 6px; padding: 8px 10px; font-size: 11px; font-family: 'Consolas', monospace; }
+        .net-detail .nd-sec { color: #94a3b8; text-transform: uppercase; font-size: 9.5px; letter-spacing: .5px; margin: 8px 0 3px; }
+        .net-detail .nd-sec:first-child { margin-top: 0; }
+        .net-detail pre { white-space: pre-wrap; word-break: break-word; color: #cbd5e1; line-height: 1.5; margin: 0; max-height: 160px; overflow: auto; }
+        .net-detail .nd-url { color: #60a5fa; word-break: break-all; }
+        .net-detail .nd-key { color: #7dd3fc; }
+        .net-detail .nd-val { color: #e2e8f0; }
+        .net-detail .nd-err { color: #fca5a5; }
+        .net-detail .nd-init { color: #94a3b8; }
+        .net-detail .net-status { font-size: 11px; }
+        /* JSON syntax highlight */
+        .net-detail .j-key { color: #7dd3fc; }
+        .net-detail .j-str { color: #86efac; }
+        .net-detail .j-num { color: #fcd34d; }
+        .net-detail .j-bool { color: #c084fc; }
+        .net-detail .j-null { color: #fca5a5; }
+
         .tools-coming {
             border: 1px dashed rgba(255, 255, 255, 0.15);
             border-radius: 14px;
@@ -1458,20 +1508,45 @@
 
             <!-- Debug tab -->
             <div class="tab-page hidden" id="tab-debug">
-                <div class="dbg-toolbar">
-                    <div class="dbg-filters">
-                        <button class="dbg-filter active" data-level="all">All <span id="dbg-c-all">0</span></button>
-                        <button class="dbg-filter" data-level="error">Errors <span id="dbg-c-error">0</span></button>
-                        <button class="dbg-filter" data-level="warn">Warnings <span id="dbg-c-warn">0</span></button>
-                        <button class="dbg-filter" data-level="log">Logs <span id="dbg-c-log">0</span></button>
-                    </div>
-                    <div class="dbg-actions">
-                        <button class="dbg-btn dbg-explain" id="dbgExplainBtn"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Fix</button>
-                        <button class="dbg-btn" id="dbgClearBtn" title="Clear"><i class="fas fa-trash"></i></button>
-                    </div>
+                <div class="dbg-mode-switch">
+                    <button class="dbg-mode active" data-mode="console"><i class="fas fa-terminal"></i> Console <span class="dbg-mode-badge" id="dbgConsoleBadge"></span></button>
+                    <button class="dbg-mode" data-mode="network"><i class="fas fa-wifi"></i> Network <span class="dbg-mode-badge" id="dbgNetBadge"></span></button>
                 </div>
-                <div class="dbg-status" id="dbgStatus"></div>
-                <div class="dbg-list" id="dbgList"></div>
+
+                <!-- Console panel -->
+                <div id="dbg-console-panel">
+                    <div class="dbg-toolbar">
+                        <div class="dbg-filters">
+                            <button class="dbg-filter active" data-level="all">All <span id="dbg-c-all">0</span></button>
+                            <button class="dbg-filter" data-level="error">Errors <span id="dbg-c-error">0</span></button>
+                            <button class="dbg-filter" data-level="warn">Warnings <span id="dbg-c-warn">0</span></button>
+                            <button class="dbg-filter" data-level="log">Logs <span id="dbg-c-log">0</span></button>
+                        </div>
+                        <div class="dbg-actions">
+                            <button class="dbg-btn dbg-explain" id="dbgExplainBtn"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Fix</button>
+                            <button class="dbg-btn" id="dbgClearBtn" title="Clear"><i class="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+                    <div class="dbg-status" id="dbgStatus"></div>
+                    <div class="dbg-list" id="dbgList"></div>
+                </div>
+
+                <!-- Network panel -->
+                <div id="dbg-network-panel" class="hidden">
+                    <div class="dbg-toolbar">
+                        <div class="dbg-filters">
+                            <button class="net-filter active" data-nf="all">All <span id="net-c-all">0</span></button>
+                            <button class="net-filter" data-nf="failed">Failed <span id="net-c-failed">0</span></button>
+                            <button class="net-filter" data-nf="xhr">XHR/Fetch <span id="net-c-xhr">0</span></button>
+                        </div>
+                        <div class="dbg-actions">
+                            <button class="dbg-btn dbg-explain" id="netExplainBtn"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Fix</button>
+                            <button class="dbg-btn" id="netClearBtn" title="Clear"><i class="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+                    <div class="dbg-status" id="netStatus"></div>
+                    <div class="dbg-list" id="netList"></div>
+                </div>
             </div>
         </div>
     </div>
