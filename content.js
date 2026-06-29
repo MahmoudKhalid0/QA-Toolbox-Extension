@@ -2496,14 +2496,23 @@ function collectContextFieldInfo(el) {
 // ==================== On-page results panel (Link Health / Security) ====================
 function qaEsc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
 
+// Cancellation: closing the panel aborts the in-flight scan and unlocks the card.
+let qaScanCtrl = null;
+let qaActiveTool = null;
+function qaAborted() { return qaScanCtrl ? qaScanCtrl.signal.aborted : false; }
+
 function qaClosePanel() {
     const p = document.getElementById('qa-result-panel');
     if (p) p.remove();
+    if (qaScanCtrl) { try { qaScanCtrl.abort(); } catch (e) { } }
+    if (qaActiveTool) { qaToolDone(qaActiveTool); qaActiveTool = null; } // unlock the card
 }
 
 // Open the floating panel; returns the .qa-body element to fill.
-function qaOpenPanel(titleHtml) {
+function qaOpenPanel(titleHtml, tool) {
     qaClosePanel();
+    qaScanCtrl = new AbortController();
+    qaActiveTool = tool || null;
     const panel = document.createElement('div');
     panel.id = 'qa-result-panel';
     panel.innerHTML = `
@@ -2516,7 +2525,7 @@ function qaOpenPanel(titleHtml) {
                 box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff;
                 font-family: 'Segoe UI', Arial, sans-serif; direction: ltr; font-size: 13px;
             }
-            #qa-result-panel .qa-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+            #qa-result-panel .qa-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
             #qa-result-panel .qa-title { font: 700 13.5px/1.4 'Segoe UI', Arial; display: flex; align-items: center; gap: 8px; }
             #qa-result-panel .qa-close { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
             #qa-result-panel .qa-close:hover { background: rgba(255,255,255,0.22); }
@@ -2535,7 +2544,10 @@ function qaOpenPanel(titleHtml) {
             #qa-result-panel .lhrow.s-auth { border-left-color: #0ea5e9; } #qa-result-panel .lhst.s-auth { color: #7dd3fc; }
             #qa-result-panel .lhrow.s-forbid { border-left-color: #a855f7; } #qa-result-panel .lhst.s-forbid { color: #c084fc; }
             #qa-result-panel .lhrow.s-broken { border-left-color: #ef4444; background: rgba(239,68,68,0.07); } #qa-result-panel .lhst.s-broken { color: #f87171; }
+            #qa-result-panel .lhrow.s-soft { border-left-color: #fb923c; background: rgba(251,146,60,0.08); } #qa-result-panel .lhst.s-soft { color: #fdba74; }
             #qa-result-panel .lhrow.s-unknown { border-left-color: #64748b; } #qa-result-panel .lhst.s-unknown { color: #94a3b8; }
+            #qa-result-panel .lhrow.s-nourl { border-left-color: #2dd4bf; background: rgba(45,212,191,0.06); } #qa-result-panel .lhst.s-nourl { color: #5eead4; font-size: 8.5px; }
+            #qa-result-panel .qa-stat.nourl .n { color: #5eead4; }
             #qa-result-panel .lhinfo { flex: 1; min-width: 0; }
             #qa-result-panel .lhhref { color: #60a5fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             #qa-result-panel .lhtext { color: #94a3b8; font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
@@ -2574,11 +2586,41 @@ function qaOpenPanel(titleHtml) {
     `;
     document.body.appendChild(panel);
     panel.querySelector('#qa-close').addEventListener('click', qaClosePanel);
+
+    // Drag the panel by its header
+    (function makeDraggable() {
+        const head = panel.querySelector('.qa-head');
+        let sx = 0, sy = 0, sl = 0, st = 0;
+        head.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.qa-close') || e.button !== 0) return;
+            const rect = panel.getBoundingClientRect();
+            panel.style.left = rect.left + 'px';
+            panel.style.top = rect.top + 'px';
+            panel.style.right = 'auto';
+            sx = e.clientX; sy = e.clientY; sl = rect.left; st = rect.top;
+            e.preventDefault();
+            document.addEventListener('mousemove', onMove, true);
+            document.addEventListener('mouseup', onUp, true);
+        });
+        function onMove(e) {
+            let nl = sl + (e.clientX - sx), nt = st + (e.clientY - sy);
+            nl = Math.max(0, Math.min(nl, window.innerWidth - panel.offsetWidth));
+            nt = Math.max(0, Math.min(nt, window.innerHeight - 40));
+            panel.style.left = nl + 'px';
+            panel.style.top = nt + 'px';
+        }
+        function onUp() {
+            document.removeEventListener('mousemove', onMove, true);
+            document.removeEventListener('mouseup', onUp, true);
+        }
+    })();
+
     return panel.querySelector('#qa-body');
 }
 
 // ---- Link Health (runs in the page so same-origin cert/session apply) ----
 function lhClassify(r) {
+    if (r.soft) return { kind: 's-soft', label: '200⚠' };
     const s = r.status;
     if (s >= 200 && s < 300) return { kind: 's-ok', label: String(s) };
     if (s >= 300 && s < 400) return { kind: 's-redir', label: String(s) };
@@ -2587,31 +2629,44 @@ function lhClassify(r) {
     if (s >= 400) return { kind: 's-broken', label: String(s) };
     return { kind: 's-unknown', label: r.error ? 'ERR' : '0' };
 }
-const LH_COLORS = { 's-ok': '#10b981', 's-redir': '#f59e0b', 's-auth': '#0ea5e9', 's-forbid': '#a855f7', 's-broken': '#ef4444', 's-unknown': '#64748b' };
-function lhIsBroken(r) { return (r.status >= 400 && r.status !== 401 && r.status !== 403) || (r.status === 0 && r.error && r.error !== 'Timeout'); }
+const LH_COLORS = { 's-ok': '#10b981', 's-redir': '#f59e0b', 's-auth': '#0ea5e9', 's-forbid': '#a855f7', 's-broken': '#ef4444', 's-unknown': '#64748b', 's-soft': '#fb923c' };
+function lhIsBroken(r) { return r.soft || (r.status >= 400 && r.status !== 401 && r.status !== 403) || (r.status === 0 && r.error && r.error !== 'Timeout'); }
 
 function qaToolDone(tool) { try { chrome.runtime.sendMessage({ action: 'toolScanDone', tool }); } catch (e) { } }
 
 async function runLinkHealth() {
-    const body = qaOpenPanel('&#128279; Link Health');
+    const body = qaOpenPanel('&#128279; Link Health', 'links');
     try {
         await runLinkHealthInner(body);
     } finally {
-        qaToolDone('links');
+        if (!qaAborted()) { qaToolDone('links'); qaActiveTool = null; }
     }
 }
 
 async function runLinkHealthInner(body) {
-    // Collect unique links + keep element refs (for on-page colouring)
+    const myCtrl = qaScanCtrl;                 // this scan's own cancel token
+    const aborted = () => !myCtrl || myCtrl.signal.aborted;
+    // Collect links + keep element refs (for on-page colouring). Anchors that
+    // "work" but have no real URL (href="#", javascript:, or no href + a JS
+    // handler) are collected separately so we can flag them.
     const map = new Map();
-    document.querySelectorAll('a[href]').forEach(a => {
-        const href = a.href;
-        if (!href || !/^https?:/i.test(href)) return;
-        if (!map.has(href)) map.set(href, { href, text: (a.textContent || '').trim().slice(0, 100), els: [] });
-        map.get(href).els.push(a);
+    lhNoUrl = [];
+    document.querySelectorAll('a').forEach(a => {
+        const raw = (a.getAttribute('href') || '').trim();
+        const text = (a.textContent || '').trim().slice(0, 100);
+        const handler = a.hasAttribute('onclick') || a.getAttribute('role') === 'button' || a.getAttribute('role') === 'link';
+        // No real URL: missing href, empty, "#", or javascript:
+        if (!raw || raw === '#' || /^javascript:/i.test(raw)) {
+            lhNoUrl.push({ el: a, text, reason: !raw ? 'No href attribute' : (/^javascript:/i.test(raw) ? 'javascript: link' : 'Empty "#" link'), handler });
+            return;
+        }
+        if (/^#/.test(raw)) return;            // in-page anchor (#section) - works, skip
+        if (!/^https?:/i.test(a.href)) return; // mailto/tel/etc - ignore
+        if (!map.has(a.href)) map.set(a.href, { href: a.href, text, els: [] });
+        map.get(a.href).els.push(a);
     });
     let links = [...map.values()];
-    if (!links.length) { body.innerHTML = '<div class="qa-empty">No links found on this page.</div>'; return; }
+    if (!links.length && !lhNoUrl.length) { body.innerHTML = '<div class="qa-empty">No links found on this page.</div>'; return; }
     const MAX = 200;
     links = links.slice(0, MAX);
     body.innerHTML = `<div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Checking ${links.length} link(s)…</div>`;
@@ -2620,17 +2675,61 @@ async function runLinkHealthInner(body) {
     const same = links.filter(l => { try { return new URL(l.href).origin === origin; } catch (e) { return false; } });
     const cross = links.filter(l => !same.includes(l));
 
+    function sniff(u, method) {
+        const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 8000);
+        const onAbort = () => { try { ctrl.abort(); } catch (e) { } };
+        if (myCtrl) myCtrl.signal.addEventListener('abort', onAbort);
+        const cleanup = () => { clearTimeout(timer); if (myCtrl) myCtrl.signal.removeEventListener('abort', onAbort); };
+        return fetch(u, { method: method || 'GET', redirect: 'follow', signal: ctrl.signal })
+            .then(async r => {
+                let len = null;
+                if ((method || 'GET') === 'GET') { let t = ''; try { t = await r.text(); } catch (e) { } len = t.replace(/\s+/g, ' ').trim().length; }
+                cleanup();
+                return { status: r.status, ok: r.ok, redirected: r.redirected, finalUrl: r.url, len };
+            })
+            .catch(e => { cleanup(); return { status: 0, ok: false, error: e.name === 'AbortError' ? 'Timeout' : (e.message || 'Failed'), finalUrl: u, len: null }; });
+    }
+
+    // Soft-404 probe: many portals/SPAs answer 200 for missing pages. Probe a
+    // guaranteed-missing URL INSIDE the same path namespaces the links use (so we
+    // hit the same router), plus the home page, to learn how the site behaves.
+    let softMode = false; const baseLens = []; // lengths of the site's "not found" page(s)
+    if (same.length) {
+        const prefixes = new Set(['/']);
+        for (const l of same) { try { prefixes.add(new URL(l.href).pathname.replace(/[^/]*$/, '')); } catch (e) { } if (prefixes.size >= 4) break; }
+        const rand = '__qa_missing_' + Date.now() + Math.random().toString(36).slice(2);
+        const probeUrls = [...prefixes].slice(0, 4).map(p => origin + p + rand);
+        const home = await sniff(origin + '/');
+        const probes = await Promise.all(probeUrls.map(u => sniff(u)));
+        for (const pr of probes) {
+            if (pr.status >= 200 && pr.status < 400 && pr.len > 0) {
+                softMode = true; // the site serves "OK" for a page that cannot exist
+                const distinctFromHome = !home.len || Math.abs(pr.len - home.len) / Math.max(home.len, 1) >= 0.05;
+                if (distinctFromHome) baseLens.push(pr.len);
+            }
+        }
+    }
+
+    function isSoft(href, res) {
+        try {
+            const fp = new URL(res.finalUrl).pathname, hp = new URL(href).pathname;
+            if (fp !== hp && (fp === '/' || /404|not.?found|error|missing/i.test(fp))) return true; // redirected away
+        } catch (e) { }
+        if (res.len != null) { for (const b of baseLens) if (b && Math.abs(res.len - b) / b < 0.05) return true; }
+        return false;
+    }
+
     async function checkHere(list) {
         const out = new Array(list.length); let i = 0;
         async function worker() {
             while (i < list.length) {
+                if (aborted()) return; // panel closed → stop
                 const idx = i++; const href = list[idx].href;
-                const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 8000);
-                try {
-                    let r = await fetch(href, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal });
-                    if (r.status === 405 || r.status === 501) r = await fetch(href, { method: 'GET', redirect: 'follow', signal: ctrl.signal });
-                    clearTimeout(timer); out[idx] = { status: r.status, ok: r.ok, redirected: r.redirected };
-                } catch (e) { clearTimeout(timer); out[idx] = { status: 0, ok: false, error: e.name === 'AbortError' ? 'Timeout' : (e.message || 'Failed') }; }
+                // In soft-404 mode we GET (need the body length); otherwise HEAD is enough.
+                const res = await sniff(href, softMode ? 'GET' : 'HEAD');
+                if (res.status === 405 || res.status === 501) Object.assign(res, await sniff(href, 'GET'));
+                if (softMode && res.status >= 200 && res.status < 400) res.soft = isSoft(href, res);
+                out[idx] = res;
             }
         }
         await Promise.all(Array.from({ length: Math.min(6, list.length) }, worker));
@@ -2649,6 +2748,7 @@ async function runLinkHealthInner(body) {
         same.length ? checkHere(same) : Promise.resolve([]),
         cross.length ? checkBg(cross) : Promise.resolve([])
     ]);
+    if (aborted()) return; // panel closed mid-scan
     same.forEach((l, i) => Object.assign(l, sameRes[i] || { status: 0, ok: false }));
     cross.forEach((l, i) => Object.assign(l, crossRes[i] || { status: 0, ok: false }));
 
@@ -2660,30 +2760,48 @@ async function runLinkHealthInner(body) {
             el.style.setProperty('outline', `2px solid ${color}`, 'important');
             el.style.setProperty('outline-offset', '1px', 'important');
             el.setAttribute('data-qa-link', c.label);
-            el.title = `QA Link Health: ${l.status === 0 ? (l.error || 'Unreachable') : l.status}`;
+            el.title = `QA Link Health: ${l.soft ? 'Soft 404 — HTTP 200 but the page looks like a not-found/redirect' : (l.status === 0 ? (l.error || 'Unreachable') : l.status)}`;
         });
+    });
+
+    // Mark the no-URL anchors with a distinct dashed outline
+    lhNoUrl.forEach(n => {
+        if (!n.el.isConnected) return;
+        n.el.style.setProperty('outline', '2px dashed #2dd4bf', 'important');
+        n.el.style.setProperty('outline-offset', '1px', 'important');
+        n.el.title = `QA Link Health: ${n.reason}${n.handler ? ' (has a JS handler)' : ''} — works via script but has no real URL`;
     });
 
     lhRenderResults(body, links);
 }
 
 let lhBrokenCache = [];
+let lhNoUrl = [];
 function lhRenderResults(body, links) {
-    const order = { 's-broken': 0, 's-unknown': 1, 's-redir': 2, 's-auth': 3, 's-forbid': 4, 's-ok': 5 };
+    const order = { 's-broken': 0, 's-soft': 1, 's-unknown': 2, 's-redir': 3, 's-auth': 4, 's-forbid': 5, 's-ok': 6 };
     const rows = links.map(l => ({ l, c: lhClassify(l) })).sort((a, b) => order[a.c.kind] - order[b.c.kind]);
-    lhBrokenCache = links.filter(lhIsBroken).map(l => ({ href: l.href, text: l.text, status: l.status, error: l.error }));
-    const okCount = links.filter(l => l.status >= 200 && l.status < 400).length;
+    lhBrokenCache = links.filter(lhIsBroken).map(l => ({ href: l.href, text: l.text, status: l.status, error: l.soft ? 'Soft 404 (HTTP 200 but content looks like a not-found page or redirect to home)' : l.error }));
+    const okCount = links.filter(l => l.status >= 200 && l.status < 400 && !l.soft).length;
 
     let html = `<div class="qa-sum">
         <div class="qa-stat"><div class="n">${links.length}</div><div class="l">Checked</div></div>
         <div class="qa-stat ok"><div class="n">${okCount}</div><div class="l">OK</div></div>
         <div class="qa-stat bad"><div class="n">${lhBrokenCache.length}</div><div class="l">Broken</div></div>
+        <div class="qa-stat nourl"><div class="n">${lhNoUrl.length}</div><div class="l">No URL</div></div>
     </div>`;
     if (lhBrokenCache.length) html += `<button class="qa-btn" id="lh-explain"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Fix (${lhBrokenCache.length})</button>`;
     html += rows.map(({ l, c }) => `<div class="lhrow ${c.kind}">
         <span class="lhst ${c.kind}">${qaEsc(c.label)}</span>
         <div class="lhinfo"><div class="lhhref">${qaEsc(l.href)}</div>${l.text ? `<div class="lhtext">${qaEsc(l.text)}</div>` : ''}</div>
     </div>`).join('');
+
+    if (lhNoUrl.length) {
+        html += `<div class="qa-grp">Links without a real URL (${lhNoUrl.length})</div>`;
+        html += lhNoUrl.map(n => `<div class="lhrow s-nourl">
+            <span class="lhst s-nourl" title="${qaEsc(n.reason)}">NO&nbsp;URL</span>
+            <div class="lhinfo"><div class="lhtext" style="color:#cbd5e1;">${qaEsc(n.text || '(no text)')}</div><div class="lhtext">${qaEsc(n.reason)}${n.handler ? ' · has JS handler' : ''}</div></div>
+        </div>`).join('');
+    }
     body.innerHTML = html;
 
     const ex = body.querySelector('#lh-explain');
@@ -2709,9 +2827,12 @@ function lhRenderResults(body, links) {
 
 // ---- Security scan (panel on the page; scan runs in the background) ----
 function runSecurityScan() {
-    const body = qaOpenPanel('&#128737; Security Scan');
+    const body = qaOpenPanel('&#128737; Security Scan', 'security');
+    const myCtrl = qaScanCtrl;
     body.innerHTML = '<div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Scanning &amp; analyzing with AI…</div>';
     chrome.runtime.sendMessage({ action: 'aiSecurityScan', url: location.href }, (resp) => {
+        if (!myCtrl || myCtrl.signal.aborted || myCtrl !== qaScanCtrl) return; // closed or superseded
+        qaToolDone('security'); qaActiveTool = null;
         if (chrome.runtime.lastError || !resp || resp.error) {
             body.innerHTML = `<div class="qa-empty">${(resp && resp.error === 'no_api_key') ? 'AI key not configured in the extension settings.' : 'Scan failed: ' + qaEsc((chrome.runtime.lastError && chrome.runtime.lastError.message) || (resp && resp.error) || 'error')}</div>`;
             return;

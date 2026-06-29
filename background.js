@@ -1396,6 +1396,7 @@ async function explainLinksWithAI(apiKey, broken, url) {
         'You are a senior web QA engineer. Below are broken/unreachable links found on a web page (HTTP status or network error).',
         'GROUP related broken links (same domain, same path pattern, same status) and explain them: for each give a title, severity, the likely cause, and a concrete fix.',
         'A 404 is a missing page; 0/Timeout/Network error may be a dead domain, an offline server, or a link that blocks automated checks; 401/403 may be auth-protected (not truly broken). Note that distinction.',
+        'An item whose error mentions "Soft 404" returned HTTP 200 but the page content looks like a not-found page or silently redirects to the home page - treat it as effectively broken and suggest fixing or removing the link / restoring the target page.',
         'Base everything only on the data. Do not invent links. Write in English.',
         '',
         `Page URL: ${url || ''}`,
