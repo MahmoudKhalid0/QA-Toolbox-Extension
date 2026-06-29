@@ -79,6 +79,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         runPerformance();
         sendResponse({ success: true });
     }
+    if (request.action === 'openResponsive') {
+        openResponsiveOverlay();
+        sendResponse({ success: true });
+    }
     if (request.action === 'settingsChanged') {
         refreshFieldAiIconSetting();
     }
@@ -3096,6 +3100,371 @@ function doClearData() {
         } else {
             run();
         }
+    });
+}
+
+// ---- Responsive Viewer: full-screen overlay with customizable workspace tabs,
+// custom devices, and saved settings. Device iframes load this same page
+// (same-origin) so cookies/login work and it renders like the browser. ----
+const RV_BUILTIN = [
+    { name: 'iPhone SE', w: 375, h: 667 }, { name: 'iPhone 14 Pro', w: 393, h: 852 },
+    { name: 'iPhone 14 Pro Max', w: 430, h: 932 }, { name: 'Pixel 7', w: 412, h: 915 },
+    { name: 'Galaxy S20', w: 360, h: 800 }, { name: 'Surface Duo', w: 540, h: 720 },
+    { name: 'iPad Mini', w: 768, h: 1024 }, { name: 'iPad Pro 11"', w: 834, h: 1194 },
+    { name: 'iPad Pro 12.9"', w: 1024, h: 1366 }, { name: 'Laptop', w: 1280, h: 800 },
+    { name: 'Desktop', w: 1440, h: 900 }, { name: 'Full HD', w: 1920, h: 1080 }
+];
+const RV_STORE = 'qaResponsive';
+let rvState = null;
+let rvSyncing = false, rvClicking = false;
+
+function rvDefaultState() {
+    const s = { tabs: [], active: 1, nextTab: 1, nextScreen: 1, custom: [], zoom: 0.5, ua: 'desktop', mockup: false, layout: 'row', sync: true, touch: true };
+    const mk = (name) => { const d = RV_BUILTIN.find(x => x.name === name); return { id: s.nextScreen++, name: d.name, w: d.w, h: d.h, rotated: false }; };
+    s.tabs = [
+        { id: s.nextTab++, name: 'Mobile', screens: [mk('iPhone 14 Pro'), mk('Pixel 7')] },
+        { id: s.nextTab++, name: 'Tablet', screens: [mk('iPad Mini')] },
+        { id: s.nextTab++, name: 'Desktop', screens: [mk('Laptop')] }
+    ];
+    s.active = s.tabs[0].id;
+    return s;
+}
+function rvSave() {
+    if (!rvState) return;
+    const { url, isolated, ...persist } = rvState; // url & isolated are per-session
+    try { chrome.storage.local.set({ [RV_STORE]: persist }); } catch (e) { }
+}
+function rvLibrary() { return RV_BUILTIN.concat(rvState.custom || []); }
+function rvActiveTab() { return rvState.tabs.find(t => t.id === rvState.active) || rvState.tabs[0]; }
+
+function openResponsiveOverlay() {
+    const old = document.getElementById('qa-rv'); if (old) old.remove();
+    chrome.storage.local.get(RV_STORE, (res) => {
+        const saved = res && res[RV_STORE];
+        rvState = saved && saved.tabs && saved.tabs.length ? Object.assign(rvDefaultState(), saved) : rvDefaultState();
+        rvState.url = location.href;
+        rvState.isolated = null;
+        if (!rvState.tabs.some(t => t.id === rvState.active)) rvState.active = rvState.tabs[0].id;
+        rvBuildOverlay();
+    });
+}
+
+function rvBuildOverlay() {
+    chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true, ua: rvState.ua }).catch(() => { });
+    const o = document.createElement('div');
+    o.id = 'qa-rv';
+    o.innerHTML = `
+        <style>
+            #qa-rv { position: fixed; inset: 0; z-index: 2147483647; background: #0f0f17; color: #e2e8f0; direction: ltr; text-align: left;
+                font-family: 'Segoe UI', Arial, sans-serif; display: flex; flex-direction: column; }
+            #qa-rv * { box-sizing: border-box; }
+            #qa-rv .rv-bar { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: #16162a; border-bottom: 1px solid rgba(255,255,255,0.08); flex-wrap: wrap; flex-shrink: 0; }
+            #qa-rv .rv-brand { font-weight: 700; font-size: 13.5px; color: #fff; display: flex; align-items: center; gap: 7px; }
+            #qa-rv .rv-url { flex: 1; min-width: 200px; display: flex; gap: 6px; }
+            #qa-rv .rv-url input { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #fff; padding: 8px 11px; font-size: 12.5px; outline: none; }
+            #qa-rv .rv-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1); color: #e2e8f0; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; }
+            #qa-rv .rv-btn:hover { background: rgba(255,255,255,0.16); color: #fff; }
+            #qa-rv .rv-btn.go { background: linear-gradient(135deg,#8b5cf6,#6366f1); border: none; color: #fff; font-weight: 600; }
+            #qa-rv .rv-btn.on { background: rgba(139,92,246,0.3); border-color: rgba(139,92,246,0.6); color: #fff; }
+            #qa-rv .rv-btn.close { background: rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.4); }
+            #qa-rv select.rv-sel { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #fff; border-radius: 8px; padding: 7px 8px; font-size: 12.5px; outline: none; cursor: pointer; }
+            #qa-rv select.rv-sel option { background: #16213e; color: #fff; }
+            /* Tab bar */
+            #qa-rv .rv-tabs { display: flex; align-items: center; gap: 4px; padding: 6px 12px; background: #12121f; border-bottom: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; overflow-x: auto; }
+            #qa-rv .rv-tab { display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.05); border: 1px solid transparent; color: #cbd5e1; border-radius: 8px 8px 0 0; padding: 6px 10px; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+            #qa-rv .rv-tab.active { background: #0f0f17; border-color: rgba(139,92,246,0.5); border-bottom-color: transparent; color: #fff; }
+            #qa-rv .rv-tabname { outline: none; }
+            #qa-rv .rv-tabx { background: none; border: none; color: #64748b; cursor: pointer; font-size: 13px; padding: 0 2px; }
+            #qa-rv .rv-tabx:hover { color: #f87171; }
+            #qa-rv .rv-tabedit { background: none; border: none; color: #64748b; cursor: pointer; font-size: 11px; padding: 0 2px; }
+            #qa-rv .rv-tabedit:hover { color: #a78bfa; }
+            #qa-rv .rv-tabname[contenteditable="true"] { background: rgba(255,255,255,0.1); border-radius: 4px; padding: 0 4px; }
+            #qa-rv .rv-tabadd { background: rgba(255,255,255,0.06); border: none; color: #94a3b8; cursor: pointer; border-radius: 6px; width: 26px; height: 26px; font-size: 16px; }
+            #qa-rv .rv-tabadd:hover { background: rgba(255,255,255,0.16); color: #fff; }
+            #qa-rv .rv-iso { display: none; padding: 7px 12px; background: rgba(139,92,246,0.15); border-bottom: 1px solid rgba(139,92,246,0.3); font-size: 12px; color: #c4b5fd; flex-shrink: 0; }
+            #qa-rv .rv-stage { flex: 1; overflow: auto; padding: 18px; }
+            #qa-rv .rv-row { display: flex; gap: 20px; align-items: flex-start; min-width: min-content; }
+            #qa-rv .rv-row.stack { flex-direction: column; align-items: center; }
+            #qa-rv .rv-fhead { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: #cbd5e1; overflow: hidden; }
+            #qa-rv .rv-fname { font-weight: 600; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            #qa-rv .rv-fdim { font-size: 11px; color: #64748b; font-family: Consolas, monospace; flex-shrink: 0; }
+            #qa-rv .rv-fact { display: flex; gap: 3px; flex-shrink: 0; }
+            #qa-rv .rv-fact button { background: rgba(255,255,255,0.07); border: none; color: #94a3b8; cursor: pointer; width: 24px; height: 22px; border-radius: 6px; font-size: 11px; }
+            #qa-rv .rv-fact button:hover { background: rgba(255,255,255,0.18); color: #fff; }
+            #qa-rv .rv-screen { background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
+            #qa-rv .rv-inner { overflow: hidden; }
+            #qa-rv .rv-screen iframe { border: 0; display: block; background: #fff; }
+            #qa-rv .rv-screen.mock { background: #0b0b12; padding: 16px 9px; border-radius: 32px; box-shadow: 0 10px 34px rgba(0,0,0,0.6), inset 0 0 0 2px #2c2c3a; position: relative; }
+            #qa-rv .rv-screen.mock .rv-inner { border-radius: 16px; }
+            #qa-rv .rv-screen.mock::before { content:''; position:absolute; top:7px; left:50%; transform:translateX(-50%); width:46px; height:7px; background:#2c2c3a; border-radius:5px; }
+            #qa-rv .rv-empty { color: #64748b; text-align: center; padding: 60px 20px; width: 100%; }
+            /* Custom device dialog */
+            #qa-rv .rv-dlg { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 5; }
+            #qa-rv .rv-dlg-box { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 18px; width: 300px; }
+            #qa-rv .rv-dlg-box h4 { margin: 0 0 12px; font-size: 14px; }
+            #qa-rv .rv-dlg-box label { display: block; font-size: 11px; color: #94a3b8; margin: 8px 0 3px; }
+            #qa-rv .rv-dlg-box input { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 7px; color: #fff; padding: 8px; font-size: 13px; outline: none; }
+            #qa-rv .rv-dlg-row { display: flex; gap: 8px; }
+            #qa-rv .rv-dlg-btns { display: flex; gap: 8px; margin-top: 16px; }
+            #qa-rv .rv-dlg-btns button { flex: 1; border: none; border-radius: 8px; padding: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+        </style>
+        <div class="rv-bar">
+            <span class="rv-brand">&#128241; Responsive</span>
+            <div class="rv-url"><input type="text" id="rv-url" spellcheck="false"><button class="rv-btn go" id="rv-go">Go</button></div>
+            <button class="rv-btn" id="rv-reload" title="Reload all">&#8635;</button>
+            <button class="rv-btn" id="rv-rotate" title="Rotate all">&#10227; Rotate</button>
+            <select class="rv-sel" id="rv-zoom" title="Zoom">
+                <option value="0.4">40%</option><option value="0.5">50%</option><option value="0.65">65%</option><option value="0.75">75%</option><option value="1">100%</option>
+            </select>
+            <select class="rv-sel" id="rv-ua" title="User-Agent"><option value="desktop">UA: Desktop</option><option value="iphone">UA: iPhone</option><option value="android">UA: Android</option></select>
+            <select class="rv-sel" id="rv-layout" title="Layout"><option value="row">Side by side</option><option value="stack">Stacked</option></select>
+            <button class="rv-btn" id="rv-mockup" title="Device frame">Mockup</button>
+            <button class="rv-btn" id="rv-sync" title="Sync scroll & clicks">&#128279; Sync</button>
+            <button class="rv-btn" id="rv-touch" title="Touch cursor">&#9737; Touch</button>
+            <select class="rv-sel" id="rv-add" title="Add a device"><option value="">+ Add device</option></select>
+            <button class="rv-btn close" id="rv-close" title="Close">&#10005;</button>
+        </div>
+        <div class="rv-tabs" id="rv-tabs"></div>
+        <div class="rv-iso" id="rv-iso">Isolation — showing one screen. <button class="rv-btn" id="rv-isoexit" style="margin-left:8px;padding:3px 9px;">Show all</button></div>
+        <div class="rv-stage"><div class="rv-row" id="rv-row"></div></div>`;
+    document.body.appendChild(o);
+
+    o.querySelector('#rv-url').value = rvState.url;
+    o.querySelector('#rv-zoom').value = String(rvState.zoom);
+    o.querySelector('#rv-ua').value = rvState.ua;
+    o.querySelector('#rv-layout').value = rvState.layout;
+    o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup);
+    o.querySelector('#rv-sync').classList.toggle('on', rvState.sync);
+    o.querySelector('#rv-touch').classList.toggle('on', rvState.touch);
+    rvFillAddMenu();
+    rvRender();
+
+    const reloadAll = () => o.querySelectorAll('.rv-screen iframe').forEach(f => { f.src = f.src; });
+    o.querySelector('#rv-go').addEventListener('click', () => {
+        let v = o.querySelector('#rv-url').value.trim(); if (!v) return;
+        if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+        rvState.url = v; o.querySelector('#rv-url').value = v; rvRender();
+    });
+    o.querySelector('#rv-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') o.querySelector('#rv-go').click(); });
+    o.querySelector('#rv-reload').addEventListener('click', reloadAll);
+    o.querySelector('#rv-rotate').addEventListener('click', () => { rvActiveTab().screens.forEach(s => s.rotated = !s.rotated); rvSave(); rvRender(); });
+    o.querySelector('#rv-zoom').addEventListener('change', (e) => { rvState.zoom = parseFloat(e.target.value); rvSave(); rvRender(); });
+    o.querySelector('#rv-ua').addEventListener('change', (e) => { rvState.ua = e.target.value; rvSave(); chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true, ua: rvState.ua }, () => setTimeout(reloadAll, 150)); });
+    o.querySelector('#rv-layout').addEventListener('change', (e) => { rvState.layout = e.target.value; rvSave(); rvRender(); });
+    o.querySelector('#rv-mockup').addEventListener('click', () => { rvState.mockup = !rvState.mockup; o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup); rvSave(); rvRender(); });
+    o.querySelector('#rv-sync').addEventListener('click', () => { rvState.sync = !rvState.sync; o.querySelector('#rv-sync').classList.toggle('on', rvState.sync); rvSave(); });
+    o.querySelector('#rv-touch').addEventListener('click', () => { rvState.touch = !rvState.touch; o.querySelector('#rv-touch').classList.toggle('on', rvState.touch); rvSave(); rvWireFrames(); });
+    o.querySelector('#rv-add').addEventListener('change', (e) => {
+        const v = e.target.value; e.target.value = '';
+        if (v === '__custom') { rvCustomDialog(); return; }
+        const d = rvLibrary().find(x => x.name === v);
+        if (d) { rvActiveTab().screens.push({ id: rvState.nextScreen++, name: d.name, w: d.w, h: d.h, rotated: false }); rvSave(); rvRender(); }
+    });
+    o.querySelector('#rv-isoexit').addEventListener('click', () => { rvState.isolated = null; rvRender(); });
+    o.querySelector('#rv-close').addEventListener('click', closeResponsiveOverlay);
+
+    o.querySelector('#rv-tabs').addEventListener('click', (e) => {
+        const x = e.target.closest('[data-tabx]');
+        if (x) { e.stopPropagation(); rvDeleteTab(+x.dataset.tabx); return; }
+        const ed = e.target.closest('[data-tabedit]');
+        if (ed) {
+            e.stopPropagation();
+            const nm = ed.closest('[data-tab]').querySelector('.rv-tabname');
+            nm.contentEditable = 'true'; nm.focus();
+            const sel = document.getSelection(); sel.removeAllRanges();
+            const r = document.createRange(); r.selectNodeContents(nm); sel.addRange(r);
+            return;
+        }
+        if (e.target.closest('#rv-tabadd')) { rvAddTab(); return; }
+        const tab = e.target.closest('[data-tab]');
+        if (tab && !e.target.isContentEditable) { rvState.active = +tab.dataset.tab; rvState.isolated = null; rvSave(); rvRender(); }
+    });
+    o.querySelector('#rv-tabs').addEventListener('dblclick', (e) => {
+        const nm = e.target.closest('.rv-tabname'); if (!nm) return;
+        nm.contentEditable = 'true'; nm.focus(); document.getSelection().selectAllChildren(nm);
+    });
+    o.querySelector('#rv-tabs').addEventListener('keydown', (e) => {
+        const nm = e.target.closest('.rv-tabname');
+        if (nm && e.key === 'Enter') { e.preventDefault(); nm.blur(); }
+    });
+    o.querySelector('#rv-tabs').addEventListener('blur', (e) => {
+        const nm = e.target.closest('.rv-tabname'); if (!nm) return;
+        nm.contentEditable = 'false';
+        const tab = rvState.tabs.find(t => t.id === +nm.closest('[data-tab]').dataset.tab);
+        if (tab) { tab.name = (nm.textContent || 'Tab').trim().slice(0, 24) || 'Tab'; rvSave(); rvRenderTabs(); }
+    }, true);
+
+    o.querySelector('#rv-row').addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-act]'); if (!btn) return;
+        const id = +btn.closest('[data-id]').dataset.id;
+        const tab = rvActiveTab();
+        const s = tab.screens.find(x => x.id === id); if (!s) return;
+        const act = btn.dataset.act;
+        if (act === 'rotate') s.rotated = !s.rotated;
+        else if (act === 'remove') { tab.screens = tab.screens.filter(x => x.id !== id); if (rvState.isolated === id) rvState.isolated = null; }
+        else if (act === 'isolate') rvState.isolated = (rvState.isolated === id) ? null : id;
+        else if (act === 'reload') { const f = btn.closest('[data-id]').querySelector('iframe'); if (f) { f.src = f.src; return; } }
+        rvSave(); rvRender();
+    });
+    document.addEventListener('keydown', rvEsc, true);
+}
+
+function rvFillAddMenu() {
+    const sel = document.querySelector('#qa-rv #rv-add'); if (!sel) return;
+    sel.innerHTML = '<option value="">+ Add device</option>'
+        + rvLibrary().map(d => `<option value="${qaEsc(d.name)}">${qaEsc(d.name)} — ${d.w}×${d.h}</option>`).join('')
+        + '<option value="__custom">➕ Custom device…</option>';
+}
+
+function rvCustomDialog() {
+    const o = document.getElementById('qa-rv'); if (!o) return;
+    const dlg = document.createElement('div');
+    dlg.className = 'rv-dlg';
+    dlg.innerHTML = `<div class="rv-dlg-box">
+        <h4>Add a custom device</h4>
+        <label>Name</label><input id="rv-cd-name" placeholder="My device">
+        <div class="rv-dlg-row">
+            <div style="flex:1"><label>Width</label><input id="rv-cd-w" type="number" placeholder="390"></div>
+            <div style="flex:1"><label>Height</label><input id="rv-cd-h" type="number" placeholder="844"></div>
+        </div>
+        <div class="rv-dlg-btns">
+            <button class="rv-btn" id="rv-cd-cancel">Cancel</button>
+            <button class="rv-btn go" id="rv-cd-add">Add</button>
+        </div>
+    </div>`;
+    o.appendChild(dlg);
+    dlg.querySelector('#rv-cd-name').focus();
+    const close = () => dlg.remove();
+    dlg.querySelector('#rv-cd-cancel').addEventListener('click', close);
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) close(); });
+    dlg.querySelector('#rv-cd-add').addEventListener('click', () => {
+        const name = (dlg.querySelector('#rv-cd-name').value || '').trim() || 'Custom';
+        const w = parseInt(dlg.querySelector('#rv-cd-w').value, 10), h = parseInt(dlg.querySelector('#rv-cd-h').value, 10);
+        if (!w || !h || w < 100 || h < 100) { dlg.querySelector('#rv-cd-w').style.borderColor = '#ef4444'; dlg.querySelector('#rv-cd-h').style.borderColor = '#ef4444'; return; }
+        rvState.custom.push({ name, w, h });
+        rvActiveTab().screens.push({ id: rvState.nextScreen++, name, w, h, rotated: false });
+        rvSave(); rvFillAddMenu(); rvRender(); close();
+    });
+}
+
+function rvAddTab() {
+    const id = rvState.nextTab++;
+    rvState.tabs.push({ id, name: 'New tab', screens: [] });
+    rvState.active = id; rvState.isolated = null;
+    rvSave(); rvRender();
+}
+function rvDeleteTab(id) {
+    if (rvState.tabs.length <= 1) return;
+    rvState.tabs = rvState.tabs.filter(t => t.id !== id);
+    if (rvState.active === id) rvState.active = rvState.tabs[0].id;
+    rvSave(); rvRender();
+}
+
+function rvEsc(e) { if (e.key === 'Escape' && document.getElementById('qa-rv')) closeResponsiveOverlay(); }
+function closeResponsiveOverlay() {
+    const o = document.getElementById('qa-rv'); if (o) o.remove();
+    document.removeEventListener('keydown', rvEsc, true);
+    chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: false }).catch(() => { });
+}
+
+function rvRenderTabs() {
+    const o = document.getElementById('qa-rv'); if (!o) return;
+    o.querySelector('#rv-tabs').innerHTML = rvState.tabs.map(t =>
+        `<div class="rv-tab ${t.id === rvState.active ? 'active' : ''}" data-tab="${t.id}">
+            <span class="rv-tabname">${qaEsc(t.name)}</span>
+            <button class="rv-tabedit" data-tabedit="${t.id}" title="Rename">&#9998;</button>
+            ${rvState.tabs.length > 1 ? `<button class="rv-tabx" data-tabx="${t.id}" title="Delete tab">&times;</button>` : ''}
+        </div>`).join('') + `<button class="rv-tabadd" id="rv-tabadd" title="New tab">+</button>`;
+}
+
+function rvRender() {
+    const o = document.getElementById('qa-rv'); if (!o || !rvState) return;
+    rvRenderTabs();
+    const row = o.querySelector('#rv-row');
+    row.classList.toggle('stack', rvState.layout === 'stack');
+    o.querySelector('#rv-iso').style.display = rvState.isolated ? 'block' : 'none';
+    const screens = rvActiveTab().screens;
+    if (!screens.length) { row.innerHTML = '<div class="rv-empty">No devices in this tab — add one with "+ Add device".</div>'; return; }
+    const shown = rvState.isolated ? screens.filter(s => s.id === rvState.isolated) : screens;
+    const z = rvState.zoom;
+    row.innerHTML = shown.map(s => {
+        const w = s.rotated ? s.h : s.w, h = s.rotated ? s.w : s.h;
+        const sw = Math.round(w * z), sh = Math.round(h * z);
+        const outerW = Math.max(sw + (rvState.mockup ? 18 : 0), 150);
+        return `<div data-id="${s.id}" style="flex-shrink:0; width:${outerW}px;">
+            <div class="rv-fhead">
+                <span class="rv-fname">${qaEsc(s.name)}</span><span class="rv-fdim">${w}×${h}</span>
+                <span class="rv-fact">
+                    <button data-act="isolate" title="Isolate">&#128065;</button>
+                    <button data-act="rotate" title="Rotate">&#10227;</button>
+                    <button data-act="reload" title="Reload">&#8635;</button>
+                    <button data-act="remove" title="Remove">&#10005;</button>
+                </span>
+            </div>
+            <div class="rv-screen ${rvState.mockup ? 'mock' : ''}">
+                <div class="rv-inner" style="width:${sw}px;height:${sh}px;">
+                    <iframe src="${encodeURI(rvState.url)}" style="width:${w}px;height:${h}px;transform:scale(${z});transform-origin:top left;"></iframe>
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+    rvWireFrames();
+}
+
+function rvTouchCursorValue() {
+    const ring = `<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='7.5' fill='rgba(96,165,250,0.22)' stroke='rgb(59,130,246)' stroke-width='1.5'/></svg>`;
+    return `url("data:image/svg+xml;base64,${btoa(ring)}") 10 10, auto`;
+}
+function rvPath(el) {
+    const p = []; const body = el.ownerDocument.body;
+    while (el && el !== body && el.parentElement) { p.unshift(Array.prototype.indexOf.call(el.parentElement.children, el)); el = el.parentElement; }
+    return p;
+}
+function rvResolve(doc, p) { let el = doc.body; for (const i of p) { if (!el) return null; el = el.children[i]; } return el; }
+function rvApplyCursor(doc, on) {
+    try {
+        let st = doc.getElementById('rv-cursor-style');
+        if (on) {
+            if (!st) { st = doc.createElement('style'); st.id = 'rv-cursor-style'; doc.head.appendChild(st); }
+            st.textContent = `*,*::before,*::after{cursor:${rvTouchCursorValue()} !important;}`;
+        } else if (st) { st.remove(); }
+    } catch (e) { }
+}
+function rvWireFrames() {
+    const o = document.getElementById('qa-rv'); if (!o) return;
+    o.querySelectorAll('iframe').forEach(f => {
+        const decorate = () => {
+            let doc, win;
+            try { doc = f.contentDocument; win = f.contentWindow; } catch (e) { return; }
+            if (!doc || !win) return;
+            rvApplyCursor(doc, rvState.touch);
+            if (doc.__rvBound) return;
+            doc.__rvBound = true;
+            win.addEventListener('scroll', () => {
+                if (!rvState.sync || rvSyncing) return;
+                rvSyncing = true;
+                const sx = win.scrollX, sy = win.scrollY;
+                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { other.contentWindow.scrollTo(sx, sy); } catch (e) { } } });
+                requestAnimationFrame(() => { rvSyncing = false; });
+            }, true);
+            win.addEventListener('click', (e) => {
+                if (!rvState.sync || rvClicking || !e.isTrusted) return;
+                rvClicking = true;
+                const path = rvPath(e.target);
+                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvResolve(other.contentDocument, path); if (el) el.click(); } catch (e) { } } });
+                setTimeout(() => { rvClicking = false; }, 80);
+            }, true);
+            win.addEventListener('input', (e) => {
+                if (!rvState.sync || rvClicking || !e.isTrusted) return;
+                const t = e.target; if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
+                rvClicking = true;
+                const path = rvPath(t), val = t.value;
+                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvResolve(other.contentDocument, path); if (el && 'value' in el) { el.value = val; el.dispatchEvent(new other.contentWindow.Event('input', { bubbles: true })); } } catch (e) { } } });
+                setTimeout(() => { rvClicking = false; }, 40);
+            }, true);
+        };
+        if (!f.__rvLoadBound) { f.__rvLoadBound = true; f.addEventListener('load', decorate); }
+        decorate();
     });
 }
 

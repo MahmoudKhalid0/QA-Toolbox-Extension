@@ -1006,6 +1006,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Responsive Viewer: toggle the session rule that lets the page be framed
+    // (strip X-Frame-Options / CSP frame-ancestors) and optionally spoof the UA.
+    if (request.action === 'responsiveDnr') {
+        const RV_DNR_ID = 4801;
+        const RV_UA = {
+            iphone: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+            android: 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+        };
+        if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateSessionRules) { sendResponse({ success: false }); return true; }
+        if (!request.enable) {
+            chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [RV_DNR_ID] }).then(() => sendResponse({ success: true })).catch(() => sendResponse({ success: false }));
+            return true;
+        }
+        const action = {
+            type: 'modifyHeaders',
+            responseHeaders: [
+                { header: 'x-frame-options', operation: 'remove' },
+                { header: 'frame-options', operation: 'remove' },
+                { header: 'content-security-policy', operation: 'remove' },
+                { header: 'content-security-policy-report-only', operation: 'remove' }
+            ]
+        };
+        if (RV_UA[request.ua]) action.requestHeaders = [{ header: 'user-agent', operation: 'set', value: RV_UA[request.ua] }];
+        chrome.declarativeNetRequest.updateSessionRules({
+            removeRuleIds: [RV_DNR_ID],
+            addRules: [{ id: RV_DNR_ID, priority: 1, action, condition: { resourceTypes: ['sub_frame'] } }]
+        }).then(() => sendResponse({ success: true })).catch(() => sendResponse({ success: false }));
+        return true;
+    }
+
     // Link Health: check a list of links for broken/dead URLs
     if (request.action === 'checkLinks') {
         (async () => {

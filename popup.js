@@ -389,12 +389,17 @@ document.getElementById('inspectorToolBtn').addEventListener('click', () => {
     toggleToolSection('inspectorToolBtn', 'inspectorOptions');
 });
 
-// ── Responsive Viewer card → opens the dedicated viewer page in a new tab ──
+// ── Responsive Viewer card → opens an overlay on the current page (same-origin
+// iframes so cookies/login work and it renders exactly like the browser) ──
 document.getElementById('responsiveToolBtn').addEventListener('click', async () => {
     const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const target = (t && t.url && /^https?:/i.test(t.url)) ? t.url : '';
-    const viewer = chrome.runtime.getURL('responsive.html') + (target ? '?url=' + encodeURIComponent(target) : '');
-    chrome.tabs.create({ url: viewer });
+    if (!t || !t.url || /^(chrome|chrome-extension|about|edge|file):/i.test(t.url)) {
+        showToastMessage('Open a website first', 'error'); return;
+    }
+    await ensureContentScript(t.id);
+    chrome.tabs.sendMessage(t.id, { action: 'openResponsive' }, () => {
+        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    });
 });
 
 // ── Link Health card → runs in the page (content.js checks, colours links & shows the panel) ──
