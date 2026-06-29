@@ -89,8 +89,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     if (request.action === 'openMeasure') {
         openMeasureTool();
-        sendResponse({ success: true });
+        sendResponse({ open: !!liState });   // report new toggle state to the panel
     }
+    if (request.action === 'measureStatus') { sendResponse({ open: !!liState }); }
     if (request.action === 'arStart') { arArm(request.seconds); sendResponse({ success: true }); }
     if (request.action === 'arStop') { arArm(0); sendResponse({ success: true }); }
     if (request.action === 'highlightBySelector') { sendResponse(highlightSelector(request.query)); }
@@ -5514,19 +5515,19 @@ const LI_IC = (() => {
     const w = (p) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
     return {
         ruler: w('<path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/>'),
-        x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
-        hash: w('<line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/>')
+        x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>')
     };
 })();
 
 function openMeasureTool() {
     if (liState) { closeMeasureTool(); return; } // card acts as a toggle
-    liState = { nums: true, hoverEl: null, anchor: null, target: null };
+    liState = { hoverEl: null, anchor: null, target: null };
     liInjectStyles();
     liBuildToolbar();
     liBuildLayer();
     document.addEventListener('mousemove', liOnMove, true);
     document.addEventListener('click', liOnClick, true);
+    document.addEventListener('contextmenu', liOnContext, true);
     document.addEventListener('keydown', liOnKey, true);
     window.addEventListener('scroll', liOnScroll, true);
     window.addEventListener('resize', liOnScroll, true);
@@ -5536,12 +5537,26 @@ function closeMeasureTool() {
     if (!liState) return;
     document.removeEventListener('mousemove', liOnMove, true);
     document.removeEventListener('click', liOnClick, true);
+    document.removeEventListener('contextmenu', liOnContext, true);
     document.removeEventListener('keydown', liOnKey, true);
     window.removeEventListener('scroll', liOnScroll, true);
     window.removeEventListener('resize', liOnScroll, true);
     const ids = ['qa-li-bar', 'qa-li-layer', 'qa-li-style'];
     ids.forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
     liState = null;
+    try { chrome.runtime.sendMessage({ action: 'measureEnded' }).catch(() => { }); } catch (e) { }
+}
+
+// clear the current measurement (anchor/target) and return to plain hover
+function liClearMeasure() {
+    liState.anchor = null; liState.target = null;
+    liRenderMeasure();
+}
+
+function liOnContext(e) {
+    if (!liState || (!liState.anchor && !liState.target)) return;
+    e.preventDefault();
+    liClearMeasure();
 }
 
 function liInjectStyles() {
@@ -5550,7 +5565,6 @@ function liInjectStyles() {
     s.id = 'qa-li-style';
     s.textContent = `
 #qa-li-layer{position:fixed;inset:0;pointer-events:none;z-index:2147483640;}
-#qa-li-layer.qa-li-nonums .qa-li-lbl{display:none;}
 .qa-li-box{position:fixed;pointer-events:none;box-sizing:border-box;}
 .qa-li-lbl{position:fixed;pointer-events:none;background:#7c3aed;color:#fff;font:600 11px/1.4 -apple-system,Segoe UI,sans-serif;padding:1px 6px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:2;}
 .qa-li-lbl.gap{background:#f43f5e;}
@@ -5573,16 +5587,10 @@ function liBuildToolbar() {
     bar.id = 'qa-li-bar';
     bar.innerHTML = `
 <span class="qa-li-title">${LI_IC.ruler} Measure</span>
-<span class="qa-li-hint">Hover for size · click two for the gap</span>
+<span class="qa-li-hint">Hover for size · click two for gap · Esc / right-click to reset</span>
 <span class="sep"></span>
-<button class="qa-li-nums ic on" title="Show / hide numbers">${LI_IC.hash}</button>
 <button class="qa-li-x ic" title="Close (Esc)">${LI_IC.x}</button>`;
     document.body.appendChild(bar);
-    bar.querySelector('.qa-li-nums').addEventListener('click', (e) => {
-        liState.nums = !liState.nums;
-        e.currentTarget.classList.toggle('on', liState.nums);
-        document.getElementById('qa-li-layer').classList.toggle('qa-li-nonums', !liState.nums);
-    });
     bar.querySelector('.qa-li-x').addEventListener('click', closeMeasureTool);
 }
 
@@ -5609,13 +5617,18 @@ function liOnClick(e) {
     e.preventDefault(); e.stopPropagation();
     if (!liState.anchor) { liState.anchor = el; liState.target = null; }
     else if (!liState.target) { liState.target = el; }
-    else { liState.anchor = el; liState.target = null; }
+    else { liState.anchor = null; liState.target = null; liState.hoverEl = el; } // 3rd click clears → plain hover
     liRenderMeasure();
 }
 
 function liOnKey(e) {
     if (!liState) return;
-    if (e.key === 'Escape') { e.preventDefault(); closeMeasureTool(); }
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        // Esc clears an active measurement first; press again to close the tool
+        if (liState.anchor || liState.target) liClearMeasure();
+        else closeMeasureTool();
+    }
 }
 
 function liOnScroll() {

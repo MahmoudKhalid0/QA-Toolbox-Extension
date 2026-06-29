@@ -382,6 +382,10 @@ function clearActiveTool() {
 }
 chrome.runtime.onMessage.addListener((request) => {
     if (request.action === 'inspectModeEnded' && !inspectStartingGuard) clearActiveTool();
+    if (request.action === 'measureEnded') {
+        const m = document.getElementById('measureBtn');
+        if (m) m.classList.remove('active');
+    }
 });
 
 // Element Inspector button - hover-highlight picking, then a properties/style panel
@@ -538,10 +542,24 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         return;
     }
     await ensureContentScript(tab.id);
-    chrome.tabs.sendMessage(tab.id, { action: 'openMeasure' }, () => {
-        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    chrome.tabs.sendMessage(tab.id, { action: 'openMeasure' }, (resp) => {
+        if (chrome.runtime.lastError) { showToastMessage('Could not open here (reload the page)', 'error'); return; }
+        document.getElementById('measureBtn').classList.toggle('active', !!(resp && resp.open));
     });
 });
+
+// reflect the real overlay state on the Measure card when the panel (re)opens
+(async function syncMeasureActive() {
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.id) return;
+        chrome.tabs.sendMessage(tab.id, { action: 'measureStatus' }, (resp) => {
+            if (chrome.runtime.lastError) return;
+            const m = document.getElementById('measureBtn');
+            if (m) m.classList.toggle('active', !!(resp && resp.open));
+        });
+    } catch (e) { }
+})();
 
 // ── Debug tab: Console logs (in-memory, capped) + AI explain ──
 (function setupDebug() {
