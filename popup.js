@@ -580,6 +580,7 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
 
     function render() {
         viewingFindings = false;
+        lastConsoleSig = sigOf(logsCache);
         updateCounts();
         const filtered = currentLevel === 'all' ? logsCache : logsCache.filter(l => l.level === currentLevel);
         // Newest first
@@ -588,7 +589,10 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
             list().innerHTML = '<div class="dbg-empty">No console messages captured yet.<br>Interact with the page and they\'ll show here.</div>';
             return;
         }
-        list().innerHTML = filteredCache.map((l, i) =>
+        const RENDER_CAP = 300; // keep the DOM light no matter how many were captured
+        const note = filteredCache.length > RENDER_CAP
+            ? `<div class="dbg-empty" style="padding:8px;">Showing newest ${RENDER_CAP} of ${filteredCache.length}.</div>` : '';
+        list().innerHTML = note + filteredCache.slice(0, RENDER_CAP).map((l, i) =>
             `<div class="dbg-row ${dEsc(l.level)}">
                 <span class="dbg-msg">${dEsc(l.message)}</span>
                 ${l.count > 1 ? `<span class="dbg-count">×${l.count}</span>` : ''}
@@ -631,9 +635,10 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
                 logsCache = resp.logs || [];
                 updateCounts(); // keep the tab badge live even when not on the Debug tab
                 const sig = sigOf(logsCache);
-                // Re-render only when the data actually changed, so clicks/selection survive the poll
+                // Re-render only when the data actually changed, so clicks/selection survive the poll.
+                // Only advance the signature when we actually render — otherwise data captured while
+                // the panel is hidden would be marked "seen" and never show when it becomes visible.
                 if (visible && mode === 'console' && !viewingFindings && sig !== lastConsoleSig) { lastConsoleSig = sig; render(); }
-                else lastConsoleSig = sig;
             });
             chrome.runtime.sendMessage({ action: 'getNetworkReqs', tabId: id }, (resp) => {
                 if (chrome.runtime.lastError || !resp) return;
@@ -641,7 +646,6 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
                 netUpdateCounts();
                 const sig = sigOf(netCache);
                 if (visible && mode === 'network' && !netViewingFindings && sig !== lastNetSig) { lastNetSig = sig; netRender(); }
-                else lastNetSig = sig;
             });
         });
     }
@@ -723,6 +727,7 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
 
     function netRender() {
         netViewingFindings = false;
+        lastNetSig = sigOf(netCache);
         let filtered = netCache;
         if (netFilter === 'failed') filtered = netCache.filter(isFailed);
         netFilteredCache = filtered.slice().reverse(); // newest first
@@ -730,7 +735,10 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
             netList().innerHTML = '<div class="dbg-empty">No fetch/XHR requests captured yet.<br>Interact with the page and they\'ll show here.</div>';
             return;
         }
-        netList().innerHTML = netFilteredCache.map((r, i) => {
+        const RENDER_CAP = 300; // keep the DOM light no matter how many were captured
+        const note = netFilteredCache.length > RENDER_CAP
+            ? `<div class="dbg-empty" style="padding:8px;">Showing newest ${RENDER_CAP} of ${netFilteredCache.length}.</div>` : '';
+        netList().innerHTML = note + netFilteredCache.slice(0, RENDER_CAP).map((r, i) => {
             const dur = r.duration != null ? Math.round(r.duration) + 'ms' : '';
             const statusLabel = r.status === 0 ? (r.error || 'ERR') : r.status;
             return `<div class="net-row ${isFailed(r) ? 'failed' : ''}" data-i="${i}">
