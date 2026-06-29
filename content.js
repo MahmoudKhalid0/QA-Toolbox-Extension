@@ -3118,6 +3118,19 @@ const RV_STORE = 'qaResponsive';
 let rvState = null;
 let rvSyncing = false, rvClicking = false;
 
+// Inline SVG icons (Font Awesome isn't available inside the page).
+const rvIco = (p, s) => `<svg width="${s || 13}" height="${s || 13}" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;flex-shrink:0;">${p}</svg>`;
+const RV_ICON = {
+    mobile: rvIco('<path d="M7 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H7zm0 2h10v14H7V4zm3.5 15h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1 0-1z"/>', 15),
+    reload: rvIco('<path d="M17.65 6.35A8 8 0 1 0 19.74 14h-2.08A6 6 0 1 1 16.24 7.76L13 11h7V4z"/>'),
+    rotate: rvIco('<path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/>'),
+    link: rvIco('<path d="M3.9 12a3.1 3.1 0 0 1 3.1-3.1h4V7H7a5 5 0 0 0 0 10h4v-1.9H7A3.1 3.1 0 0 1 3.9 12zM13 7v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10zm-5 4h8v2H8z"/>'),
+    touch: rvIco('<path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0-6a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z"/>'),
+    camera: rvIco('<path d="M9 3 7.5 5H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.5L15 3H9zm3 5a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>'),
+    eye: rvIco('<path d="M12 5C5 5 2 12 2 12s3 7 10 7 10-7 10-7-3-7-10-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>'),
+    close: rvIco('<path d="M18.3 5.7 12 12l6.3 6.3-1.3 1.4L10.6 13.4 4.3 19.7 3 18.3 9.2 12 3 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/>', 12)
+};
+
 function rvDefaultState() {
     const s = { tabs: [], active: 1, nextTab: 1, nextScreen: 1, custom: [], zoom: 0.5, ua: 'desktop', mockup: false, layout: 'row', sync: true, touch: true, outline: false, grid: false, ruler: false };
     const mk = (name) => { const d = RV_BUILTIN.find(x => x.name === name); return { id: s.nextScreen++, name: d.name, w: d.w, h: d.h, rotated: false }; };
@@ -3163,7 +3176,7 @@ function rvBuildOverlay() {
             #qa-rv .rv-brand { font-weight: 700; font-size: 13.5px; color: #fff; display: flex; align-items: center; gap: 7px; }
             #qa-rv .rv-url { flex: 1; min-width: 200px; display: flex; gap: 6px; }
             #qa-rv .rv-url input { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #fff; padding: 8px 11px; font-size: 12.5px; outline: none; }
-            #qa-rv .rv-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1); color: #e2e8f0; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; }
+            #qa-rv .rv-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1); color: #e2e8f0; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; display: inline-flex; align-items: center; gap: 5px; }
             #qa-rv .rv-btn:hover { background: rgba(255,255,255,0.16); color: #fff; }
             #qa-rv .rv-btn.go { background: linear-gradient(135deg,#8b5cf6,#6366f1); border: none; color: #fff; font-weight: 600; }
             #qa-rv .rv-btn.on { background: rgba(139,92,246,0.3); border-color: rgba(139,92,246,0.6); color: #fff; }
@@ -3196,7 +3209,7 @@ function rvBuildOverlay() {
             #qa-rv .rv-fdim:hover { color: #93c5fd; }
             #qa-rv .rv-fdim[contenteditable="true"] { background: rgba(255,255,255,0.1); border-radius: 4px; padding: 0 4px; color: #fff; }
             #qa-rv .rv-fact { display: flex; gap: 3px; flex-shrink: 0; }
-            #qa-rv .rv-fact button { background: rgba(255,255,255,0.07); border: none; color: #94a3b8; cursor: pointer; width: 24px; height: 22px; border-radius: 6px; font-size: 11px; }
+            #qa-rv .rv-fact button { background: rgba(255,255,255,0.07); border: none; color: #94a3b8; cursor: pointer; width: 24px; height: 22px; border-radius: 6px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
             #qa-rv .rv-fact button:hover { background: rgba(255,255,255,0.18); color: #fff; }
             #qa-rv .rv-screen { background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
             #qa-rv .rv-inner { overflow: hidden; position: relative; }
@@ -3233,19 +3246,19 @@ function rvBuildOverlay() {
             #qa-rv .rv-cd-item button:hover { color: #f87171; }
         </style>
         <div class="rv-bar">
-            <span class="rv-brand">&#128241; Responsive</span>
+            <span class="rv-brand">${RV_ICON.mobile} Responsive</span>
             <div class="rv-url"><input type="text" id="rv-url" spellcheck="false"><button class="rv-btn go" id="rv-go">Go</button></div>
-            <button class="rv-btn" id="rv-reload" title="Reload all">&#8635;</button>
-            <button class="rv-btn" id="rv-rotate" title="Rotate all">&#10227; Rotate</button>
+            <button class="rv-btn" id="rv-reload" title="Reload all">${RV_ICON.reload}</button>
+            <button class="rv-btn" id="rv-rotate" title="Rotate all">${RV_ICON.rotate} Rotate</button>
             <span class="rv-zoomwrap" title="Zoom %"><input type="number" id="rv-zoom" min="10" max="200" step="5"><b>%</b></span>
             <select class="rv-sel" id="rv-ua" title="User-Agent"><option value="desktop">UA: Desktop</option><option value="iphone">UA: iPhone</option><option value="android">UA: Android</option></select>
             <select class="rv-sel" id="rv-layout" title="Layout"><option value="row">Side by side</option><option value="stack">Stacked</option></select>
             <button class="rv-btn" id="rv-mockup" title="Device frame">Mockup</button>
-            <button class="rv-btn" id="rv-sync" title="Sync scroll & clicks">&#128279; Sync</button>
-            <button class="rv-btn" id="rv-touch" title="Touch cursor">&#9737; Touch</button>
-            <button class="rv-btn" id="rv-shot" title="Screenshot the whole view">&#128247;</button>
+            <button class="rv-btn" id="rv-sync" title="Sync scroll & clicks">${RV_ICON.link} Sync</button>
+            <button class="rv-btn" id="rv-touch" title="Touch cursor">${RV_ICON.touch} Touch</button>
+            <button class="rv-btn" id="rv-shot" title="Screenshot the whole view">${RV_ICON.camera}</button>
             <select class="rv-sel" id="rv-add" title="Add a device"><option value="">+ Add device</option></select>
-            <button class="rv-btn close" id="rv-close" title="Close">&#10005;</button>
+            <button class="rv-btn close" id="rv-close" title="Close">${RV_ICON.close}</button>
         </div>
         <div class="rv-tabs" id="rv-tabs"></div>
         <div class="rv-iso" id="rv-iso">Isolation — showing one screen. <button class="rv-btn" id="rv-isoexit" style="margin-left:8px;padding:3px 9px;">Show all</button></div>
@@ -3492,11 +3505,11 @@ function rvRender() {
                 <span class="rv-fname" draggable="true" title="Drag to reorder">${qaEsc(s.name)}</span>
                 <span class="rv-fdim" title="Click to edit size">${w}×${h}</span>
                 <span class="rv-fact">
-                    <button data-act="shot" title="Screenshot">&#128247;</button>
-                    <button data-act="isolate" title="Isolate">&#128065;</button>
-                    <button data-act="rotate" title="Rotate">&#10227;</button>
-                    <button data-act="reload" title="Reload">&#8635;</button>
-                    <button data-act="remove" title="Remove">&#10005;</button>
+                    <button data-act="shot" title="Screenshot">${RV_ICON.camera}</button>
+                    <button data-act="isolate" title="Isolate">${RV_ICON.eye}</button>
+                    <button data-act="rotate" title="Rotate">${RV_ICON.rotate}</button>
+                    <button data-act="reload" title="Reload">${RV_ICON.reload}</button>
+                    <button data-act="remove" title="Remove">${RV_ICON.close}</button>
                 </span>
             </div>
             <div class="rv-screen ${rvState.mockup ? 'mock' : ''}">
