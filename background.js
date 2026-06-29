@@ -956,6 +956,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Open a URL in a fresh private/incognito window (works on Chromium browsers)
+    if (request.action === 'openIncognito') {
+        const url = request.url || (sender.tab && sender.tab.url);
+        if (!url || !/^https?:/i.test(url)) { sendResponse({ success: false, error: 'Open a website first' }); return true; }
+        chrome.windows.create({ url, incognito: true, state: 'maximized', focused: true }, (win) => {
+            if (chrome.runtime.lastError || !win) {
+                sendResponse({ success: false, error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'Private browsing is disabled' });
+            } else {
+                sendResponse({ success: true });
+            }
+        });
+        return true;
+    }
+
     // Link Health: check a list of links for broken/dead URLs
     if (request.action === 'checkLinks') {
         (async () => {

@@ -2195,9 +2195,7 @@ function showReviewResult(review) {
                 ctx = `<div class="rv-ctx">…${highlighted}…</div>`;
             }
             return `<div class="rv-item" style="${rtl ? 'direction:rtl;' : ''}">
-                <div class="rv-line"><span class="rv-wrong">${escapeHtml(it.original)}</span>
-                <i class="fas fa-arrow-right rv-arrow"></i>
-                <span class="rv-right">${escapeHtml(it.correction)}</span></div>
+                <div class="rv-line"><span class="rv-wrong">${escapeHtml(it.original)}</span><svg class="rv-arrow" width="13" height="13" viewBox="0 0 24 24" fill="#94a3b8" aria-hidden="true"><path d="M4 11h12.2l-4.6-4.6L13 5l7 7-7 7-1.4-1.4 4.6-4.6H4z"/></svg><span class="rv-right">${escapeHtml(it.correction)}</span></div>
                 ${ctx}
                 <div class="rv-meta"><span class="rv-tag" style="color:${REVIEW_TYPE_COLORS[it.type] || '#cbd5e1'};">${escapeHtml(reviewTypeLabel(it.type, rtl))}</span> ${escapeHtml(it.explanation)}</div>
             </div>`;
@@ -2215,9 +2213,10 @@ function showReviewResult(review) {
             #ff-sel-result .sr-btns button:hover { background: rgba(255,255,255,0.22); }
             #ff-sel-result .sr-body { overflow-y: auto; padding: 8px 12px 12px; }
             #ff-sel-result .rv-item { background: rgba(0,0,0,0.3); border-radius: 9px; padding: 10px 12px; margin-top: 8px; }
-            #ff-sel-result .rv-line { font-size: 14px; line-height: 1.7; word-break: break-word; }
-            #ff-sel-result .rv-wrong { color: #fca5a5; text-decoration: line-through; text-decoration-color: rgba(239,68,68,0.5); }
-            #ff-sel-result .rv-arrow { font-size: 10px; color: #64748b; margin: 0 6px; }
+            #ff-sel-result .rv-line { font-size: 14px; line-height: 1.7; word-break: break-word; direction: ltr; text-align: left; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+            #ff-sel-result .rv-wrong { color: #fca5a5; text-decoration: line-through; text-decoration-color: rgba(239,68,68,0.5); unicode-bidi: isolate; }
+            #ff-sel-result .rv-right { unicode-bidi: isolate; }
+            #ff-sel-result .rv-arrow { flex-shrink: 0; margin: 0 4px; }
             #ff-sel-result .rv-right { color: #6ee7b7; font-weight: 600; }
             #ff-sel-result .rv-ctx { font-size: 12.5px; color: #94a3b8; margin-top: 6px; line-height: 1.7; background: rgba(255,255,255,0.04); border-radius: 6px; padding: 5px 8px; word-break: break-word; }
             #ff-sel-result .rv-mark { background: rgba(239,68,68,0.3); color: #fecaca; border-radius: 3px; padding: 0 2px; }
@@ -2283,8 +2282,11 @@ function showSelectionResult(title, text) {
     document.body.appendChild(panel);
     const textEl = panel.querySelector('#sr-text');
     textEl.textContent = text;
-    // Right-align for Arabic output
-    if (/[؀-ۿ]/.test(text)) textEl.style.direction = 'rtl';
+    // Align the result by the OUTPUT language: Arabic -> RTL/right, else LTR/left
+    // (explicit both ways so it doesn't inherit the page's direction).
+    const isRtl = /[؀-ۿݐ-ݿ]/.test(text);
+    textEl.style.direction = isRtl ? 'rtl' : 'ltr';
+    textEl.style.textAlign = isRtl ? 'right' : 'left';
     panel.querySelector('#sr-close').addEventListener('click', () => panel.remove());
     panel.querySelector('#sr-copy').addEventListener('click', (e) => {
         ffCopyText(text).then(() => {
@@ -3575,17 +3577,19 @@ function createFloatingButton() {
             position: fixed;
             bottom: 180px;
             right: 30px;
+            direction: ltr;
+            text-align: left;
             background: rgba(15, 15, 35, 0.95);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 16px;
             padding: 8px;
-            width: 280px;
+            width: 270px;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
             z-index: 999999999;
             display: none;
             flex-direction: column;
-            gap: 4px;
+            gap: 2px;
             animation: ff-slide-up 0.3s ease-out;
             max-height: 400px;
             overflow-y: auto;
@@ -3595,34 +3599,47 @@ function createFloatingButton() {
             to { opacity: 1; transform: translateY(0); }
         }
         .ff-menu-item {
-            padding: 10px 14px;
-            border-radius: 10px;
+            padding: 8px 12px;
+            border-radius: 9px;
             color: #e0e0e0;
             font-family: 'Segoe UI', sans-serif;
-            font-size: 14px;
+            font-size: 13px;
             cursor: pointer;
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
             transition: all 0.2s;
         }
         .ff-menu-item:hover {
             background: rgba(102, 126, 234, 0.2);
             color: white;
         }
+        .ff-menu-item.ff-action {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            margin-bottom: 3px;
+        }
+        .ff-menu-item.ff-action:hover {
+            background: rgba(102, 126, 234, 0.22);
+            border-color: rgba(102, 126, 234, 0.5);
+        }
+        .ff-menu-divider {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.08);
+            margin: 5px 4px;
+        }
         .ff-menu-item i {
             color: #667eea;
             font-size: 16px;
         }
         .ff-menu-header {
-            padding: 8px 14px;
-            font-size: 11px;
+            padding: 4px 12px 5px;
+            font-size: 10px;
             font-weight: bold;
             color: #667eea;
             text-transform: uppercase;
             letter-spacing: 1px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            margin-bottom: 4px;
+            margin-bottom: 2px;
         }
         .ff-sub-profiles {
             margin-left: 18px;
@@ -3648,7 +3665,7 @@ function createFloatingButton() {
         btn = document.createElement('div');
         btn.id = 'ff-floating-btn';
         btn.innerHTML = `
-            <i class="fas fa-bolt"></i>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="#ffffff" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
             <div id="ff-badge" style="position:absolute; top:-5px; right:-5px; background:#ef4444; color:white; font-size:10px; font-weight:bold; padding:2px 6px; border-radius:10px; border:2px solid #0f0f23; transition: all 0.2s;">0</div>
         `;
         document.body.appendChild(btn);
@@ -3677,6 +3694,19 @@ function createFloatingButton() {
         document.body.appendChild(menu);
 
         menu.addEventListener('click', async (e) => {
+            // Open the current page in a private/incognito window
+            if (e.target.closest('#ff-menu-incognito')) {
+                menu.style.display = 'none';
+                chrome.runtime.sendMessage({ action: 'openIncognito', url: location.href }, (resp) => {
+                    if (chrome.runtime.lastError || !resp || !resp.success) {
+                        showFabAiStatus('error', (resp && resp.error) || 'Could not open a private window');
+                    } else {
+                        showFabAiStatus('success', 'Opened in a private window');
+                    }
+                });
+                return;
+            }
+
             // Standalone "AI Fill" option - scan + AI-fill the current page
             const aiItem = e.target.closest('#ff-menu-ai-fill');
             if (aiItem) {
@@ -3727,11 +3757,22 @@ function createFloatingButton() {
 
     const renderMenuItems = (filter = '') => {
         // Standalone "AI Fill" option at the very top (independent of profiles)
-        let menuHtml = '';
+        // === Tools group (page utilities) - shown first ===
+        let menuHtml = `<div class="ff-menu-header">Tools</div>`;
+        menuHtml += `
+            <div class="ff-menu-item ff-action" id="ff-menu-incognito" title="Open this page in a private window (clean session)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#94a3b8" style="flex-shrink:0;" aria-hidden="true"><path d="M2 11l1.5-5A2 2 0 0 1 5.4 4.6h13.2a2 2 0 0 1 1.9 1.4L22 11v1H2v-1zm6 2.5A2.5 2.5 0 1 0 8 18a2.5 2.5 0 0 0 0-4.5zm8 0a2.5 2.5 0 1 0 0 4.5 2.5 2.5 0 0 0 0-4.5z"/></svg>
+                <span style="font-weight:600;">Open in Incognito</span>
+            </div>
+        `;
+        menuHtml += `<div class="ff-menu-divider"></div>`;
+
+        // === Form fill group: AI Fill + matching profiles ===
+        menuHtml += `<div class="ff-menu-header">Form fill</div>`;
         if (fabAiFillEnabled) {
             menuHtml += `
-                <div class="ff-menu-item" id="ff-menu-ai-fill" title="Let AI fill this form">
-                    <i class="fas fa-wand-magic-sparkles" style="color:#a78bfa;"></i>
+                <div class="ff-menu-item ff-action" id="ff-menu-ai-fill" title="Let AI fill this form">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="#a78bfa" style="flex-shrink:0;" aria-hidden="true"><path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z"/></svg>
                     <span style="font-weight:600;">AI Fill this page</span>
                 </div>
             `;
@@ -3739,10 +3780,9 @@ function createFloatingButton() {
 
         // The profiles section only appears when there are matching profiles
         if (matchingProfiles.length > 0) {
-            if (fabAiFillEnabled) menuHtml += `<div style="height:1px; background:rgba(255,255,255,0.08); margin:6px 4px;"></div>`;
             menuHtml += `
-                <div class="ff-menu-header">Matching Profiles</div>
-                <div class="ff-search-container" style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                <div class="ff-menu-header" style="margin-top:10px;">Matching Profiles</div>
+                <div class="ff-search-container" style="padding: 4px 2px 8px;">
                     <div style="position:relative;">
                         <i class="fas fa-search" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:12px; color:#666;"></i>
                         <input type="text" id="ff-menu-search" placeholder="Search profiles..."
