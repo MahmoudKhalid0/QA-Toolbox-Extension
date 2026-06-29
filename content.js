@@ -87,6 +87,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         openStoragePanel();
         sendResponse({ success: true });
     }
+    if (request.action === 'openMeasure') {
+        openMeasureTool();
+        sendResponse({ success: true });
+    }
     if (request.action === 'arStart') { arArm(request.seconds); sendResponse({ success: true }); }
     if (request.action === 'arStop') { arArm(0); sendResponse({ success: true }); }
     if (request.action === 'highlightBySelector') { sendResponse(highlightSelector(request.query)); }
@@ -5599,5 +5603,233 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// ============================================================================
+// Measure — on-page tool: hover an element for its size / padding / margin;
+// click two elements to measure the gap (or the 4 insets when one is inside
+// the other); alignment guides extend across the viewport. No AI, no network.
+// ============================================================================
+let liState = null;
+
+function openMeasureTool() {
+    if (liState) { closeMeasureTool(); return; } // card acts as a toggle
+    liState = { nums: true, hoverEl: null, anchor: null, target: null };
+    liInjectStyles();
+    liBuildToolbar();
+    liBuildLayer();
+    document.addEventListener('mousemove', liOnMove, true);
+    document.addEventListener('click', liOnClick, true);
+    document.addEventListener('keydown', liOnKey, true);
+    window.addEventListener('scroll', liOnScroll, true);
+    window.addEventListener('resize', liOnScroll, true);
+}
+
+function closeMeasureTool() {
+    if (!liState) return;
+    document.removeEventListener('mousemove', liOnMove, true);
+    document.removeEventListener('click', liOnClick, true);
+    document.removeEventListener('keydown', liOnKey, true);
+    window.removeEventListener('scroll', liOnScroll, true);
+    window.removeEventListener('resize', liOnScroll, true);
+    const ids = ['qa-li-bar', 'qa-li-layer', 'qa-li-style'];
+    ids.forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
+    liState = null;
+}
+
+function liInjectStyles() {
+    if (document.getElementById('qa-li-style')) return;
+    const s = document.createElement('style');
+    s.id = 'qa-li-style';
+    s.textContent = `
+#qa-li-layer{position:fixed;inset:0;pointer-events:none;z-index:2147483640;}
+#qa-li-layer.qa-li-nonums .qa-li-lbl{display:none;}
+.qa-li-box{position:fixed;pointer-events:none;box-sizing:border-box;}
+.qa-li-lbl{position:fixed;pointer-events:none;background:#7c3aed;color:#fff;font:600 11px/1.4 -apple-system,Segoe UI,sans-serif;padding:1px 6px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:2;}
+.qa-li-lbl.gap{background:#f43f5e;}
+.qa-li-line{position:fixed;pointer-events:none;height:0;border-top:1px dashed #f43f5e;z-index:1;}
+#qa-li-bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:6px;background:#1e1b2e;color:#fff;padding:6px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.4);font:13px/1 -apple-system,Segoe UI,sans-serif;}
+#qa-li-bar button{all:unset;cursor:pointer;padding:6px 10px;border-radius:7px;color:#cbd5e1;display:flex;align-items:center;gap:5px;font-size:13px;}
+#qa-li-bar button:hover{background:#2d2a44;color:#fff;}
+#qa-li-bar button.on{background:#7c3aed;color:#fff;}
+#qa-li-bar .sep{width:1px;height:20px;background:#3a3654;margin:0 2px;}
+#qa-li-bar .qa-li-x{color:#f87171;font-weight:700;}
+#qa-li-bar .qa-li-title{font-weight:600;padding:0 4px;}
+#qa-li-bar .qa-li-hint{font-size:11px;color:#94a3b8;max-width:260px;}
+#qa-li-bar,#qa-li-bar *,#qa-li-layer,#qa-li-layer *{outline:none!important;}`;
+    (document.head || document.documentElement).appendChild(s);
+}
+
+function liBuildToolbar() {
+    const bar = document.createElement('div');
+    bar.id = 'qa-li-bar';
+    bar.innerHTML = `
+<span class="qa-li-title">📏 Measure</span>
+<span class="qa-li-hint">Hover for size · click two elements for the gap</span>
+<span class="sep"></span>
+<button class="qa-li-nums on" title="Show / hide numbers">123</button>
+<button class="qa-li-x" title="Close (Esc)">✕</button>`;
+    document.body.appendChild(bar);
+    bar.querySelector('.qa-li-nums').addEventListener('click', (e) => {
+        liState.nums = !liState.nums;
+        e.currentTarget.classList.toggle('on', liState.nums);
+        document.getElementById('qa-li-layer').classList.toggle('qa-li-nonums', !liState.nums);
+    });
+    bar.querySelector('.qa-li-x').addEventListener('click', closeMeasureTool);
+}
+
+function liBuildLayer() {
+    const l = document.createElement('div');
+    l.id = 'qa-li-layer';
+    document.body.appendChild(l);
+}
+
+function liIsUi(el) { return !el || (el.closest && el.closest('#qa-li-bar,#qa-li-layer')); }
+
+function liOnMove(e) {
+    if (!liState) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (liIsUi(el)) return;
+    liState.hoverEl = el;
+    liRenderMeasure();
+}
+
+function liOnClick(e) {
+    if (!liState) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (liIsUi(el)) return; // let our own buttons work
+    e.preventDefault(); e.stopPropagation();
+    if (!liState.anchor) { liState.anchor = el; liState.target = null; }
+    else if (!liState.target) { liState.target = el; }
+    else { liState.anchor = el; liState.target = null; }
+    liRenderMeasure();
+}
+
+function liOnKey(e) {
+    if (!liState) return;
+    if (e.key === 'Escape') { e.preventDefault(); closeMeasureTool(); }
+}
+
+function liOnScroll() {
+    if (!liState) return;
+    liRenderMeasure();
+}
+
+function liBox(r, css) {
+    const d = document.createElement('div');
+    d.className = 'qa-li-box';
+    d.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;${css}`;
+    return d;
+}
+function liLabel(x, y, text, cls) {
+    const d = document.createElement('div');
+    d.className = 'qa-li-lbl' + (cls ? ' ' + cls : '');
+    d.textContent = text;
+    d.style.left = Math.max(2, x) + 'px';
+    d.style.top = Math.max(2, y) + 'px';
+    return d;
+}
+function liLine(x1, y1, x2, y2) {
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    const ang = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
+    const d = document.createElement('div');
+    d.className = 'qa-li-line';
+    d.style.cssText = `left:${x1}px;top:${y1}px;width:${len}px;transform:rotate(${ang}deg);transform-origin:0 0;`;
+    return d;
+}
+
+function liRenderMeasure() {
+    const layer = document.getElementById('qa-li-layer');
+    if (!layer) return;
+    layer.innerHTML = '';
+    const A = liState.anchor, T = liState.target, H = liState.hoverEl;
+
+    if (A) {
+        const ra = A.getBoundingClientRect();
+        layer.appendChild(liBox(ra, 'outline:2px solid #7c3aed;background:rgba(124,58,237,.08);'));
+        const second = T || (H && H !== A ? H : null);
+        if (second) {
+            const rb = second.getBoundingClientRect();
+            layer.appendChild(liBox(rb, 'outline:2px solid #f43f5e;background:rgba(244,63,94,.08);'));
+            liDrawGap(layer, ra, rb);
+        }
+        return;
+    }
+
+    if (!H) return;
+    const r = H.getBoundingClientRect();
+    // alignment guides across the whole viewport at the element's 4 edges
+    liGuide(layer, true, r.left); liGuide(layer, true, r.right);
+    liGuide(layer, false, r.top); liGuide(layer, false, r.bottom);
+    const cs = getComputedStyle(H);
+    // margin band (outside)
+    const m = { t: parseFloat(cs.marginTop) || 0, r: parseFloat(cs.marginRight) || 0, b: parseFloat(cs.marginBottom) || 0, l: parseFloat(cs.marginLeft) || 0 };
+    if (m.t || m.r || m.b || m.l) {
+        const mr = { left: r.left - m.l, top: r.top - m.t, width: r.width + m.l + m.r, height: r.height + m.t + m.b };
+        layer.appendChild(liBox(mr, 'outline:1px dashed rgba(245,158,11,.7);background:rgba(245,158,11,.10);'));
+    }
+    // element box
+    layer.appendChild(liBox(r, 'outline:2px solid #7c3aed;background:rgba(124,58,237,.10);'));
+    // padding band (inside)
+    const p = { t: parseFloat(cs.paddingTop) || 0, r: parseFloat(cs.paddingRight) || 0, b: parseFloat(cs.paddingBottom) || 0, l: parseFloat(cs.paddingLeft) || 0 };
+    if (p.t || p.r || p.b || p.l) {
+        const pr = { left: r.left + p.l, top: r.top + p.t, width: Math.max(0, r.width - p.l - p.r), height: Math.max(0, r.height - p.t - p.b) };
+        layer.appendChild(liBox(pr, 'outline:1px dashed rgba(16,185,129,.8);background:rgba(16,185,129,.10);'));
+    }
+    // size label
+    const sizeTxt = `${Math.round(r.width)} × ${Math.round(r.height)}`;
+    const ly = r.top > 22 ? r.top - 20 : r.bottom + 4;
+    layer.appendChild(liLabel(r.left, ly, sizeTxt));
+}
+
+// A single gap measurement: a line + px label. `vertical` picks the axis.
+function liGapLine(layer, x1, y1, x2, y2, vertical) {
+    const dist = vertical ? Math.abs(y2 - y1) : Math.abs(x2 - x1);
+    if (dist < 1) return;
+    layer.appendChild(liLine(x1, y1, x2, y2));
+    const lx = vertical ? x1 + 4 : (x1 + x2) / 2 - 12;
+    const ly = vertical ? (y1 + y2) / 2 - 8 : Math.min(y1, y2) - 20;
+    layer.appendChild(liLabel(lx, ly, `${Math.round(dist)}px`, 'gap'));
+}
+
+// Distances between two element rects. If they overlap (e.g. a button inside a
+// card) we show the 4 edge-to-edge insets; otherwise the nearest-edge gap.
+function liDrawGap(layer, a, b) {
+    const overlap = !(b.left >= a.right || a.left >= b.right || b.top >= a.bottom || a.top >= b.bottom);
+    if (overlap) {
+        const cx = (Math.max(a.left, b.left) + Math.min(a.right, b.right)) / 2;
+        const cy = (Math.max(a.top, b.top) + Math.min(a.bottom, b.bottom)) / 2;
+        liGapLine(layer, cx, a.top, cx, b.top, true);       // top inset
+        liGapLine(layer, cx, a.bottom, cx, b.bottom, true); // bottom inset
+        liGapLine(layer, a.left, cy, b.left, cy, false);    // left inset
+        liGapLine(layer, a.right, cy, b.right, cy, false);  // right inset
+        return;
+    }
+    // not overlapping → single horizontal / vertical gap between nearest edges
+    let hx1 = null, hx2 = null;
+    if (b.left >= a.right) { hx1 = a.right; hx2 = b.left; }
+    else if (a.left >= b.right) { hx1 = b.right; hx2 = a.left; }
+    if (hx1 !== null) {
+        const ovTop = Math.max(a.top, b.top), ovBot = Math.min(a.bottom, b.bottom);
+        const hy = ovBot > ovTop ? (ovTop + ovBot) / 2 : ((a.top + a.bottom) / 2 + (b.top + b.bottom) / 2) / 2;
+        liGapLine(layer, hx1, hy, hx2, hy, false);
+    }
+    let vy1 = null, vy2 = null;
+    if (b.top >= a.bottom) { vy1 = a.bottom; vy2 = b.top; }
+    else if (a.top >= b.bottom) { vy1 = b.bottom; vy2 = a.top; }
+    if (vy1 !== null) {
+        const ovL = Math.max(a.left, b.left), ovR = Math.min(a.right, b.right);
+        const vx = ovR > ovL ? (ovL + ovR) / 2 : ((a.left + a.right) / 2 + (b.left + b.right) / 2) / 2;
+        liGapLine(layer, vx, vy1, vx, vy2, true);
+    }
+}
+
+// Full-viewport dashed guide lines at an element's 4 edges (alignment check).
+function liGuide(layer, vertical, pos) {
+    const d = document.createElement('div');
+    d.className = 'qa-li-guide';
+    if (vertical) d.style.cssText = `position:fixed;left:${pos}px;top:0;width:0;height:100vh;border-left:1px dashed rgba(124,58,237,.75);pointer-events:none;`;
+    else d.style.cssText = `position:fixed;top:${pos}px;left:0;height:0;width:100vw;border-top:1px dashed rgba(124,58,237,.75);pointer-events:none;`;
+    layer.appendChild(d);
 }
 

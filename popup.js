@@ -530,6 +530,19 @@ document.getElementById('ocrBtn').addEventListener('click', async () => {
     showToastMessage('Pick an image on the page (Esc to cancel)', 'success');
 });
 
+// Measure - on-page overlay: sizes, padding/margin, gap between two elements
+document.getElementById('measureBtn').addEventListener('click', async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
+        showToastMessage('Open a website first', 'error');
+        return;
+    }
+    await ensureContentScript(tab.id);
+    chrome.tabs.sendMessage(tab.id, { action: 'openMeasure' }, () => {
+        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    });
+});
+
 // ── Debug tab: Console logs (in-memory, capped) + AI explain ──
 (function setupDebug() {
     let currentLevel = 'all';
