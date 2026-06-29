@@ -83,6 +83,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         openResponsiveOverlay();
         sendResponse({ success: true });
     }
+    if (request.action === 'openStorage') {
+        openStoragePanel();
+        sendResponse({ success: true });
+    }
     if (request.action === 'settingsChanged') {
         refreshFieldAiIconSetting();
     }
@@ -3103,6 +3107,146 @@ function doClearData() {
     });
 }
 
+// ---- Cookies & Storage viewer/editor: cookies (via chrome.cookies, includes
+// httpOnly), localStorage and sessionStorage for the current site. ----
+let stSection = 'cookies';
+let stCookies = [];
+function stGetStore() { return stSection === 'session' ? sessionStorage : localStorage; }
+
+function openStoragePanel() {
+    const old = document.getElementById('qa-storage'); if (old) old.remove();
+    const panel = document.createElement('div');
+    panel.id = 'qa-storage';
+    panel.innerHTML = `
+        <style>
+            #qa-storage { position: fixed; top: 16px; right: 16px; width: 390px; max-height: 86vh; z-index: 2147483647; display: flex; flex-direction: column; direction: ltr; text-align: left;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid rgba(56,189,248,0.5); border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff; font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; }
+            #qa-storage .st-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
+            #qa-storage .st-title { font-weight: 700; font-size: 13.5px; }
+            #qa-storage .st-close { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
+            #qa-storage .st-tabs { display: flex; gap: 4px; padding: 10px 12px 0; }
+            #qa-storage .st-tab { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid transparent; color: #cbd5e1; border-radius: 8px; padding: 7px 6px; font-size: 11.5px; cursor: pointer; font-family: inherit; }
+            #qa-storage .st-tab.on { background: rgba(56,189,248,0.22); border-color: rgba(56,189,248,0.5); color: #fff; }
+            #qa-storage .st-tab span { opacity: 0.7; }
+            #qa-storage .st-add { display: flex; gap: 6px; padding: 10px 12px; }
+            #qa-storage .st-add input { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 7px; color: #fff; padding: 7px 8px; font-size: 12px; outline: none; }
+            #qa-storage .st-add .st-ak { width: 38%; } #qa-storage .st-add .st-av { flex: 1; }
+            #qa-storage .st-add button { background: linear-gradient(135deg,#38bdf8,#0ea5e9); border: none; color: #06283d; font-weight: 700; border-radius: 7px; padding: 0 12px; cursor: pointer; }
+            #qa-storage .st-body { overflow-y: auto; padding: 0 12px 12px; }
+            #qa-storage .st-row { display: flex; align-items: center; gap: 6px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+            #qa-storage .st-k { width: 34%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12px; }
+            #qa-storage .st-k .st-flags { color: #fbbf24; font-size: 9px; font-weight: 700; margin-left: 4px; }
+            #qa-storage .st-v { flex: 1; min-width: 0; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #e2e8f0; padding: 6px 7px; font: 11.5px Consolas, monospace; outline: none; }
+            #qa-storage .st-v:focus { border-color: #38bdf8; }
+            #qa-storage .st-row button { background: rgba(255,255,255,0.08); border: none; color: #94a3b8; cursor: pointer; width: 24px; height: 24px; border-radius: 6px; flex-shrink: 0; }
+            #qa-storage .st-row button:hover { background: rgba(255,255,255,0.2); color: #fff; }
+            #qa-storage .st-row button.st-del:hover { color: #f87171; }
+            #qa-storage .st-empty { text-align: center; color: #64748b; padding: 26px 8px; }
+        </style>
+        <div class="st-head"><span class="st-title">&#129528; Cookies &amp; Storage</span><button class="st-close" id="st-close" title="Close">&#10005;</button></div>
+        <div class="st-tabs">
+            <button class="st-tab" data-sec="cookies">Cookies</button>
+            <button class="st-tab" data-sec="local">Local Storage</button>
+            <button class="st-tab" data-sec="session">Session Storage</button>
+        </div>
+        <div class="st-add">
+            <input class="st-ak" placeholder="name / key"><input class="st-av" placeholder="value"><button id="st-add">Add</button>
+        </div>
+        <div class="st-body" id="st-body"></div>`;
+    document.body.appendChild(panel);
+
+    panel.querySelector('#st-close').addEventListener('click', () => panel.remove());
+    panel.querySelectorAll('.st-tab').forEach(b => b.addEventListener('click', () => { stSection = b.dataset.sec; stRefresh(); }));
+    panel.querySelector('#st-add').addEventListener('click', stAdd);
+    panel.querySelector('#st-body').addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-st]'); if (!btn) return;
+        const row = btn.closest('.st-row');
+        if (btn.dataset.st === 'save') stSave(row.dataset.k, row.querySelector('.st-v').value);
+        else if (btn.dataset.st === 'del') stDelete(row.dataset.k);
+    });
+    panel.querySelector('#st-body').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && e.target.classList.contains('st-v')) { const row = e.target.closest('.st-row'); stSave(row.dataset.k, e.target.value); }
+    });
+
+    // drag by header
+    (function () {
+        const head = panel.querySelector('.st-head'); let sx, sy, sl, st;
+        head.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.st-close') || e.button !== 0) return;
+            const r = panel.getBoundingClientRect(); panel.style.left = r.left + 'px'; panel.style.top = r.top + 'px'; panel.style.right = 'auto';
+            sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top; e.preventDefault();
+            const mv = (ev) => { panel.style.left = Math.max(0, Math.min(sl + ev.clientX - sx, innerWidth - panel.offsetWidth)) + 'px'; panel.style.top = Math.max(0, Math.min(st + ev.clientY - sy, innerHeight - 40)) + 'px'; };
+            const up = () => { document.removeEventListener('mousemove', mv, true); document.removeEventListener('mouseup', up, true); };
+            document.addEventListener('mousemove', mv, true); document.addEventListener('mouseup', up, true);
+        });
+    })();
+
+    stRefresh();
+}
+
+function stRefresh() {
+    const panel = document.getElementById('qa-storage'); if (!panel) return;
+    panel.querySelectorAll('.st-tab').forEach(b => b.classList.toggle('on', b.dataset.sec === stSection));
+    if (stSection === 'cookies') {
+        chrome.runtime.sendMessage({ action: 'getCookies', url: location.href }, (resp) => {
+            stCookies = (resp && resp.cookies) || [];
+            stRenderRows(stCookies.map(c => ({
+                k: c.name, v: c.value,
+                flags: [c.httpOnly ? 'HttpOnly' : '', c.secure ? 'Secure' : '', c.sameSite && c.sameSite !== 'unspecified' ? c.sameSite : ''].filter(Boolean).join(' · ')
+            })));
+        });
+    } else {
+        const store = stGetStore(); const rows = [];
+        for (let i = 0; i < store.length; i++) { const k = store.key(i); rows.push({ k, v: store.getItem(k), flags: '' }); }
+        stRenderRows(rows);
+    }
+}
+
+function stRenderRows(rows) {
+    const body = document.getElementById('st-body'); if (!body) return;
+    if (!rows.length) { body.innerHTML = '<div class="st-empty">Nothing stored here for this site.</div>'; return; }
+    body.innerHTML = rows.map(r => `<div class="st-row" data-k="${qaEsc(r.k)}">
+        <div class="st-k" title="${qaEsc(r.k)}">${qaEsc(r.k)}${r.flags ? `<span class="st-flags">${qaEsc(r.flags)}</span>` : ''}</div>
+        <input class="st-v" value="${qaEsc(r.v)}">
+        <button data-st="save" class="st-save" title="Save">&#10003;</button>
+        <button data-st="del" class="st-del" title="Delete">&#10005;</button>
+    </div>`).join('');
+}
+
+function stSave(key, value) {
+    if (stSection === 'cookies') {
+        const c = stCookies.find(x => x.name === key); if (!c) return;
+        chrome.runtime.sendMessage({ action: 'setCookie', cookie: Object.assign({}, c, { value }) }, () => stToast('Saved'));
+    } else {
+        try { stGetStore().setItem(key, value); stToast('Saved'); } catch (e) { stToast('Failed: ' + e.message); }
+    }
+}
+function stDelete(key) {
+    if (stSection === 'cookies') {
+        const c = stCookies.find(x => x.name === key); if (!c) return;
+        chrome.runtime.sendMessage({ action: 'removeCookie', cookie: c }, () => stRefresh());
+    } else {
+        try { stGetStore().removeItem(key); } catch (e) { } stRefresh();
+    }
+}
+function stAdd() {
+    const panel = document.getElementById('qa-storage'); if (!panel) return;
+    const k = panel.querySelector('.st-ak').value.trim(); const v = panel.querySelector('.st-av').value;
+    if (!k) { panel.querySelector('.st-ak').style.borderColor = '#ef4444'; return; }
+    if (stSection === 'cookies') {
+        const host = location.hostname;
+        chrome.runtime.sendMessage({ action: 'setCookie', cookie: { name: k, value: v, path: '/', domain: host, hostOnly: true, secure: location.protocol === 'https:' } }, () => { panel.querySelector('.st-ak').value = ''; panel.querySelector('.st-av').value = ''; stRefresh(); });
+    } else {
+        try { stGetStore().setItem(k, v); } catch (e) { } panel.querySelector('.st-ak').value = ''; panel.querySelector('.st-av').value = ''; stRefresh();
+    }
+}
+function stToast(msg) {
+    const old = document.getElementById('st-toast'); if (old) old.remove();
+    const t = document.createElement('div'); t.id = 'st-toast'; t.textContent = msg;
+    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0ea5e9;color:#fff;padding:8px 16px;border-radius:8px;font:13px Segoe UI,Arial;z-index:2147483647;box-shadow:0 6px 20px rgba(0,0,0,.4);';
+    document.body.appendChild(t); setTimeout(() => t.remove(), 1300);
+}
+
 // ---- Responsive Viewer: full-screen overlay with customizable workspace tabs,
 // custom devices, and saved settings. Device iframes load this same page
 // (same-origin) so cookies/login work and it renders like the browser. ----
@@ -4294,6 +4438,8 @@ function createFloatingButton() {
                 doClearData();
                 return;
             }
+
+
 
 
             // Standalone "AI Fill" option - scan + AI-fill the current page

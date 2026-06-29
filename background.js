@@ -970,6 +970,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Cookie viewer/editor (chrome.cookies gives httpOnly cookies too)
+    if (request.action === 'getCookies') {
+        chrome.cookies.getAll({ url: request.url }, (cookies) => sendResponse({ cookies: cookies || [] }));
+        return true;
+    }
+    if (request.action === 'setCookie') {
+        const c = request.cookie || {};
+        const host = (c.domain || '').replace(/^\./, '');
+        const url = `${c.secure ? 'https' : 'http'}://${host}${c.path || '/'}`;
+        const details = { url, name: c.name, value: c.value != null ? c.value : '', path: c.path || '/', secure: !!c.secure, httpOnly: !!c.httpOnly };
+        if (c.sameSite && c.sameSite !== 'unspecified') details.sameSite = c.sameSite;
+        if (!c.hostOnly && c.domain) details.domain = c.domain;
+        if (!c.session && c.expirationDate) details.expirationDate = c.expirationDate;
+        chrome.cookies.set(details, (res) => sendResponse({ success: !!res, error: chrome.runtime.lastError && chrome.runtime.lastError.message }));
+        return true;
+    }
+    if (request.action === 'removeCookie') {
+        const c = request.cookie || {};
+        const host = (c.domain || '').replace(/^\./, '');
+        const url = `${c.secure ? 'https' : 'http'}://${host}${c.path || '/'}`;
+        chrome.cookies.remove({ url, name: c.name }, () => sendResponse({ success: true }));
+        return true;
+    }
+
     // Clear browsing data (cache/cookies/storage/...) for this site or all sites
     if (request.action === 'clearBrowsingData') {
         (async () => {

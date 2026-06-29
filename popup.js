@@ -389,6 +389,18 @@ document.getElementById('inspectorToolBtn').addEventListener('click', () => {
     toggleToolSection('inspectorToolBtn', 'inspectorOptions');
 });
 
+// ── Cookies & Storage card → opens the viewer/editor panel on the page ──
+document.getElementById('storageToolBtn').addEventListener('click', async () => {
+    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!t || !t.url || /^(chrome|chrome-extension|about|edge|file):/i.test(t.url)) {
+        showToastMessage('Open a website first', 'error'); return;
+    }
+    await ensureContentScript(t.id);
+    chrome.tabs.sendMessage(t.id, { action: 'openStorage' }, () => {
+        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    });
+});
+
 // ── Responsive Viewer card → opens an overlay on the current page (same-origin
 // iframes so cookies/login work and it renders exactly like the browser) ──
 document.getElementById('responsiveToolBtn').addEventListener('click', async () => {
