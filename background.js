@@ -1036,6 +1036,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Capture the visible tab (used by the Responsive Viewer screenshots)
+    if (request.action === 'captureTab') {
+        chrome.tabs.captureVisibleTab({ format: 'png' }, (dataUrl) => {
+            if (chrome.runtime.lastError || !dataUrl) sendResponse({ error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'Capture failed' });
+            else sendResponse({ dataUrl });
+        });
+        return true;
+    }
+
     // Link Health: check a list of links for broken/dead URLs
     if (request.action === 'checkLinks') {
         (async () => {
