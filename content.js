@@ -3796,6 +3796,7 @@ function createFloatingButton() {
                 return;
             }
 
+
             // Standalone "AI Fill" option - scan + AI-fill the current page
             const aiItem = e.target.closest('#ff-menu-ai-fill');
             if (aiItem) {

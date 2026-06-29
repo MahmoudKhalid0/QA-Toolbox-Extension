@@ -389,6 +389,14 @@ document.getElementById('inspectorToolBtn').addEventListener('click', () => {
     toggleToolSection('inspectorToolBtn', 'inspectorOptions');
 });
 
+// ── Responsive Viewer card → opens the dedicated viewer page in a new tab ──
+document.getElementById('responsiveToolBtn').addEventListener('click', async () => {
+    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const target = (t && t.url && /^https?:/i.test(t.url)) ? t.url : '';
+    const viewer = chrome.runtime.getURL('responsive.html') + (target ? '?url=' + encodeURIComponent(target) : '');
+    chrome.tabs.create({ url: viewer });
+});
+
 // ── Link Health card → runs in the page (content.js checks, colours links & shows the panel) ──
 document.getElementById('linksToolBtn').addEventListener('click', async () => {
     const card = document.getElementById('linksToolBtn');

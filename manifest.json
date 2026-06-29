@@ -12,6 +12,7 @@
         "tabs",
         "cookies",
         "browsingData",
+        "declarativeNetRequest",
         "identity",
         "identity.email"
     ],
