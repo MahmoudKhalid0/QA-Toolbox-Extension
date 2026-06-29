@@ -89,6 +89,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     if (request.action === 'arStart') { arArm(request.seconds); sendResponse({ success: true }); }
     if (request.action === 'arStop') { arArm(0); sendResponse({ success: true }); }
+    if (request.action === 'highlightBySelector') { sendResponse(highlightSelector(request.query)); }
+    if (request.action === 'clearHighlight') { clearHighlights(); sendResponse({ success: true }); }
     if (request.action === 'settingsChanged') {
         refreshFieldAiIconSetting();
     }
@@ -109,6 +111,35 @@ window.addEventListener('message', (e) => {
     if (e.data.__qaConsole) chrome.runtime.sendMessage({ action: 'consoleBatch', batch: e.data.batch }).catch(() => { });
     else if (e.data.__qaNetwork) chrome.runtime.sendMessage({ action: 'networkBatch', batch: e.data.batch }).catch(() => { });
 }, false);
+
+// Highlight by selector: outline elements matching a CSS selector or XPath.
+let hlEls = [];
+function clearHighlights() {
+    hlEls.forEach(el => { try { el.style.removeProperty('outline'); el.style.removeProperty('outline-offset'); } catch (e) { } });
+    hlEls = [];
+}
+function highlightSelector(query) {
+    clearHighlights();
+    const q = (query || '').trim();
+    if (!q) return { count: 0 };
+    let nodes = [];
+    try {
+        const isXPath = q.startsWith('/') || q.startsWith('(') || q.startsWith('./') || q.startsWith('//');
+        if (isXPath) {
+            const r = document.evaluate(q, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            for (let i = 0; i < r.snapshotLength; i++) { const n = r.snapshotItem(i); if (n && n.nodeType === 1) nodes.push(n); }
+        } else {
+            nodes = [...document.querySelectorAll(q)];
+        }
+    } catch (e) { return { error: e.message || 'Invalid selector' }; }
+    nodes.forEach(el => {
+        el.style.setProperty('outline', '2px solid #22c55e', 'important');
+        el.style.setProperty('outline-offset', '1px', 'important');
+        hlEls.push(el);
+    });
+    if (nodes[0]) { try { nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { } }
+    return { count: nodes.length };
+}
 
 // Auto Refresh: re-arm the reload timer on every page load using the interval
 // saved for this tab in the background. The countdown shows in the TAB TITLE
@@ -3129,11 +3160,12 @@ function doClearData() {
         const cfg = Object.assign({}, CLEAR_DEFAULT, res && res.qaClearData ? res.qaClearData : {});
         cfg.types = Object.assign({}, CLEAR_DEFAULT.types, cfg.types || {});
         const scope = cfg.activeTab ? 'site' : 'all';
+        // "Active tab only" blocks the privacy-sensitive global types (cache is still
+        // allowed — it clears all-sites cache, paired with the bypass-cache reload).
+        const SITE_DISABLED = ['downloads', 'formData', 'history', 'passwords'];
         let types = Object.keys(cfg.types).filter(k => cfg.types[k]);
-        // "Active tab only" must touch ONLY this site: global types (cache,
-        // downloads, history…) can't be limited to one origin, so skip them here.
-        if (scope === 'site') types = types.filter(k => CLEAR_ORIGIN_SCOPED.includes(k));
-        if (!types.length) { showFabAiStatus('error', scope === 'site' ? 'In "active tab only" pick site data (cookies/storage), or turn it off' : 'No data types selected — open Settings'); return; }
+        if (scope === 'site') types = types.filter(k => !SITE_DISABLED.includes(k));
+        if (!types.length) { showFabAiStatus('error', 'No data types selected — open Settings'); return; }
         let host = ''; try { host = new URL(location.href).host; } catch (e) { }
         const target = scope === 'site' ? (host || 'this site') : 'ALL sites';
 
@@ -3961,9 +3993,21 @@ function closeXPathFinderPanel() {
     }
     const p = document.getElementById('ff-xpath-panel');
     if (p) p.remove();
+    clearHighlights();
 }
 
 const FFX_COPY_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+const FFX_EYE_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+function ffShowHlToast(msg) {
+    let t = document.getElementById('ff-hl-toast');
+    if (!t) {
+        t = document.createElement('div'); t.id = 'ff-hl-toast';
+        t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#16a34a;color:#fff;padding:8px 16px;border-radius:8px;font:13px Segoe UI,Arial;z-index:2147483647;box-shadow:0 6px 20px rgba(0,0,0,.4);';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    clearTimeout(t._timer); t._timer = setTimeout(() => { t.remove(); }, 1500);
+}
 const FFX_CHECK_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
 
 // Evaluate an XPath and return all matching nodes (null = invalid syntax)
@@ -4027,6 +4071,12 @@ function showXPathFinderPanel(el, mode) {
                 display: flex; align-items: center; justify-content: center;
             }
             #ff-xpath-panel .ffx-copy-icon:hover { background: rgba(255,255,255,0.25); color: #fff; }
+            #ff-xpath-panel .ffx-hl-icon {
+                background: rgba(34,197,94,0.15); border: none; color: #4ade80;
+                cursor: pointer; border-radius: 7px; width: 30px; flex-shrink: 0;
+                display: flex; align-items: center; justify-content: center;
+            }
+            #ff-xpath-panel .ffx-hl-icon:hover { background: rgba(34,197,94,0.35); color: #fff; }
             #ff-xpath-panel .ffx-reason { margin-top: 4px; font-size: 11px; color: #c4b5fd; line-height: 1.5; }
             #ff-xpath-panel .ffx-loading { color: rgba(255,255,255,0.45); font-size: 12px; padding: 6px 0; }
         </style>
@@ -4102,12 +4152,19 @@ function showXPathFinderPanel(el, mode) {
             <div class="ffx-row-head"><span class="ffx-row-label">${label}${isRec ? '<span class="ffx-badge">Recommended</span>' : ''}</span>${v ? statusHtml(v) : ''}</div>
             <div class="ffx-out-wrap">
                 <div class="ffx-out">${escapeHtml(value)}</div>
+                <button class="ffx-hl-icon" data-hl="${idx}" title="Highlight matches on the page">${FFX_EYE_SVG}</button>
                 <button class="ffx-copy-icon" data-idx="${idx}" title="Copy">${FFX_COPY_SVG}</button>
             </div>
         </div>`;
     };
 
     body.addEventListener('click', (e) => {
+        const hl = e.target.closest('.ffx-hl-icon');
+        if (hl) {
+            const r = highlightSelector(copyValues[+hl.dataset.hl] || '');
+            ffShowHlToast(r && r.error ? ('Invalid: ' + r.error) : `${(r && r.count) || 0} match(es) highlighted`);
+            return;
+        }
         const btn = e.target.closest('.ffx-copy-icon');
         if (!btn) return;
         ffCopyText(copyValues[+btn.dataset.idx] || '').then(() => {

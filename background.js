@@ -1055,10 +1055,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const skipped = [];
 
                 if (scope === 'site' && origin) {
-                    // Only origin-scoped types in "active tab only" — never touch other sites.
-                    const scoped = {};
-                    dataTypes.forEach(t => { if (ORIGIN_SCOPED.includes(t)) scoped[t] = true; else skipped.push(t); });
+                    const scoped = {}, global = {};
+                    dataTypes.forEach(t => { (ORIGIN_SCOPED.includes(t) ? scoped : global)[t] = true; });
+                    // Origin-scoped types -> only this site
                     if (Object.keys(scoped).length) await chrome.browsingData.remove({ since, origins: [origin] }, scoped);
+                    // Global types (cache, history…) can't be scoped -> cleared for all sites
+                    if (Object.keys(global).length) { await chrome.browsingData.remove({ since }, global); Object.keys(global).forEach(t => skipped.push(t)); }
                 } else {
                     await chrome.browsingData.remove({ since }, want);
                 }

@@ -138,16 +138,20 @@ async function initClearData() {
     document.getElementById('clrConfirm').checked = !!cfg.confirm;
     document.getElementById('clrSpan').value = String(cfg.span || 0);
 
-    // Types that can't be scoped to one site (only cleared in "all sites" mode)
-    const GLOBAL_TYPES = ['cache', 'downloads', 'formData', 'history', 'passwords'];
+    // In "Active tab only": these are blocked (privacy-sensitive, browser-wide).
+    // Cache is still allowed but always clears all sites.
+    const SITE_DISABLED = ['downloads', 'formData', 'history', 'passwords'];
     const typesEl = document.getElementById('clrTypes');
     const renderTypes = () => {
         const siteMode = document.getElementById('clrActiveTab').checked;
         typesEl.innerHTML = CLR_TYPES.map(([k, label]) => {
-            const dim = siteMode && GLOBAL_TYPES.includes(k);
-            return `<label class="clr-chk ${dim ? 'dim' : ''}"${dim ? ' title="Global data — only cleared in \'all sites\' mode"' : ''}>
-                <input type="checkbox" data-type="${k}" ${cfg.types[k] ? 'checked' : ''} ${dim ? 'disabled' : ''}>
-                <span>${label}${dim ? ' <span style="color:#f59e0b;">&#9888;</span>' : ''}</span></label>`;
+            const disabled = siteMode && SITE_DISABLED.includes(k);
+            const allSites = siteMode && k === 'cache';
+            const tag = disabled ? ' <span style="color:#64748b; font-size:11px;">all sites only</span>'
+                : allSites ? ' <span style="color:#f59e0b; font-size:11px;">&#9888; all sites</span>' : '';
+            return `<label class="clr-chk ${disabled ? 'dim' : ''}"${disabled ? ' title="Turn off Active tab only to clear this for all sites"' : ''}>
+                <input type="checkbox" data-type="${k}" ${cfg.types[k] ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+                <span>${label}${tag}</span></label>`;
         }).join('');
     };
     renderTypes();
