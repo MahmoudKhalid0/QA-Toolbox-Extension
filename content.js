@@ -3359,7 +3359,7 @@ const RV_ICON = {
 };
 
 function rvDefaultState() {
-    const s = { tabs: [], active: 1, nextTab: 1, nextScreen: 1, custom: [], zoom: 0.5, ua: 'desktop', mockup: false, layout: 'row', sync: true, touch: true, outline: false, grid: false, ruler: false };
+    const s = { tabs: [], active: 1, nextTab: 1, nextScreen: 1, custom: [], zoom: 0.5, ua: 'desktop', mockup: false, layout: 'row', sync: true, touch: true, outline: false, grid: false, ruler: false, hideScroll: false };
     const mk = (name) => { const d = RV_BUILTIN.find(x => x.name === name); return { id: s.nextScreen++, name: d.name, w: d.w, h: d.h, rotated: false }; };
     s.tabs = [
         { id: s.nextTab++, name: 'Mobile', screens: [mk('iPhone 14 Pro'), mk('Pixel 7')] },
@@ -3390,8 +3390,11 @@ function openResponsiveOverlay() {
     });
 }
 
+let rvPrevOverflow = '';
 function rvBuildOverlay() {
     chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true, ua: rvState.ua }).catch(() => { });
+    rvPrevOverflow = document.documentElement.style.overflow; // hide the page's own scrollbar behind the overlay
+    document.documentElement.style.overflow = 'hidden';
     const o = document.createElement('div');
     o.id = 'qa-rv';
     o.innerHTML = `
@@ -3483,6 +3486,7 @@ function rvBuildOverlay() {
             <button class="rv-btn" id="rv-mockup" title="Device frame">Mockup</button>
             <button class="rv-btn" id="rv-sync" title="Sync scroll & clicks">${RV_ICON.link} Sync</button>
             <button class="rv-btn" id="rv-touch" title="Touch cursor">${RV_ICON.touch} Touch</button>
+            <button class="rv-btn" id="rv-scrollbar" title="Show/hide the scrollbar inside devices (on = shown)">Scrollbar</button>
             <button class="rv-btn" id="rv-shot" title="Screenshot the whole view">${RV_ICON.camera}</button>
             <select class="rv-sel" id="rv-add" title="Add a device"><option value="">+ Add device</option></select>
             <button class="rv-btn close" id="rv-close" title="Close">${RV_ICON.close}</button>
@@ -3499,6 +3503,7 @@ function rvBuildOverlay() {
     o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup);
     o.querySelector('#rv-sync').classList.toggle('on', rvState.sync);
     o.querySelector('#rv-touch').classList.toggle('on', rvState.touch);
+    o.querySelector('#rv-scrollbar').classList.toggle('on', !rvState.hideScroll);
     rvFillAddMenu();
     rvRender();
 
@@ -3521,6 +3526,7 @@ function rvBuildOverlay() {
     o.querySelector('#rv-mockup').addEventListener('click', () => { rvState.mockup = !rvState.mockup; o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup); rvSave(); rvRender(); });
     o.querySelector('#rv-sync').addEventListener('click', () => { rvState.sync = !rvState.sync; o.querySelector('#rv-sync').classList.toggle('on', rvState.sync); rvSave(); });
     o.querySelector('#rv-touch').addEventListener('click', () => { rvState.touch = !rvState.touch; o.querySelector('#rv-touch').classList.toggle('on', rvState.touch); rvSave(); rvWireFrames(); });
+    o.querySelector('#rv-scrollbar').addEventListener('click', () => { rvState.hideScroll = !rvState.hideScroll; o.querySelector('#rv-scrollbar').classList.toggle('on', !rvState.hideScroll); rvSave(); rvWireFrames(); });
     o.querySelector('#rv-add').addEventListener('change', (e) => {
         const v = e.target.value; e.target.value = '';
         if (v === '__custom') { rvCustomDialog(); return; }
@@ -3699,6 +3705,7 @@ function rvScreenshot(rect, name) {
 function rvEsc(e) { if (e.key === 'Escape' && document.getElementById('qa-rv')) closeResponsiveOverlay(); }
 function closeResponsiveOverlay() {
     const o = document.getElementById('qa-rv'); if (o) o.remove();
+    document.documentElement.style.overflow = rvPrevOverflow || '';
     document.removeEventListener('keydown', rvEsc, true);
     chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: false }).catch(() => { });
 }
@@ -3777,6 +3784,15 @@ function rvApplyCursor(doc, on) {
         } else if (st) { st.remove(); }
     } catch (e) { }
 }
+function rvHideScrollbar(doc, hide) {
+    try {
+        let st = doc.getElementById('rv-sb-style');
+        if (hide) {
+            if (!st) { st = doc.createElement('style'); st.id = 'rv-sb-style'; doc.head.appendChild(st); }
+            st.textContent = `::-webkit-scrollbar{width:0 !important;height:0 !important;background:transparent !important;} html{scrollbar-width:none !important;}`;
+        } else if (st) { st.remove(); }
+    } catch (e) { }
+}
 function rvApplyOutline(doc, on) {
     try {
         let st = doc.getElementById('rv-outline-style');
@@ -3795,6 +3811,7 @@ function rvWireFrames() {
             if (!doc || !win) return;
             rvApplyCursor(doc, rvState.touch);
             rvApplyOutline(doc, rvState.outline);
+            rvHideScrollbar(doc, rvState.hideScroll); // optional: hide scrollbar like a phone
             if (doc.__rvBound) return;
             doc.__rvBound = true;
             win.addEventListener('scroll', () => {
