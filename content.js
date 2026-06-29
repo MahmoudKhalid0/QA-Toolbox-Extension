@@ -974,7 +974,7 @@ function startInspectMode(onPick) {
         'background:rgba(15,15,35,0.95);color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:24px;' +
         'padding:8px 16px;font-family:\'Segoe UI\',Arial,sans-serif;font-size:13px;display:flex;align-items:center;gap:12px;' +
         'box-shadow:0 6px 22px rgba(0,0,0,0.5);';
-    cancel.innerHTML = '<span><i class="fas fa-crosshairs" style="color:#8b5cf6;margin-left:4px;"></i> Pick an element</span>' +
+    cancel.innerHTML = '<span style="display:flex;align-items:center;gap:7px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/></svg> Pick an element</span>' +
         '<button id="ff-insp-cancel-btn" style="background:#ef4444;border:none;color:#fff;border-radius:14px;padding:4px 12px;cursor:pointer;font-size:12px;font-weight:600;">Cancel (Esc)</button>';
     document.body.appendChild(cancel);
     cancel.querySelector('#ff-insp-cancel-btn').addEventListener('click', (e) => {
@@ -1003,803 +1003,699 @@ function stopInspectMode() {
 
 let inspectorDragCleanup = null;
 
+// ============================================================================
+// Element Inspector (revamped) — a clean, hybrid panel: smooth visual controls
+// up top, full DevTools power (matched rules, live toggle/edit, box model)
+// underneath. Live edits apply to the page; Copy CSS exports your inline edits.
+// Namespace: #qa-ins. No emojis (inline SVG icons), no AI, no network.
+// ============================================================================
+let insRuleSnaps = null;     // CSSStyleDeclaration -> original cssText (for Reset)
+let insDisabled = null;      // CSSStyleDeclaration -> { prop: {value, priority} }
+let insInline = null;        // prop(kebab) -> value  (our inline edits, for Copy CSS)
+
+const INS_IC = (() => {
+    const w = (p) => `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+    return {
+        x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+        pick: w('<circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/>'),
+        copy: w('<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
+        reset: w('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>')
+    };
+})();
+
+// Quick-edit property catalogue (name -> input type). ~70 common CSS props.
+//   color | px (number + px) | num (unitless number) | text (free / keyword)
+const INS_QUICK_CATALOG = [
+    ['color', 'color'], ['background-color', 'color'], ['border-color', 'color'], ['outline-color', 'color'], ['text-decoration-color', 'color'], ['caret-color', 'color'],
+    ['font-size', 'px'], ['line-height', 'px'], ['letter-spacing', 'px'], ['word-spacing', 'px'], ['text-indent', 'px'],
+    ['width', 'px'], ['height', 'px'], ['min-width', 'px'], ['max-width', 'px'], ['min-height', 'px'], ['max-height', 'px'],
+    ['top', 'px'], ['right', 'px'], ['bottom', 'px'], ['left', 'px'],
+    ['margin', 'px'], ['margin-top', 'px'], ['margin-right', 'px'], ['margin-bottom', 'px'], ['margin-left', 'px'],
+    ['padding', 'px'], ['padding-top', 'px'], ['padding-right', 'px'], ['padding-bottom', 'px'], ['padding-left', 'px'],
+    ['border-width', 'px'], ['border-radius', 'px'], ['outline-width', 'px'], ['outline-offset', 'px'],
+    ['gap', 'px'], ['row-gap', 'px'], ['column-gap', 'px'],
+    ['opacity', 'num'], ['z-index', 'num'], ['font-weight', 'num'], ['flex-grow', 'num'], ['flex-shrink', 'num'], ['order', 'num'], ['tab-size', 'num'],
+    ['display', 'text'], ['position', 'text'], ['float', 'text'], ['clear', 'text'], ['box-sizing', 'text'],
+    ['flex-direction', 'text'], ['flex-wrap', 'text'], ['justify-content', 'text'], ['align-items', 'text'], ['align-self', 'text'], ['flex', 'text'],
+    ['text-align', 'text'], ['text-transform', 'text'], ['text-decoration', 'text'], ['font-style', 'text'], ['font-family', 'text'], ['font', 'text'],
+    ['white-space', 'text'], ['overflow', 'text'], ['overflow-x', 'text'], ['overflow-y', 'text'], ['visibility', 'text'], ['cursor', 'text'], ['pointer-events', 'text'],
+    ['box-shadow', 'text'], ['text-shadow', 'text'], ['transform', 'text'], ['transition', 'text'], ['filter', 'text'], ['backdrop-filter', 'text'],
+    ['background', 'text'], ['background-image', 'text'], ['border', 'text'], ['border-style', 'text'], ['object-fit', 'text'], ['vertical-align', 'text'], ['list-style', 'text']
+];
+const INS_QUICK_TYPE = Object.fromEntries(INS_QUICK_CATALOG);
+
 function closeInspectorPanel() {
-    if (inspectorDragCleanup) {
-        inspectorDragCleanup();
-        inspectorDragCleanup = null;
-    }
-    const p = document.getElementById('ff-insp-panel');
+    if (inspectorDragCleanup) { inspectorDragCleanup(); inspectorDragCleanup = null; }
+    const p = document.getElementById('qa-ins');
     if (p) p.remove();
+    ['qa-ins-style', 'qa-ins-state'].forEach(id => { const s = document.getElementById(id); if (s) s.remove(); });
+    document.querySelectorAll('.qa-ins-target').forEach(n => n.classList.remove('qa-ins-target'));
+    // also clean any leftover panel from older versions
+    const old = document.getElementById('ff-insp-panel'); if (old) old.remove();
     inspectedElement = null;
     inspectedOriginalStyle = null;
+    insRuleSnaps = null; insDisabled = null; insInline = null;
+}
+
+function insToHex(color) {
+    try {
+        const ctx = document.createElement('canvas').getContext('2d');
+        ctx.fillStyle = '#000'; ctx.fillStyle = color;
+        const v = ctx.fillStyle;
+        if (v.startsWith('#')) return v;
+        const n = v.match(/\d+(\.\d+)?/g);
+        if (n) return '#' + n.slice(0, 3).map(x => Math.round(+x).toString(16).padStart(2, '0')).join('');
+    } catch (e) { }
+    return '#000000';
+}
+
+// Prepend a small colour swatch input to colour tokens in a value string.
+function insColorize(escaped, el) {
+    return escaped.replace(/(var\(--[^)]*\)|#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\))/g, (m) => {
+        let color = m;
+        if (m.startsWith('var(')) {
+            const name = m.match(/--[\w-]+/);
+            color = '';
+            if (name && el) { try { color = getComputedStyle(el).getPropertyValue(name[0]).trim(); } catch (e) { } }
+            if (!color || !CSS.supports('color', color)) return m;
+        }
+        return `<input type="color" class="qa-ins-sw" data-token="${m}" value="${insToHex(color)}" title="Pick colour">${m}`;
+    });
+}
+
+// Matched CSS rules for the element, later-wins first, inline ("element.style") on top.
+function insMatchedBlocks(el) {
+    const blocks = [];
+    const collect = (rules) => {
+        for (const rule of rules) {
+            try {
+                if (rule.selectorText && rule.style) {
+                    if (el.matches(rule.selectorText)) blocks.push({ selector: rule.selectorText, style: rule.style });
+                } else if (rule.cssRules && (!rule.media || matchMedia(rule.media.mediaText).matches)) {
+                    collect(rule.cssRules);
+                }
+            } catch (e) { }
+        }
+    };
+    for (const sheet of document.styleSheets) { try { collect(sheet.cssRules); } catch (e) { } }
+    blocks.reverse();
+    if (el.getAttribute('style') || (insDisabled && insDisabled.has(el.style))) {
+        blocks.unshift({ selector: 'element.style', style: el.style });
+    }
+    return blocks;
 }
 
 function showInspectorPanel(el) {
     closeInspectorPanel();
     inspectedElement = el;
     inspectedOriginalStyle = el.getAttribute('style');
+    insRuleSnaps = new Map();
+    insDisabled = new Map();
+    insInline = {};
 
-    let selector = '';
-    try { selector = generateSelector(el); } catch (e) { }
+    const sel = (() => { try { return generateSelector(el); } catch (e) { return ''; } })();
 
-    const attrs = Array.from(el.attributes || []).map(a => ({ name: a.name, value: a.value }));
+    // ---- styles ----
+    const style = document.createElement('style');
+    style.id = 'qa-ins-style';
+    style.textContent = `
+#qa-ins{position:fixed;top:16px;right:16px;width:328px;max-height:88vh;z-index:2147483647;display:flex;flex-direction:column;
+  background:#17151f;color:#e5e7eb;border:1px solid #2a2738;border-radius:14px;box-shadow:0 14px 44px rgba(0,0,0,.6);
+  font:12px/1.45 -apple-system,Segoe UI,sans-serif;overflow:hidden;}
+#qa-ins *{box-sizing:border-box;outline:none!important;}
+#qa-ins .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px;background:#1c1a26;border-bottom:1px solid #2a2738;cursor:move;user-select:none;}
+#qa-ins .hd .tag{background:#2d2a3e;color:#c4b5fd;font-weight:600;font-size:11px;padding:2px 7px;border-radius:5px;word-break:break-all;}
+#qa-ins .hd .dim{color:#9b98ac;font-variant-numeric:tabular-nums;margin-left:6px;font-size:11px;}
+#qa-ins .hd .hbtns{display:flex;gap:4px;flex-shrink:0;}
+#qa-ins .iconbtn{all:unset;cursor:pointer;color:#8b8898;padding:5px;border-radius:7px;display:flex;}
+#qa-ins .iconbtn:hover{background:#262335;color:#fff;}
+#qa-ins .iconbtn.danger:hover{background:#3a1d24;color:#f87171;}
+#qa-ins .tabs{display:flex;gap:2px;padding:8px 10px 0;background:#1c1a26;}
+#qa-ins .tab{all:unset;cursor:pointer;flex:1;text-align:center;padding:8px 0;font-size:12px;font-weight:600;color:#8b8898;border-radius:8px 8px 0 0;}
+#qa-ins .tab:hover{color:#cbd5e1;}
+#qa-ins .tab.on{color:#fff;background:#17151f;}
+#qa-ins .bd{overflow-y:auto;padding:14px;}
+#qa-ins .pane{display:none;}
+#qa-ins .pane.on{display:block;}
+#qa-ins .grp{margin-bottom:16px;}
+#qa-ins .grp:last-child{margin-bottom:0;}
+#qa-ins .lbl{font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#7e7b90;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;}
+#qa-ins .lbl .mini{all:unset;cursor:pointer;font-size:10px;color:#a78bfa;padding:2px 7px;border-radius:5px;text-transform:none;letter-spacing:0;}
+#qa-ins .lbl .mini:hover{background:#262335;}
+#qa-ins .qrow{display:flex;align-items:center;gap:10px;margin-bottom:9px;}
+#qa-ins .qrow .nm{width:74px;color:#b9b6c8;flex:0 0 auto;}
+#qa-ins .qrow input[type=range]{flex:1;accent-color:#7c3aed;height:4px;cursor:pointer;}
+#qa-ins .qrow .val{width:42px;text-align:right;color:#fff;font-variant-numeric:tabular-nums;}
+#qa-ins .qrow input[type=color]{width:30px;height:22px;border:none;border-radius:5px;background:none;padding:0;cursor:pointer;flex:0 0 auto;}
+#qa-ins .qrow input[type=color]::-webkit-color-swatch{border:1px solid #3a3654;border-radius:5px;}
+#qa-ins .qrow input[type=color]::-webkit-color-swatch-wrapper{padding:0;}
+#qa-ins .qrow .hex{flex:1;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:7px;padding:5px 8px;font:12px monospace;min-width:0;}
+#qa-ins .qrow .num{flex:1;min-width:0;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:7px;padding:5px 8px;font:12px monospace;text-align:left;-moz-appearance:textfield;}
+#qa-ins .qrow .num::-webkit-inner-spin-button{opacity:.5;}
+#qa-ins .qrow .num:focus,#qa-ins .qrow .hex:focus,#qa-ins .qrow .txt:focus{border-color:#7c3aed;}
+#qa-ins .qrow .txt{flex:1;min-width:0;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:7px;padding:5px 8px;font:12px monospace;}
+#qa-ins .qrow .unit{color:#7e7b90;font-size:11px;flex:0 0 auto;}
+#qa-ins .qrow .rm{all:unset;cursor:pointer;color:#6b6878;flex:0 0 auto;padding:2px;border-radius:5px;display:flex;}
+#qa-ins .qrow .rm:hover{color:#f87171;background:#3a1d24;}
+#qa-ins .qrow .rm svg{width:13px;height:13px;}
+/* state segmented toggle */
+#qa-ins .states{display:flex;gap:4px;background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:3px;margin-bottom:9px;}
+#qa-ins .states .st{all:unset;flex:1;text-align:center;cursor:pointer;font-size:11px;font-weight:600;color:#8b8898;padding:6px 0;border-radius:6px;}
+#qa-ins .states .st:hover{color:#cbd5e1;}
+#qa-ins .states .st.on{background:#7c3aed;color:#fff;}
+/* property search */
+#qa-ins .qsearch{position:relative;margin-bottom:10px;}
+#qa-ins #qa-ins-search{width:100%;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:8px;padding:7px 10px;font:12px monospace;}
+#qa-ins #qa-ins-search:focus{border-color:#7c3aed;}
+#qa-ins .qsug{position:absolute;left:0;right:0;top:100%;margin-top:3px;z-index:5;display:none;background:#1c1a26;border:1px solid #3a3654;border-radius:8px;max-height:180px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.5);}
+#qa-ins .qsug.show{display:block;}
+#qa-ins .qsug-item{padding:6px 10px;cursor:pointer;font:12px monospace;color:#e5e7eb;display:flex;justify-content:space-between;gap:8px;}
+#qa-ins .qsug-item .ty{color:#7e7b90;font-size:10px;}
+#qa-ins .qsug-item.active,#qa-ins .qsug-item:hover{background:#7c3aed;color:#fff;}
+#qa-ins .qsug-item.active .ty,#qa-ins .qsug-item:hover .ty{color:#e9d5ff;}
+#qa-ins .qhint{color:#6b6878;font-style:italic;font-size:11px;margin-bottom:8px;}
+#qa-ins .filter{width:100%;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:8px;padding:7px 10px;font:12px monospace;margin-bottom:8px;}
+#qa-ins .filter:focus{border-color:#7c3aed;}
+#qa-ins .rules{max-height:300px;overflow-y:auto;background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:8px 10px;font:12px/1.85 monospace;}
+#qa-ins .rule{margin-bottom:9px;}
+#qa-ins .rsel{color:#fbbf24;font-weight:600;word-break:break-all;cursor:pointer;}
+#qa-ins .rsel:hover{text-decoration:underline;}
+#qa-ins .decl{padding-left:4px;word-break:break-all;}
+#qa-ins .decl.off .k,#qa-ins .decl.off .v{text-decoration:line-through;opacity:.4;}
+#qa-ins .dchk,#qa-ins .dchk-state{width:11px!important;height:11px!important;min-width:0!important;margin:0 5px 0 0!important;padding:0!important;accent-color:#7c3aed!important;cursor:pointer!important;vertical-align:middle!important;flex:0 0 auto!important;-webkit-appearance:auto!important;appearance:auto!important;}
+#qa-ins .k{color:#a5b4fc;}
+#qa-ins .v{color:#fff;cursor:text;}
+#qa-ins .v:hover{text-decoration:underline;}
+#qa-ins .qa-ins-sw{-webkit-appearance:none!important;appearance:none!important;width:12px!important;height:12px!important;min-width:0!important;border-radius:3px!important;border:1px solid rgba(255,255,255,.5)!important;margin:0 4px 0 0!important;padding:0!important;vertical-align:middle!important;cursor:pointer!important;background:none!important;display:inline-block!important;}
+#qa-ins .qa-ins-sw::-webkit-color-swatch-wrapper{padding:0!important;}
+#qa-ins .qa-ins-sw::-webkit-color-swatch{border:none!important;border-radius:2px!important;}
+#qa-ins .vedit{background:#000;border:1px solid #7c3aed;color:#fff;font:inherit;border-radius:4px;padding:0 4px;}
+#qa-ins .empty{color:#6b6878;font-style:italic;}
+#qa-ins .code{background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:8px 10px;font:12px/1.7 monospace;color:#c7d2fe;word-break:break-all;}
+#qa-ins .attrs{max-height:200px;overflow-y:auto;background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:6px 10px;font:12px/1.8 monospace;}
+#qa-ins .attrs .k{color:#a5b4fc;}
+#qa-ins .attrs .v{color:#fff;cursor:auto;}
+/* box model */
+#qa-ins .bm{padding:4px 0;}
+#qa-ins .bm .box{border-radius:7px;padding:18px 8px 6px;position:relative;text-align:center;}
+#qa-ins .bm .tagn{position:absolute;top:4px;left:8px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;}
+#qa-ins .bm-margin{background:rgba(245,158,11,.16);} #qa-ins .bm-margin>.tagn{color:#f59e0b;}
+#qa-ins .bm-border{background:rgba(250,204,21,.14);} #qa-ins .bm-border>.tagn{color:#facc15;}
+#qa-ins .bm-padding{background:rgba(16,185,129,.16);} #qa-ins .bm-padding>.tagn{color:#34d399;}
+#qa-ins .bm-content{background:rgba(96,165,250,.18);color:#bfdbfe;padding:10px 4px;font-variant-numeric:tabular-nums;font-weight:600;font-size:11px;}
+#qa-ins .bm .e{width:30px;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:4px;padding:2px 0;font:10px monospace;text-align:center;}
+#qa-ins .bm .e[readonly]{background:transparent;border-color:transparent;color:#9b98ac;}
+#qa-ins .bm .e:focus{border-color:#7c3aed;}
+#qa-ins .bm .sides{display:flex;align-items:center;justify-content:space-between;gap:4px;}
+#qa-ins .ft{display:flex;gap:8px;padding:11px 13px;border-top:1px solid #2a2738;background:#1c1a26;}
+#qa-ins .ft button{flex:1 1 0!important;min-width:0!important;margin:0!important;border:none!important;box-shadow:none!important;text-transform:none!important;letter-spacing:normal!important;all:unset;box-sizing:border-box!important;cursor:pointer!important;height:36px!important;border-radius:8px!important;font:600 12px/1 -apple-system,Segoe UI,sans-serif!important;white-space:nowrap!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:6px!important;}
+#qa-ins .ft button svg{width:14px!important;height:14px!important;flex:0 0 auto!important;}
+#qa-ins .ft .b-reset{background:#262335!important;color:#d4d2e0!important;}
+#qa-ins .ft .b-reset:hover{background:#322f44!important;}
+#qa-ins .ft .b-copy{background:#7c3aed!important;color:#fff!important;}
+#qa-ins .ft .b-copy:hover{background:#6d28d9!important;}`;
+    document.head.appendChild(style);
+
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
     const cls = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.');
     const tagLabel = el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (cls ? '.' + cls : '');
 
-    // Always replace the injected styles - a stale <style> from a previous
-    // extension version can linger in the page DOM and hide style updates
-    {
-        const oldStyles = document.getElementById('ff-insp-styles');
-        if (oldStyles) oldStyles.remove();
-        const style = document.createElement('style');
-        style.id = 'ff-insp-styles';
-        style.textContent = `
-            #ff-insp-panel {
-                --ff-mono: 'Segoe UI', Tahoma, Arial, sans-serif;
-                position: fixed; top: 16px; right: 16px; width: 360px; max-height: 88vh;
-                z-index: 2147483647; display: flex; flex-direction: column;
-                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-                border: 2px solid rgba(14, 165, 233, 0.45); border-radius: 14px;
-                box-shadow: 0 10px 40px rgba(0,0,0,0.7);
-                font-family: 'Segoe UI', Arial, sans-serif; color: #fff; direction: ltr;
-            }
-            #ff-insp-panel * { box-sizing: border-box; }
-            .ff-insp-head {
-                display: flex; align-items: center; justify-content: space-between;
-                padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1);
-                cursor: move; user-select: none;
-            }
-            .ff-insp-tag { font: 600 13px/1.4 var(--ff-mono); color: #ffffff; word-break: break-all; }
-            .ff-insp-head-btns { display: flex; gap: 6px; flex-shrink: 0; margin-left: 8px; }
-            .ff-insp-head-btns button {
-                background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer;
-                width: 26px; height: 26px; border-radius: 6px; font-size: 13px;
-            }
-            .ff-insp-head-btns button:hover { background: rgba(255,255,255,0.22); }
-            .ff-insp-body { overflow-y: auto; padding: 10px 14px 14px; }
-            .ff-insp-section { margin-bottom: 14px; }
-            .ff-insp-sec-title {
-                display: flex; align-items: center; justify-content: space-between;
-                font-size: 11px; font-weight: 700; text-transform: uppercase;
-                color: rgba(255,255,255,0.55); margin-bottom: 6px; letter-spacing: 0.5px;
-            }
-            .ff-insp-sec-title button {
-                background: rgba(14,165,233,0.18); border: 1px solid rgba(14,165,233,0.4);
-                color: #38bdf8; cursor: pointer; font-size: 10px; padding: 2px 8px; border-radius: 5px;
-            }
-            .ff-insp-sec-title button:hover { background: rgba(14,165,233,0.32); }
-            .ff-insp-selector {
-                background: rgba(0,0,0,0.35); border-radius: 7px; padding: 8px 10px;
-                font: 12px/1.6 var(--ff-mono); color: #c7d2fe; word-break: break-all;
-            }
-            .ff-insp-list {
-                background: rgba(0,0,0,0.35); border-radius: 7px; padding: 6px 10px;
-                max-height: 160px; overflow-y: auto; font: 12px/1.9 var(--ff-mono);
-            }
-            .ff-insp-list .ff-insp-row { word-break: break-all; }
-            .ff-insp-list .ff-insp-k { color: #a5b4fc; font-weight: 600; }
-            .ff-insp-list .ff-insp-v { color: #ffffff; }
-            .ff-insp-rule { margin-bottom: 8px; }
-            .ff-insp-rule .ff-insp-sel { color: #fbbf24; font-weight: 600; word-break: break-all; cursor: pointer; }
-            .ff-insp-rule .ff-insp-sel:hover { background: rgba(255,255,255,0.07); border-radius: 3px; }
-            .ff-insp-swatch {
-                -webkit-appearance: none; appearance: none;
-                display: inline-block; width: 12px; height: 12px; border-radius: 2px;
-                border: 1px solid rgba(255,255,255,0.5); margin: 0 4px 0 0; padding: 0;
-                vertical-align: middle; cursor: pointer; background: none;
-            }
-            .ff-insp-swatch::-webkit-color-swatch-wrapper { padding: 0; }
-            .ff-insp-swatch::-webkit-color-swatch { border: none; border-radius: 1px; }
-            .ff-insp-swatch:hover { transform: scale(1.35); border-color: #fff; }
-            .ff-insp-off .ff-insp-swatch { pointer-events: none; opacity: 0.4; }
-            .ff-insp-decl { padding-left: 6px; }
-            .ff-insp-dchk {
-                width: 11px; height: 11px; margin: 0 5px 0 0; accent-color: #6366f1;
-                cursor: pointer; vertical-align: middle;
-            }
-            .ff-insp-off .ff-insp-k, .ff-insp-off .ff-insp-v { text-decoration: line-through; opacity: 0.45; }
-            .ff-insp-decl .ff-insp-k, .ff-insp-decl .ff-insp-v { cursor: text; }
-            .ff-insp-decl .ff-insp-k:hover, .ff-insp-decl .ff-insp-v:hover { text-decoration: underline; }
-            .ff-insp-edit {
-                background: rgba(0,0,0,0.5); border: 1px solid #6366f1; color: #fff;
-                font: inherit; border-radius: 4px; padding: 0 4px; outline: none; max-width: 220px;
-            }
-            .ff-insp-edit::-webkit-calendar-picker-indicator { display: none !important; }
-            .ff-insp-empty { color: rgba(255,255,255,0.35); font-style: italic; }
-            #ff-insp-style-filter, #ff-insp-css {
-                width: 100%; background: rgba(255,255,255,0.06);
-                border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
-                color: #ffffff; font: 12px/1.6 var(--ff-mono); padding: 7px 10px; outline: none;
-            }
-            #ff-insp-style-filter { margin-bottom: 6px; }
-            #ff-insp-style-filter:focus, #ff-insp-css:focus { border-color: #0ea5e9; }
-            #ff-insp-css { min-height: 64px; resize: vertical; }
-            .ff-insp-actions { display: flex; gap: 8px; margin-top: 8px; }
-            .ff-insp-actions button {
-                flex: 1; border: none; border-radius: 8px; padding: 8px 10px;
-                font-size: 12px; font-weight: 600; cursor: pointer;
-            }
-            #ff-insp-apply { background: linear-gradient(135deg, #0ea5e9, #6366f1); color: #fff; }
-            #ff-insp-apply:hover { filter: brightness(1.15); }
-            #ff-insp-reset { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.75); }
-            #ff-insp-reset:hover { background: rgba(255,255,255,0.2); color: #fff; }
-            .ff-insp-feedback { font-size: 11px; color: #4ade80; margin-top: 6px; min-height: 14px; }
-            .ff-insp-css-wrap { position: relative; }
-            #ff-insp-suggest {
-                position: absolute; left: 0; right: 0; top: 100%; margin-top: 2px;
-                z-index: 10; display: none; background: #1e293b;
-                border: 1px solid rgba(99,102,241,0.5); border-radius: 7px;
-                max-height: 150px; overflow-y: auto; font: 12px/2 var(--ff-mono);
-                box-shadow: 0 6px 18px rgba(0,0,0,0.5);
-            }
-            .ff-insp-sg { padding: 3px 10px; cursor: pointer; color: #ffffff; }
-            .ff-insp-sg.active, .ff-insp-sg:hover { background: rgba(99,102,241,0.3); color: #fff; }
-        `;
-        document.head.appendChild(style);
-    }
-
     const panel = document.createElement('div');
-    panel.id = 'ff-insp-panel';
+    panel.id = 'qa-ins';
     panel.innerHTML = `
-        <div class="ff-insp-head">
-            <span class="ff-insp-tag">${escapeHtml(tagLabel)}</span>
-            <div class="ff-insp-head-btns">
-                <button id="ff-insp-repick" title="Pick another element">&#8982;</button>
-                <button id="ff-insp-close" title="Close">&#10005;</button>
-            </div>
-        </div>
-        <div class="ff-insp-body">
-            <div class="ff-insp-section">
-                <div class="ff-insp-sec-title"><span>Selector</span><button id="ff-insp-copy-selector">Copy</button></div>
-                <div class="ff-insp-selector">${escapeHtml(selector || '(none)')}</div>
-            </div>
-            <div class="ff-insp-section">
-                <div class="ff-insp-sec-title"><span>Attributes (${attrs.length})</span><button id="ff-insp-copy-attrs">Copy</button></div>
-                <div class="ff-insp-list">${attrs.length === 0 ? '<div class="ff-insp-empty">No attributes</div>' : attrs.map(a =>
-                    `<div class="ff-insp-row"><span class="ff-insp-k">${escapeHtml(a.name)}</span>="<span class="ff-insp-v">${escapeHtml(a.value)}</span>"</div>`
-                ).join('')}</div>
-            </div>
-            <div class="ff-insp-section">
-                <div class="ff-insp-sec-title"><span>CSS Rules</span><button id="ff-insp-copy-styles">Copy</button></div>
-                <input id="ff-insp-style-filter" type="text" placeholder="Filter properties... (e.g. font, margin)">
-                <div class="ff-insp-list" id="ff-insp-style-list"></div>
-            </div>
-            <div class="ff-insp-section">
-                <div class="ff-insp-sec-title"><span>Apply Custom Style</span></div>
-                <div class="ff-insp-css-wrap">
-                    <textarea id="ff-insp-css" placeholder="background: red;  —or—  .new { color: red; }" dir="ltr" spellcheck="false"></textarea>
-                    <div id="ff-insp-suggest"></div>
-                </div>
-                <div class="ff-insp-actions">
-                    <button id="ff-insp-apply">Apply</button>
-                    <button id="ff-insp-reset">Reset</button>
-                </div>
-                <div class="ff-insp-feedback" id="ff-insp-feedback"></div>
-            </div>
-        </div>
-    `;
+<div class="hd">
+  <span><span class="tag">${escapeHtml(tagLabel)}</span><span class="dim">${Math.round(r.width)} × ${Math.round(r.height)}</span></span>
+  <span class="hbtns">
+    <button class="iconbtn" id="qa-ins-pick" title="Pick another element">${INS_IC.pick}</button>
+    <button class="iconbtn danger" id="qa-ins-close" title="Close">${INS_IC.x}</button>
+  </span>
+</div>
+<div class="tabs">
+  <button class="tab on" data-t="styles">Styles</button>
+  <button class="tab" data-t="box">Box</button>
+  <button class="tab" data-t="info">Info</button>
+</div>
+<div class="bd">
+  <div class="pane on" data-p="styles">
+    <div class="grp">
+      <div class="lbl">Quick edit</div>
+      <div class="states" id="qa-ins-states">
+        <button class="st on" data-s="element">Element</button>
+        <button class="st" data-s="hover">Hover</button>
+        <button class="st" data-s="focus">Focus</button>
+        <button class="st" data-s="active">Pressed</button>
+      </div>
+      <div class="qsearch">
+        <input id="qa-ins-search" type="text" placeholder="Add a property… (e.g. font-size, display)" spellcheck="false">
+        <div class="qsug" id="qa-ins-sug"></div>
+      </div>
+      <div id="qa-ins-qrows"></div>
+    </div>
+    <div class="grp">
+      <div class="lbl">Matched rules</div>
+      <input class="filter" id="qa-ins-filter" type="text" placeholder="Filter properties… (e.g. font, margin)">
+      <div class="rules" id="qa-ins-rules"></div>
+    </div>
+  </div>
+  <div class="pane" data-p="box">
+    <div class="grp"><div class="lbl">Box model</div><div class="bm" id="qa-ins-bm"></div></div>
+  </div>
+  <div class="pane" data-p="info">
+    <div class="grp"><div class="lbl">Selector <button class="mini" id="qa-ins-copy-sel">Copy</button></div><div class="code">${escapeHtml(sel || '(none)')}</div></div>
+    <div class="grp"><div class="lbl">Attributes <button class="mini" id="qa-ins-copy-attr">Copy</button></div><div class="attrs" id="qa-ins-attrs"></div></div>
+  </div>
+</div>
+<div class="ft">
+  <button class="b-reset" id="qa-ins-reset" title="Revert all changes">${INS_IC.reset} Reset</button>
+  <button class="b-copy" id="qa-ins-copy" title="Copy your edits as CSS">${INS_IC.copy} Copy CSS</button>
+</div>`;
     document.body.appendChild(panel);
 
-    // ---- Drag the panel around by its header ----
-    let dragOffset = null;
-    const headEl = panel.querySelector('.ff-insp-head');
-    const onDragStart = (e) => {
-        if (e.target.closest('button')) return;
-        const rect = panel.getBoundingClientRect();
-        dragOffset = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
-        e.preventDefault();
+    // ---------- helpers ----------
+    const $ = (s) => panel.querySelector(s);
+    // element-state edits use !important so they take effect even over the page's
+    // own rules. Re-render the rules so "element.style" reflects it at once.
+    const setInline = (prop, value) => {
+        el.style.setProperty(prop, value, 'important');
+        insInline[prop] = value;
+        if (typeof renderRules === 'function') renderRules();
     };
-    const onDragMove = (e) => {
-        if (!dragOffset) return;
-        panel.style.right = 'auto';
-        panel.style.left = Math.max(4, Math.min(window.innerWidth - 80, e.clientX - dragOffset.dx)) + 'px';
-        panel.style.top = Math.max(4, Math.min(window.innerHeight - 50, e.clientY - dragOffset.dy)) + 'px';
-    };
-    const onDragEnd = () => { dragOffset = null; };
-    headEl.addEventListener('mousedown', onDragStart);
-    document.addEventListener('mousemove', onDragMove);
-    document.addEventListener('mouseup', onDragEnd);
-    inspectorDragCleanup = () => {
-        document.removeEventListener('mousemove', onDragMove);
-        document.removeEventListener('mouseup', onDragEnd);
+    const snapRule = (st) => { if (!insRuleSnaps.has(st)) insRuleSnaps.set(st, st.cssText); };
+    // a short, readable selector for copied CSS / state blocks: #id, else tag.class.class
+    const copySelector = () => {
+        const tag = el.tagName.toLowerCase();
+        if (el.id) return tag + '#' + CSS.escape(el.id);
+        const cl = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).filter(c => c !== 'qa-ins-target');
+        if (cl.length) return tag + '.' + cl.map(c => CSS.escape(c)).join('.');
+        return sel || tag;
     };
 
-    // ---- CSS property autocomplete for the custom-style box ----
-    // Full property list from the browser itself + common shorthands
-    const cssProps = (() => {
-        const set = new Set(['margin', 'padding', 'border', 'background', 'font', 'flex', 'gap', 'inset', 'outline', 'overflow', 'transition', 'animation', 'grid', 'border-radius', 'box-shadow', 'text-decoration']);
-        try {
-            const cs = getComputedStyle(document.documentElement);
-            for (let i = 0; i < cs.length; i++) set.add(cs.item(i));
-        } catch (e) { }
-        return Array.from(set).filter(p => !p.startsWith('-')).sort();
-    })();
+    // ---------- tabs ----------
+    panel.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+        panel.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+        panel.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.dataset.p === t.dataset.t));
+        if (t.dataset.t === 'box') renderBox();
+    }));
 
-    const cssBox = panel.querySelector('#ff-insp-css');
-    const suggestBox = panel.querySelector('#ff-insp-suggest');
-    let suggestItems = [];
-    let suggestIndex = 0;
+    // ---------- header ----------
+    $('#qa-ins-close').addEventListener('click', closeInspectorPanel);
+    $('#qa-ins-pick').addEventListener('click', () => { closeInspectorPanel(); startInspectMode(); });
 
-    const hideSuggest = () => {
-        suggestBox.style.display = 'none';
-        suggestItems = [];
+    // ---------- quick edit (state-aware, searchable) ----------
+    const INS_STATES = ['hover', 'focus', 'active'];     // pseudo-classes we support
+    let insState = 'element';                            // element | hover | focus | active
+    const insStateStyles = { hover: {}, focus: {}, active: {} };    // enabled decls
+    const insStateDisabled = { hover: {}, focus: {}, active: {} };  // toggled-off decls
+    // each state keeps its own list of property rows (independent of the others)
+    const insQuickProps = {
+        element: ['color', 'background-color', 'font-size', 'opacity', 'border-radius'],
+        hover: [], focus: [], active: []
     };
+    const qrows = $('#qa-ins-qrows');
 
-    const acceptSuggestion = (prop) => {
-        const pos = cssBox.selectionStart;
-        const before = cssBox.value.slice(0, pos);
-        const after = cssBox.value.slice(pos);
-        const segStart = Math.max(before.lastIndexOf(';'), before.lastIndexOf('\n'), before.lastIndexOf('{'), before.lastIndexOf('}')) + 1;
-        const leading = before.slice(segStart).match(/^\s*/)[0];
-        const newBefore = before.slice(0, segStart) + leading + prop + ': ';
-        cssBox.value = newBefore + after;
-        cssBox.setSelectionRange(newBefore.length, newBefore.length);
-        cssBox.focus();
-        hideSuggest();
-    };
-
-    const highlightSuggest = () => {
-        suggestBox.querySelectorAll('.ff-insp-sg').forEach((n, i) => {
-            n.classList.toggle('active', i === suggestIndex);
-        });
-    };
-
-    const updateSuggest = () => {
-        const pos = cssBox.selectionStart;
-        const before = cssBox.value.slice(0, pos);
-        const segStart = Math.max(before.lastIndexOf(';'), before.lastIndexOf('\n'), before.lastIndexOf('{'), before.lastIndexOf('}')) + 1;
-        const seg = before.slice(segStart);
-        // Already typing a value (past the colon) - no property suggestions
-        if (seg.includes(':')) { hideSuggest(); return; }
-        const token = seg.trim().toLowerCase();
-        if (!token) { hideSuggest(); return; }
-
-        suggestItems = cssProps.filter(p => p.startsWith(token) && p !== token).slice(0, 8);
-        if (suggestItems.length === 0) { hideSuggest(); return; }
-
-        suggestIndex = 0;
-        suggestBox.innerHTML = suggestItems.map((p, i) =>
-            `<div class="ff-insp-sg${i === 0 ? ' active' : ''}" data-prop="${p}">${p}</div>`
-        ).join('');
-        suggestBox.style.display = 'block';
-        suggestBox.querySelectorAll('.ff-insp-sg').forEach(n => {
-            n.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                acceptSuggestion(n.dataset.prop);
-            });
-        });
-    };
-
-    cssBox.addEventListener('input', updateSuggest);
-    cssBox.addEventListener('blur', () => setTimeout(hideSuggest, 150));
-    cssBox.addEventListener('keydown', (e) => {
-        if (suggestItems.length === 0) return;
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            suggestIndex = (suggestIndex + 1) % suggestItems.length;
-            highlightSuggest();
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            suggestIndex = (suggestIndex - 1 + suggestItems.length) % suggestItems.length;
-            highlightSuggest();
-        } else if (e.key === 'Enter' || e.key === 'Tab') {
-            e.preventDefault();
-            acceptSuggestion(suggestItems[suggestIndex]);
-        } else if (e.key === 'Escape') {
-            e.stopPropagation();
-            hideSuggest();
-        }
-    });
-
-    // Live-editing state for the CSS Rules list (DevTools-style):
-    // edits/toggles mutate the page's real CSSStyleDeclaration objects.
-    const disabledDecls = new Map(); // CSSStyleDeclaration -> [{prop, value, priority}]
-    const touchedRules = new Map();  // CSSStyleDeclaration -> original cssText (for Reset)
-    let currentBlocks = [];          // blocks currently rendered, indexes match data-b
-
-    // Collect the actual CSS rules that match the element, grouped per selector
-    // (like the DevTools Styles pane): [{ selector, style, decls: [{prop, value, disabled}] }]
-    const getMatchedCssBlocks = () => {
-        const el = inspectedElement;
-        if (!el) return [];
-        const blocks = [];
-        const addBlock = (selector, style) => {
-            const decls = [];
-            for (const d of style.cssText.split(';')) {
-                const i = d.indexOf(':');
-                if (i > 0) decls.push({ prop: d.slice(0, i).trim(), value: d.slice(i + 1).trim(), disabled: false });
-            }
-            // Re-insert disabled declarations at the position they were disabled from
-            const offs = (disabledDecls.get(style) || []).slice().sort((a, b) => a.idx - b.idx);
-            for (const d of offs) {
-                decls.splice(Math.min(d.idx ?? decls.length, decls.length), 0,
-                    { prop: d.prop, value: d.value + (d.priority ? ' !important' : ''), disabled: true });
-            }
-            if (decls.length) blocks.push({ selector, style, decls });
+    // build/refresh the injected rule for :hover / :focus / :active edits.
+    // The class is repeated to raise specificity so it beats the page's own
+    // state rules; !important then beats any equal-specificity declaration.
+    const INS_TARGET_SEL = '.qa-ins-target.qa-ins-target.qa-ins-target';
+    const rebuildStateStyle = () => {
+        const has = INS_STATES.some(s => Object.keys(insStateStyles[s]).length);
+        let styleEl = document.getElementById('qa-ins-state');
+        if (!has) { el.classList.remove('qa-ins-target'); if (styleEl) styleEl.remove(); return; }
+        el.classList.add('qa-ins-target');
+        if (!styleEl) { styleEl = document.createElement('style'); styleEl.id = 'qa-ins-state'; document.head.appendChild(styleEl); }
+        const block = (state) => {
+            const m = insStateStyles[state]; const keys = Object.keys(m);
+            if (!keys.length) return '';
+            return `${INS_TARGET_SEL}:${state}{${keys.map(k => `${k}:${m[k]}!important`).join(';')}}`;
         };
-        const collect = (rules) => {
-            for (const rule of rules) {
-                try {
-                    if (rule.selectorText && rule.style) {
-                        if (el.matches(rule.selectorText)) addBlock(rule.selectorText, rule.style);
-                    } else if (rule.cssRules && (!rule.media || matchMedia(rule.media.mediaText).matches)) {
-                        collect(rule.cssRules); // @media / @supports blocks
-                    }
-                } catch (e) { }
-            }
-        };
-        for (const sheet of document.styleSheets) {
-            try { collect(sheet.cssRules); } catch (e) { } // cross-origin sheets are unreadable
-        }
-        // Later rules win the cascade - show them first, with inline style on top
-        blocks.reverse();
-        if (el.getAttribute('style') || disabledDecls.has(el.style)) {
-            addBlock('element.style', el.style);
-            if (blocks.length && blocks[blocks.length - 1].selector === 'element.style') {
-                blocks.unshift(blocks.pop());
-            }
-        }
-        return blocks;
+        styleEl.textContent = INS_STATES.map(block).join('');
     };
 
-    // Prepend a small color swatch to color values (rgb/rgba/hsl/hex), DevTools-style.
-    // var(--x) references are resolved against the inspected element to find the
-    // actual color. Works on already-escaped HTML - color tokens contain no
-    // HTML-sensitive chars.
-    const colorizeValue = (escapedValue) =>
-        escapedValue.replace(/(var\(--[^)]*\)|#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\))/g, (m) => {
-            let color = m;
-            if (m.startsWith('var(')) {
-                const name = m.match(/--[\w-]+/);
-                color = '';
-                if (name && inspectedElement) {
-                    try { color = getComputedStyle(inspectedElement).getPropertyValue(name[0]).trim(); } catch (e) { }
-                }
-                // Custom props can hold anything (sizes, fonts) - only swatch real colors
-                if (!color || !CSS.supports('color', color)) return m;
-            }
-            // A real color input: clicking it opens the native picker directly
-            // (a trusted click - programmatic .click() on a hidden input is not)
-            return `<input type="color" class="ff-insp-swatch" data-color="${m}" title="Click to pick a color" value="${toHexColor(color)}">${m}`;
-        });
-
-    const filterBlocks = (filter) => {
-        let blocks = getMatchedCssBlocks();
-        if (filter && filter.trim()) {
-            const f = filter.trim().toLowerCase();
-            blocks = blocks
-                .map(b => ({ ...b, decls: b.decls.filter(d => (d.prop + ': ' + d.value).toLowerCase().includes(f)) }))
-                .filter(b => b.decls.length > 0);
+    // current value of a property for the active state (for prefilling the input)
+    const valueOf = (prop, type) => {
+        if (insState === 'element') {
+            const cv = getComputedStyle(el).getPropertyValue(prop);
+            if (type === 'color') return insToHex(cv);
+            if (type === 'px' || type === 'num') { const n = parseFloat(cv); return isNaN(n) ? '' : Math.round(n * 100) / 100; }
+            return cv.trim();
         }
-        return blocks;
+        const raw = insStateStyles[insState][prop];
+        if (raw == null) return type === 'color' ? '#000000' : '';
+        if (type === 'color') return insToHex(raw);
+        if (type === 'px' || type === 'num') { const n = parseFloat(raw); return isNaN(n) ? '' : n; }
+        return raw;
     };
 
-    const renderStyleList = (filter) => {
-        const listEl = panel.querySelector('#ff-insp-style-list');
-        if (!inspectedElement) return;
-        const blocks = filterBlocks(filter);
+    // apply a value for prop in the active state ('' clears it)
+    const applyProp = (prop, type, rawVal) => {
+        let css = '';
+        if (rawVal !== '' && rawVal != null) {
+            if (type === 'px') css = (parseFloat(rawVal) || 0) + 'px';
+            else if (type === 'num') css = String(parseFloat(rawVal));
+            else css = String(rawVal);
+        }
+        if (insState === 'element') {
+            if (css === '') { el.style.removeProperty(prop); delete insInline[prop]; }
+            else { el.style.setProperty(prop, css, 'important'); insInline[prop] = css; }
+            renderRules();
+        } else {
+            if (css === '') delete insStateStyles[insState][prop];
+            else insStateStyles[insState][prop] = css;
+            rebuildStateStyle();
+            renderRules();   // show the :hover/:focus/:active code in the rules list
+        }
+    };
 
-        if (blocks.length === 0) {
-            // Fallback: flat computed values (no readable rules, or nothing matched the filter)
-            currentBlocks = [];
-            const cs = getComputedStyle(inspectedElement);
-            let props;
-            if (filter && filter.trim()) {
-                const f = filter.trim().toLowerCase();
-                props = [];
-                for (let i = 0; i < cs.length; i++) {
-                    if (cs.item(i).includes(f)) props.push(cs.item(i));
-                }
+    const renderQRows = () => {
+        qrows.innerHTML = '';
+        if (insState !== 'element') {
+            const hint = document.createElement('div');
+            hint.className = 'qhint';
+            hint.textContent = `Editing :${insState} — ${insState} the element on the page to preview.`;
+            qrows.appendChild(hint);
+        }
+        insQuickProps[insState].forEach(prop => {
+            const type = INS_QUICK_TYPE[prop] || 'text';
+            const row = document.createElement('div');
+            row.className = 'qrow';
+            const v = valueOf(prop, type);
+            let control;
+            if (type === 'color') {
+                control = `<input type="text" class="hex" value="${v}"><input type="color" value="${/^#/.test(v) ? v : '#000000'}">`;
+            } else if (type === 'px') {
+                control = `<input type="number" step="any" class="num" value="${v}"><span class="unit">px</span>`;
+            } else if (type === 'num') {
+                control = `<input type="number" step="any" class="num" value="${v}">`;
             } else {
-                props = INSPECTOR_COMMON_PROPS;
+                control = `<input type="text" class="txt" list="qa-ins-vals-${CSS.escape(prop)}" value="${escapeHtml(String(v))}"><datalist id="qa-ins-vals-${CSS.escape(prop)}"></datalist>`;
             }
-            listEl.innerHTML = props.length === 0
-                ? '<div class="ff-insp-empty">No matching properties</div>'
-                : props.map(p =>
-                    `<div class="ff-insp-row"><span class="ff-insp-k">${escapeHtml(p)}</span>: <span class="ff-insp-v">${colorizeValue(escapeHtml(cs.getPropertyValue(p)))}</span>;</div>`
-                ).join('');
-            return;
-        }
+            row.innerHTML = `<span class="nm" title="${prop}">${prop}</span>${control}<button class="rm" title="Remove">${INS_IC.x}</button>`;
+            qrows.appendChild(row);
 
-        currentBlocks = blocks;
-        listEl.innerHTML = blocks.map((b, bi) => {
-            const rows = b.decls.map(d =>
-                `<div class="ff-insp-row ff-insp-decl${d.disabled ? ' ff-insp-off' : ''}" data-b="${bi}" data-prop="${escapeHtml(d.prop)}">` +
-                `<input type="checkbox" class="ff-insp-dchk"${d.disabled ? '' : ' checked'} title="${d.disabled ? 'Enable' : 'Disable'} this property">` +
-                `<span class="ff-insp-k">${escapeHtml(d.prop)}</span>: <span class="ff-insp-v">${colorizeValue(escapeHtml(d.value))}</span>;</div>`
+            // wire controls
+            if (type === 'color') {
+                const hex = row.querySelector('.hex'), pick = row.querySelector('input[type=color]');
+                pick.addEventListener('input', () => { hex.value = pick.value; applyProp(prop, type, pick.value); });
+                hex.addEventListener('change', () => { if (CSS.supports('color', hex.value)) { pick.value = insToHex(hex.value); applyProp(prop, type, hex.value); } });
+            } else if (type === 'text') {
+                const txt = row.querySelector('.txt');
+                let vals = []; try { vals = INSPECTOR_VALUE_KEYWORDS.filter(k => CSS.supports(prop, k)); } catch (e) { }
+                row.querySelector('datalist').innerHTML = vals.map(x => `<option value="${x}">`).join('');
+                txt.addEventListener('change', () => applyProp(prop, type, txt.value));
+            } else {
+                const num = row.querySelector('.num');
+                num.addEventListener('input', () => applyProp(prop, type, num.value));
+            }
+            row.querySelector('.rm').addEventListener('click', () => {
+                applyProp(prop, type, '');                 // clear its effect (this state only)
+                insQuickProps[insState] = insQuickProps[insState].filter(p => p !== prop);
+                renderQRows();
+            });
+        });
+    };
+
+    // state toggle
+    $('#qa-ins-states').querySelectorAll('.st').forEach(b => b.addEventListener('click', () => {
+        $('#qa-ins-states').querySelectorAll('.st').forEach(x => x.classList.toggle('on', x === b));
+        insState = b.dataset.s;
+        renderQRows();
+    }));
+
+    // property search + add
+    const searchEl = $('#qa-ins-search'), sugEl = $('#qa-ins-sug');
+    let sugItems = [], sugIdx = 0;
+    const hideSug = () => { sugEl.classList.remove('show'); sugItems = []; };
+    const addProp = (prop) => {
+        if (!insQuickProps[insState].includes(prop)) insQuickProps[insState].push(prop);
+        searchEl.value = ''; hideSug(); renderQRows();
+        const last = qrows.lastElementChild; if (last) { const inp = last.querySelector('input'); if (inp) inp.focus(); }
+    };
+    const updateSug = () => {
+        const q = searchEl.value.trim().toLowerCase();
+        if (!q) { hideSug(); return; }
+        sugItems = INS_QUICK_CATALOG.filter(([n]) => n.includes(q) && !insQuickProps[insState].includes(n)).slice(0, 10);
+        if (!sugItems.length) { hideSug(); return; }
+        sugIdx = 0;
+        sugEl.innerHTML = sugItems.map(([n, t], i) => `<div class="qsug-item${i === 0 ? ' active' : ''}" data-p="${n}">${n}<span class="ty">${t}</span></div>`).join('');
+        sugEl.classList.add('show');
+        sugEl.querySelectorAll('.qsug-item').forEach(it => it.addEventListener('mousedown', (e) => { e.preventDefault(); addProp(it.dataset.p); }));
+    };
+    searchEl.addEventListener('input', updateSug);
+    searchEl.addEventListener('blur', () => setTimeout(hideSug, 150));
+    searchEl.addEventListener('keydown', (e) => {
+        if (!sugItems.length) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); sugIdx = (sugIdx + 1) % sugItems.length; }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); sugIdx = (sugIdx - 1 + sugItems.length) % sugItems.length; }
+        else if (e.key === 'Enter') { e.preventDefault(); addProp(sugItems[sugIdx][0]); return; }
+        else if (e.key === 'Escape') { hideSug(); return; }
+        else return;
+        sugEl.querySelectorAll('.qsug-item').forEach((n, i) => n.classList.toggle('active', i === sugIdx));
+    });
+
+    renderQRows();
+
+    // ---------- matched rules (live) ----------
+    const rulesEl = $('#qa-ins-rules');
+    const filterEl = $('#qa-ins-filter');
+
+    const declsOf = (st) => {
+        const out = [];
+        for (const part of st.cssText.split(';')) {
+            const i = part.indexOf(':');
+            if (i > 0) out.push({ prop: part.slice(0, i).trim(), value: part.slice(i + 1).trim(), off: false });
+        }
+        // re-insert disabled declarations at the position they were toggled off,
+        // so a greyed-out row stays put instead of jumping to the bottom
+        const dis = insDisabled.get(st);
+        if (dis) {
+            Object.keys(dis)
+                .map(p => ({ prop: p, value: dis[p].value + (dis[p].priority ? ' !important' : ''), off: true, idx: dis[p].idx }))
+                .sort((a, b) => (a.idx ?? 1e9) - (b.idx ?? 1e9))
+                .forEach(d => out.splice(Math.min(d.idx ?? out.length, out.length), 0, d));
+        }
+        return out;
+    };
+
+    const renderRules = () => {
+        const prevScroll = rulesEl.scrollTop;   // keep the list put across re-renders
+        const f = (filterEl.value || '').trim().toLowerCase();
+        const blocks = insMatchedBlocks(el);
+        let html = '';
+        for (let bi = 0; bi < blocks.length; bi++) {
+            let decls = declsOf(blocks[bi].style);
+            if (f) decls = decls.filter(d => (d.prop + ': ' + d.value).toLowerCase().includes(f));
+            if (!decls.length) continue;
+            const rows = decls.map(d =>
+                `<div class="decl${d.off ? ' off' : ''}" data-b="${bi}" data-prop="${escapeHtml(d.prop)}">` +
+                `<input type="checkbox" class="dchk"${d.off ? '' : ' checked'}>` +
+                `<span class="k">${escapeHtml(d.prop)}</span>: <span class="v">${insColorize(escapeHtml(d.value), el)}</span>;</div>`
             ).join('');
-            return `<div class="ff-insp-rule" data-b="${bi}"><div class="ff-insp-sel" title="Click to add a property">${escapeHtml(b.selector)} {</div>${rows}<div class="ff-insp-sel" title="Click to add a property">}</div></div>`;
+            html += `<div class="rule" data-b="${bi}"><span class="rsel">${escapeHtml(blocks[bi].selector)} {</span>${rows}<div class="rsel">}</div></div>`;
+        }
+        if (!html) {
+            // fallback: flat computed values
+            const props = f ? INSPECTOR_COMMON_PROPS.concat([]) : INSPECTOR_COMMON_PROPS;
+            const c2 = getComputedStyle(el);
+            html = props.filter(p => !f || p.includes(f)).map(p =>
+                `<div class="decl"><span class="k">${escapeHtml(p)}</span>: <span class="v">${insColorize(escapeHtml(c2.getPropertyValue(p)), el)}</span>;</div>`).join('');
+        }
+        // synthetic blocks for the :hover / :focus / :active edits — toggleable, like real rules
+        const stateHtml = INS_STATES.map(stt => {
+            const m = insStateStyles[stt], md = insStateDisabled[stt];
+            let all = Object.keys(m).map(k => ({ prop: k, value: m[k], off: false }))
+                .concat(Object.keys(md).map(k => ({ prop: k, value: md[k], off: true })));
+            if (f) all = all.filter(d => (d.prop + ': ' + d.value).toLowerCase().includes(f));
+            if (!all.length) return '';
+            const rows = all.map(d =>
+                `<div class="decl${d.off ? ' off' : ''}" data-state="${stt}" data-prop="${escapeHtml(d.prop)}">` +
+                `<input type="checkbox" class="dchk-state"${d.off ? '' : ' checked'}>` +
+                `<span class="k">${escapeHtml(d.prop)}</span>: <span class="v">${insColorize(escapeHtml(d.value), el)} !important</span>;</div>`).join('');
+            return `<div class="rule"><span class="rsel">${escapeHtml(copySelector())}:${stt} {</span>${rows}<div class="rsel">}</div></div>`;
         }).join('');
+        rulesEl.innerHTML = (stateHtml + html) || '<div class="empty">No matching properties</div>';
+        rulesEl.scrollTop = prevScroll;
+        rulesEl._blocks = blocks;
     };
 
-    // ---- Live editing of the CSS Rules list (toggle + inline edit) ----
-    const styleListEl = panel.querySelector('#ff-insp-style-list');
-    const currentFilter = () => panel.querySelector('#ff-insp-style-filter').value;
-
-    // Native autocomplete for property names while editing
-    const propDatalist = document.createElement('datalist');
-    propDatalist.id = 'ff-insp-props';
-    propDatalist.innerHTML = cssProps.map(p => `<option value="${p}"></option>`).join('');
-    panel.appendChild(propDatalist);
-
-    // Value autocomplete: refilled per property via CSS.supports
-    const valDatalist = document.createElement('datalist');
-    valDatalist.id = 'ff-insp-vals';
-    panel.appendChild(valDatalist);
-    const fillValueSuggestions = (prop) => {
-        let vals = [];
-        try { vals = INSPECTOR_VALUE_KEYWORDS.filter(k => CSS.supports(prop, k)); } catch (e) { }
-        valDatalist.innerHTML = vals.map(v => `<option value="${v}"></option>`).join('');
-    };
-
-    // Snapshot a rule before its first mutation so Reset can restore it
-    const snapshotRule = (style) => {
-        if (!touchedRules.has(style)) touchedRules.set(style, style.cssText);
-    };
-
-    // Checkbox: enable/disable a declaration (mutates the real rule, like DevTools)
-    styleListEl.addEventListener('change', (e) => {
-        if (!e.target.classList.contains('ff-insp-dchk')) return;
-        const row = e.target.closest('.ff-insp-decl');
-        const b = currentBlocks[+row.dataset.b];
-        if (!b) return;
-        const prop = row.dataset.prop;
-        snapshotRule(b.style);
-        const list = disabledDecls.get(b.style) || [];
-        if (e.target.checked) {
-            const d = list.find(x => x.prop === prop);
-            if (d) {
-                disabledDecls.set(b.style, list.filter(x => x !== d));
-                // Rebuild the declaration block with the property back at its
-                // original position - setProperty would append it at the end
-                try {
+    // toggle a declaration on/off
+    rulesEl.addEventListener('change', (e) => {
+        if (e.target.classList.contains('dchk-state')) {
+            const row = e.target.closest('.decl');
+            const stt = row.dataset.state, prop = row.dataset.prop;
+            if (e.target.checked) {
+                if (insStateDisabled[stt][prop] != null) { insStateStyles[stt][prop] = insStateDisabled[stt][prop]; delete insStateDisabled[stt][prop]; }
+            } else {
+                if (insStateStyles[stt][prop] != null) { insStateDisabled[stt][prop] = insStateStyles[stt][prop]; delete insStateStyles[stt][prop]; }
+            }
+            rebuildStateStyle();
+            renderRules();
+            return;
+        }
+        if (e.target.classList.contains('dchk')) {
+            const row = e.target.closest('.decl');
+            const blocks = rulesEl._blocks; const b = blocks[+row.dataset.b]; if (!b) return;
+            const prop = row.dataset.prop; snapRule(b.style);
+            const dis = insDisabled.get(b.style) || {};
+            if (e.target.checked) {
+                // re-enable at the original position (setProperty alone appends to the end)
+                if (dis[prop]) {
                     const parts = b.style.cssText.split(';').map(s => s.trim()).filter(Boolean);
-                    parts.splice(Math.min(d.idx ?? parts.length, parts.length), 0,
-                        `${d.prop}: ${d.value}${d.priority ? ' !important' : ''}`);
-                    b.style.cssText = parts.join('; ');
-                } catch (err) { }
-            }
-        } else {
-            list.push({
-                prop,
-                value: b.style.getPropertyValue(prop),
-                priority: b.style.getPropertyPriority(prop),
-                idx: b.decls.findIndex(x => x.prop === prop)
-            });
-            disabledDecls.set(b.style, list);
-            try { b.style.removeProperty(prop); } catch (err) { }
-        }
-        renderStyleList(currentFilter());
-    });
-
-    // Convert any CSS color to #rrggbb for the native color picker
-    const toHexColor = (color) => {
-        try {
-            const ctx = document.createElement('canvas').getContext('2d');
-            ctx.fillStyle = '#000';
-            ctx.fillStyle = color;
-            const v = ctx.fillStyle;
-            if (v.startsWith('#')) return v;
-            const nums = v.match(/\d+(\.\d+)?/g);
-            if (nums) return '#' + nums.slice(0, 3).map(n => Math.round(+n).toString(16).padStart(2, '0')).join('');
-        } catch (e) { }
-        return '#000000';
-    };
-
-    // The swatch IS a color input - picking a color updates the declaration
-    // live. The replacement runs on the same displayed value string the token
-    // was extracted from (getPropertyValue can serialize differently, or be
-    // empty for shorthands holding var(), silently breaking the replacement).
-    styleListEl.addEventListener('input', (e) => {
-        const sw = e.target;
-        if (!sw.classList.contains('ff-insp-swatch')) return;
-        const row = sw.closest('.ff-insp-decl');
-        const b = row && currentBlocks[+row.dataset.b];
-        if (!b) return;
-        const prop = row.dataset.prop;
-        if (sw.dataset.curval === undefined) {
-            const decl = b.decls.find(x => x.prop === prop && !x.disabled);
-            sw.dataset.curval = decl ? decl.value : (b.style.getPropertyValue(prop) || sw.dataset.color);
-        }
-        snapshotRule(b.style);
-        const raw = sw.dataset.curval.replace(sw.dataset.color, sw.value);
-        sw.dataset.curval = raw;
-        sw.dataset.color = sw.value;
-        const imp = /!important/i.test(raw);
-        try { b.style.setProperty(prop, raw.replace(/\s*!important\s*/i, ' ').trim(), imp ? 'important' : ''); } catch (err) { }
-    });
-
-    // Picker closed - re-render so the value text shows the final color
-    styleListEl.addEventListener('change', (e) => {
-        if (e.target.classList.contains('ff-insp-swatch')) renderStyleList(currentFilter());
-    });
-
-    // Edit a property name or value in place. Value edits preview live while
-    // typing; Arrow Up/Down steps numbers (+Shift=10, +Alt=0.1); Tab on a
-    // property jumps to its value; Esc undoes.
-    const beginInlineEdit = (row, span, isProp) => {
-        const b = currentBlocks[+row.dataset.b];
-        if (!b) return;
-        const prop = row.dataset.prop;
-        const priority = b.style.getPropertyPriority(prop);
-        const origValue = b.style.getPropertyValue(prop);
-
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'ff-insp-edit';
-        if (isProp) {
-            input.value = prop;
-            input.setAttribute('list', 'ff-insp-props');
-        } else {
-            input.value = origValue + (priority ? ' !important' : '');
-            input.setAttribute('list', 'ff-insp-vals');
-            fillValueSuggestions(prop);
-        }
-        const fit = () => { input.style.width = Math.min(34, Math.max(6, input.value.length + 2)) + 'ch'; };
-        fit();
-        span.replaceWith(input);
-        input.focus();
-        input.select();
-
-        const applyValue = (raw) => {
-            const imp = /!important$/i.test(raw);
-            const clean = raw.replace(/!important$/i, '').trim();
-            if (!clean) return;
-            try { b.style.setProperty(prop, clean, imp ? 'important' : ''); } catch (e) { }
-        };
-
-        let done = false;
-        const finish = (commit, thenEditValue) => {
-            if (done) return;
-            done = true;
-            const v = input.value.trim();
-            snapshotRule(b.style);
-            try {
-                if (isProp) {
-                    if (commit && v && v !== prop) {
-                        b.style.removeProperty(prop);
-                        b.style.setProperty(v, origValue, priority);
-                    }
-                } else if (commit) {
-                    if (!v) b.style.removeProperty(prop);
-                    else applyValue(v);
-                } else {
-                    // Cancelled - undo the live preview
-                    b.style.setProperty(prop, origValue, priority);
+                    parts.splice(Math.min(dis[prop].idx ?? parts.length, parts.length), 0,
+                        `${prop}: ${dis[prop].value}${dis[prop].priority ? ' !important' : ''}`);
+                    try { b.style.cssText = parts.join('; ') + ';'; } catch (err) { b.style.setProperty(prop, dis[prop].value, dis[prop].priority); }
+                    delete dis[prop];
                 }
-            } catch (err) { }
-            renderStyleList(currentFilter());
-            if (thenEditValue) {
-                const newProp = (isProp && commit && v) ? v : prop;
-                const nrow = styleListEl.querySelector(`.ff-insp-decl[data-b="${row.dataset.b}"][data-prop="${newProp}"]`);
-                const nspan = nrow && nrow.querySelector('.ff-insp-v');
-                if (nspan) beginInlineEdit(nrow, nspan, false);
+                row.classList.remove('off');
+            } else {
+                const idx = declsOf(b.style).findIndex(d => d.prop === prop);
+                dis[prop] = { value: b.style.getPropertyValue(prop), priority: b.style.getPropertyPriority(prop), idx: idx < 0 ? undefined : idx };
+                b.style.removeProperty(prop);
+                row.classList.add('off');
             }
-        };
-
-        input.addEventListener('input', (ev) => {
-            fit();
-            if (isProp) {
-                // Picked a property from the autocomplete list - commit it and
-                // jump straight to editing its value
-                if (ev.inputType === 'insertReplacementText') finish(true, true);
-                return;
-            }
-            snapshotRule(b.style);
-            applyValue(input.value.trim());
-            // Picked a value from the list - commit right away
-            if (ev.inputType === 'insertReplacementText') finish(true);
-        });
-        input.addEventListener('keydown', (ev) => {
-            ev.stopPropagation();
-            if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
-            else if (ev.key === 'Tab') { ev.preventDefault(); finish(true, isProp); }
-            else if (ev.key === 'Escape') finish(false);
-            else if (!isProp && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown')) {
-                ev.preventDefault();
-                const delta = (ev.key === 'ArrowUp' ? 1 : -1) * (ev.shiftKey ? 10 : ev.altKey ? 0.1 : 1);
-                input.value = input.value.replace(/-?\d*\.?\d+/, (n) => String(+(parseFloat(n) + delta).toFixed(3)));
-                fit();
-                snapshotRule(b.style);
-                applyValue(input.value.trim());
-            }
-        });
-        input.addEventListener('blur', () => finish(true));
-    };
-
-    // Click a rule's selector line (or closing brace) to add a new declaration
-    const startAddDecl = (b, ruleDiv) => {
-        const existing = ruleDiv.querySelector('.ff-insp-new input');
-        if (existing) { existing.focus(); return; }
-        const row = document.createElement('div');
-        row.className = 'ff-insp-row ff-insp-decl ff-insp-new';
-        const propIn = document.createElement('input');
-        propIn.className = 'ff-insp-edit';
-        propIn.placeholder = 'property';
-        propIn.setAttribute('list', 'ff-insp-props');
-        row.appendChild(propIn);
-        ruleDiv.insertBefore(row, ruleDiv.lastElementChild);
-        propIn.focus();
-
-        let stage = 'prop';
-        const commit = (prop, val) => {
-            stage = 'done';
-            if (prop && val) {
-                snapshotRule(b.style);
-                const imp = /!important$/i.test(val);
-                try { b.style.setProperty(prop, val.replace(/!important$/i, '').trim(), imp ? 'important' : ''); } catch (e) { }
-            }
-            renderStyleList(currentFilter());
-        };
-        const toValueStage = () => {
-            if (stage !== 'prop') return;
-            const typed = propIn.value.trim();
-            if (!typed) { stage = 'done'; row.remove(); return; }
-            // "prop: value" typed in one go also works
-            const ci = typed.indexOf(':');
-            if (ci > 0) { commit(typed.slice(0, ci).trim(), typed.slice(ci + 1).replace(/;$/, '').trim()); return; }
-            stage = 'value';
-            const sep = document.createElement('span');
-            sep.textContent = ': ';
-            row.appendChild(sep);
-            const valIn = document.createElement('input');
-            valIn.className = 'ff-insp-edit';
-            valIn.placeholder = 'value';
-            valIn.setAttribute('list', 'ff-insp-vals');
-            fillValueSuggestions(typed);
-            row.appendChild(valIn);
-            valIn.focus();
-            valIn.addEventListener('keydown', (ev) => {
-                ev.stopPropagation();
-                if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); commit(typed, valIn.value.replace(/;$/, '').trim()); }
-                else if (ev.key === 'Escape') { stage = 'done'; renderStyleList(currentFilter()); }
-            });
-            // Picking a value from the autocomplete list commits right away
-            valIn.addEventListener('input', (ev) => {
-                if (ev.inputType === 'insertReplacementText') commit(typed, valIn.value.replace(/;$/, '').trim());
-            });
-            valIn.addEventListener('blur', () => { if (stage === 'value') commit(typed, valIn.value.replace(/;$/, '').trim()); });
-        };
-        propIn.addEventListener('keydown', (ev) => {
-            ev.stopPropagation();
-            if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); toValueStage(); }
-            else if (ev.key === 'Escape') { stage = 'done'; row.remove(); }
-        });
-        // Picking a property from the autocomplete list moves on to the value
-        propIn.addEventListener('input', (ev) => {
-            if (ev.inputType === 'insertReplacementText') toValueStage();
-        });
-        propIn.addEventListener('blur', () => setTimeout(toValueStage, 120));
-    };
-
-    styleListEl.addEventListener('click', (e) => {
-        // Inputs handle themselves (checkboxes, color swatches, edit fields)
-        if (e.target.tagName === 'INPUT') return;
-        const row = e.target.closest('.ff-insp-decl');
-
-        // Selector line -> add a new declaration to the rule
-        const selLine = e.target.closest('.ff-insp-sel');
-        if (selLine) {
-            const ruleDiv = selLine.closest('.ff-insp-rule');
-            const b = ruleDiv && currentBlocks[+ruleDiv.dataset.b];
-            if (b) startAddDecl(b, ruleDiv);
+            insDisabled.set(b.style, dis);
+            // toggle the row in place — no full re-render (which would scroll/jump the list)
             return;
         }
-
-        // Property name / value -> edit in place
-        const span = e.target.closest('.ff-insp-k, .ff-insp-v');
-        if (!span || !row || row.classList.contains('ff-insp-off') || row.classList.contains('ff-insp-new')) return;
-        beginInlineEdit(row, span, span.classList.contains('ff-insp-k'));
+        if (e.target.classList.contains('qa-ins-sw')) renderRules();
     });
 
-    const copyText = (text, btn) => {
-        ffCopyText(text).then(() => {
-            const old = btn.textContent;
-            btn.textContent = 'Copied!';
-            setTimeout(() => { btn.textContent = old; }, 1200);
-        }).catch(() => { });
-    };
+    // live colour swatch inside a value
+    rulesEl.addEventListener('input', (e) => {
+        const sw = e.target; if (!sw.classList.contains('qa-ins-sw')) return;
+        const row = sw.closest('.decl'); const b = rulesEl._blocks[+row.dataset.b]; if (!b) return;
+        const prop = row.dataset.prop; snapRule(b.style);
+        const cur = b.style.getPropertyValue(prop) || sw.dataset.token;
+        const next = cur.replace(sw.dataset.token, sw.value); sw.dataset.token = sw.value;
+        const imp = /!important/i.test(next);
+        try { b.style.setProperty(prop, next.replace(/\s*!important\s*/i, ' ').trim(), imp ? 'important' : ''); } catch (err) { }
+    });
 
-    const stylesAsText = () => {
-        const filter = panel.querySelector('#ff-insp-style-filter').value;
-        const blocks = filterBlocks(filter);
-        if (blocks.length > 0) {
-            return blocks.map(b =>
-                `${b.selector} {\n${b.decls.filter(d => !d.disabled).map(d => `    ${d.prop}: ${d.value};`).join('\n')}\n}`
-            ).join('\n\n');
-        }
-        // Fallback: flat computed values
-        const cs = getComputedStyle(inspectedElement);
-        let props;
-        if (filter && filter.trim()) {
-            const f = filter.trim().toLowerCase();
-            props = [];
-            for (let i = 0; i < cs.length; i++) {
-                if (cs.item(i).includes(f)) props.push(cs.item(i));
+    // click a value to edit it inline
+    rulesEl.addEventListener('click', (e) => {
+        const v = e.target.closest('.v'); if (!v || e.target.classList.contains('qa-ins-sw')) return;
+        const row = v.closest('.decl'); const b = rulesEl._blocks[+row.dataset.b]; if (!b) return;
+        const prop = row.dataset.prop;
+        const inp = document.createElement('input');
+        inp.className = 'vedit'; inp.value = b.style.getPropertyValue(prop) || v.textContent.trim();
+        v.replaceWith(inp); inp.focus(); inp.select();
+        const commit = () => {
+            snapRule(b.style);
+            const val = inp.value.trim();
+            const imp = /!important/i.test(val);
+            try { b.style.setProperty(prop, val.replace(/\s*!important\s*/i, ' ').trim(), imp ? 'important' : ''); } catch (err) { }
+            renderRules();
+        };
+        inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit(); } else if (ev.key === 'Escape') { renderRules(); } });
+        inp.addEventListener('blur', commit);
+    });
+
+    filterEl.addEventListener('input', renderRules);
+    renderRules();
+
+    // ---------- box model ----------
+    function renderBox() {
+        const c = getComputedStyle(el), rr = el.getBoundingClientRect();
+        const g = (p) => Math.round(parseFloat(c[p]) || 0);
+        const cw = Math.round(rr.width - g('paddingLeft') - g('paddingRight') - g('borderLeftWidth') - g('borderRightWidth'));
+        const ch = Math.round(rr.height - g('paddingTop') - g('paddingBottom') - g('borderTopWidth') - g('borderBottomWidth'));
+        const ed = (type, side) => {
+            const valProp = type === 'border' ? `border${side}Width` : type + side;
+            return `<input class="e" data-type="${type}" data-side="${side}" value="${g(valProp)}">`;
+        };
+        $('#qa-ins-bm').innerHTML = `
+<div class="box bm-margin"><span class="tagn">margin</span>
+  <div class="sides">${ed('margin', 'Left')}
+    <div style="flex:1">
+      <div style="margin-bottom:6px">${ed('margin', 'Top')}</div>
+      <div class="box bm-border"><span class="tagn">border</span>
+        <div class="sides">${ed('border', 'Left')}
+          <div style="flex:1">
+            <div style="margin-bottom:6px">${ed('border', 'Top')}</div>
+            <div class="box bm-padding"><span class="tagn">padding</span>
+              <div class="sides">${ed('padding', 'Left')}
+                <div style="flex:1">
+                  <div style="margin-bottom:6px">${ed('padding', 'Top')}</div>
+                  <div class="box bm-content">${cw} × ${ch}</div>
+                  <div style="margin-top:6px">${ed('padding', 'Bottom')}</div>
+                </div>${ed('padding', 'Right')}
+              </div>
+            </div>
+            <div style="margin-top:6px">${ed('border', 'Bottom')}</div>
+          </div>${ed('border', 'Right')}
+        </div>
+      </div>
+      <div style="margin-top:6px">${ed('margin', 'Bottom')}</div>
+    </div>${ed('margin', 'Right')}
+  </div>
+</div>`;
+        $('#qa-ins-bm').querySelectorAll('.e').forEach(inp => inp.addEventListener('change', () => {
+            const type = inp.dataset.type, side = inp.dataset.side, sk = side.toLowerCase();
+            const v = (parseFloat(inp.value) || 0) + 'px';
+            if (type === 'border') {
+                setInline(`border-${sk}-width`, v);
+                // a width alone is invisible when border-style is none — make it solid
+                if (getComputedStyle(el)['border' + side + 'Style'] === 'none') setInline(`border-${sk}-style`, 'solid');
+            } else {
+                setInline(`${type}-${sk}`, v); // margin-top / padding-left …
             }
-        } else {
-            props = INSPECTOR_COMMON_PROPS;
-        }
-        return props.map(p => `${p}: ${cs.getPropertyValue(p)};`).join('\n');
-    };
+            renderBox();
+            // refresh header dims
+            const nr = el.getBoundingClientRect();
+            panel.querySelector('.hd .dim').textContent = `${Math.round(nr.width)} × ${Math.round(nr.height)}`;
+        }));
+    }
 
-    panel.querySelector('#ff-insp-close').addEventListener('click', closeInspectorPanel);
-    panel.querySelector('#ff-insp-repick').addEventListener('click', () => {
-        closeInspectorPanel();
-        startInspectMode();
-    });
-    panel.querySelector('#ff-insp-copy-selector').addEventListener('click', (e) => copyText(selector, e.target));
-    panel.querySelector('#ff-insp-copy-attrs').addEventListener('click', (e) =>
-        copyText(attrs.map(a => `${a.name}="${a.value}"`).join('\n'), e.target));
-    panel.querySelector('#ff-insp-copy-styles').addEventListener('click', (e) => copyText(stylesAsText(), e.target));
-
-    let filterTimer = null;
-    panel.querySelector('#ff-insp-style-filter').addEventListener('input', (e) => {
-        clearTimeout(filterTimer);
-        filterTimer = setTimeout(() => renderStyleList(e.target.value), 200);
+    // ---------- info ----------
+    const attrs = Array.from(el.attributes || []);
+    $('#qa-ins-attrs').innerHTML = attrs.length
+        ? attrs.map(a => `<div><span class="k">${escapeHtml(a.name)}</span>="<span class="v">${escapeHtml(a.value)}</span>"</div>`).join('')
+        : '<div class="empty">No attributes</div>';
+    $('#qa-ins-copy-sel').addEventListener('click', () => { navigator.clipboard.writeText(sel || '').then(() => liToast('Selector copied')); });
+    $('#qa-ins-copy-attr').addEventListener('click', () => {
+        navigator.clipboard.writeText(attrs.map(a => `${a.name}="${a.value}"`).join(' ')).then(() => liToast('Attributes copied'));
     });
 
-    panel.querySelector('#ff-insp-apply').addEventListener('click', () => {
-        if (!inspectedElement) return;
-        const cssText = panel.querySelector('#ff-insp-css').value.trim();
-        const feedback = panel.querySelector('#ff-insp-feedback');
-        if (!cssText) return;
-
-        // Full CSS rules with selectors (.new { color: red; }) - inject as a live
-        // stylesheet so they apply to every matching element on the page
-        if (cssText.includes('{')) {
-            let styleEl = document.getElementById('ff-insp-custom-css');
-            if (!styleEl) {
-                styleEl = document.createElement('style');
-                styleEl.id = 'ff-insp-custom-css';
-                document.head.appendChild(styleEl);
-            }
-            styleEl.textContent = cssText;
-            const ruleCount = styleEl.sheet ? styleEl.sheet.cssRules.length : 0;
-            feedback.textContent = ruleCount > 0 ? `Applied ${ruleCount} CSS rule${ruleCount === 1 ? '' : 's'} to the page` : 'Invalid CSS - check the syntax';
-            feedback.style.color = ruleCount > 0 ? '#4ade80' : '#f87171';
-            renderStyleList(panel.querySelector('#ff-insp-style-filter').value);
-            return;
-        }
-
-        // Plain declarations - applied inline to the picked element
-        let applied = 0;
-        cssText.split(';').forEach(decl => {
-            const idx = decl.indexOf(':');
-            if (idx <= 0) return;
-            const prop = decl.slice(0, idx).trim();
-            const value = decl.slice(idx + 1).trim();
-            if (!prop || !value) return;
-            try {
-                // !important so the style wins over the page's own rules, like DevTools
-                inspectedElement.style.setProperty(prop, value.replace(/!important$/i, '').trim(), 'important');
-                applied++;
-            } catch (err) { }
-        });
-
-        feedback.textContent = applied > 0 ? `Applied ${applied} propert${applied === 1 ? 'y' : 'ies'}` : 'Nothing applied - use "prop: value;" format';
-        feedback.style.color = applied > 0 ? '#4ade80' : '#f87171';
-        renderStyleList(panel.querySelector('#ff-insp-style-filter').value);
+    // ---------- footer ----------
+    $('#qa-ins-reset').addEventListener('click', () => {
+        if (inspectedOriginalStyle != null) el.setAttribute('style', inspectedOriginalStyle); else el.removeAttribute('style');
+        for (const [st, css] of insRuleSnaps) st.cssText = css;
+        insRuleSnaps.clear(); insDisabled.clear(); insInline = {};
+        // clear hover / focus / active edits (enabled + disabled)
+        INS_STATES.forEach(s => { insStateStyles[s] = {}; insStateDisabled[s] = {}; });
+        rebuildStateStyle();
+        renderQRows();
+        renderRules();
+        if (panel.querySelector('.tab[data-t="box"]').classList.contains('on')) renderBox();
+        liToast('Reset');
+    });
+    $('#qa-ins-copy').addEventListener('click', () => {
+        const sl = copySelector();
+        const blocks = [];
+        const block = (suffix, map, imp) => {
+            const keys = Object.keys(map);
+            if (keys.length) blocks.push(`${sl}${suffix} {\n${keys.map(k => `  ${k}: ${map[k]}${imp ? ' !important' : ''};`).join('\n')}\n}`);
+        };
+        block('', insInline, true);
+        block(':hover', insStateStyles.hover, true);
+        block(':focus', insStateStyles.focus, true);
+        block(':active', insStateStyles.active, true);
+        if (!blocks.length) { liToast('No changes to copy'); return; }
+        navigator.clipboard.writeText(blocks.join('\n\n')).then(() => liToast('CSS copied')).catch(() => liToast('Copy failed'));
     });
 
-    panel.querySelector('#ff-insp-reset').addEventListener('click', () => {
-        if (!inspectedElement) return;
-        // Restore stylesheet rules edited/disabled from the CSS Rules list
-        touchedRules.forEach((cssText, style) => { try { style.cssText = cssText; } catch (e) { } });
-        touchedRules.clear();
-        disabledDecls.clear();
-        if (inspectedOriginalStyle === null) inspectedElement.removeAttribute('style');
-        else inspectedElement.setAttribute('style', inspectedOriginalStyle);
-        const customCss = document.getElementById('ff-insp-custom-css');
-        if (customCss) customCss.remove();
-        const feedback = panel.querySelector('#ff-insp-feedback');
-        feedback.textContent = 'Styles reset to original';
-        feedback.style.color = '#4ade80';
-        renderStyleList(panel.querySelector('#ff-insp-style-filter').value);
-    });
-
-    renderStyleList('');
+    // ---------- drag by header ----------
+    let off = null;
+    const head = panel.querySelector('.hd');
+    const down = (e) => { if (e.target.closest('button')) return; const rc = panel.getBoundingClientRect(); off = { dx: e.clientX - rc.left, dy: e.clientY - rc.top }; e.preventDefault(); };
+    const move = (e) => { if (!off) return; panel.style.right = 'auto'; panel.style.left = Math.max(4, Math.min(innerWidth - 80, e.clientX - off.dx)) + 'px'; panel.style.top = Math.max(4, Math.min(innerHeight - 50, e.clientY - off.dy)) + 'px'; };
+    const up = () => { off = null; };
+    head.addEventListener('mousedown', down);
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    inspectorDragCleanup = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
 }
+
 
 function generateSelector(element) {
     // 1. XPath (Relative) - Now prioritized as requested
@@ -5606,68 +5502,44 @@ function escapeHtml(text) {
 }
 
 // ============================================================================
-// Measure & Tweak — on-page tool with two modes:
-//   • Measure : hover for size / padding / margin; click two elements for the
-//               gap (or the 4 insets when one is inside the other); alignment
-//               guides extend across the viewport.
-//   • Tweak   : click an element to select it, then nudge it with the arrow
-//               keys, adjust padding / margin, and change text / background
-//               colour. Everything is non-destructive (Reset) and can be
-//               copied out as ready-to-paste CSS. No AI, no network.
+// Measure — on-page tool: hover an element for its size / padding / margin;
+// click two elements to measure the gap (or the 4 insets when one is inside
+// the other); alignment guides extend across the viewport. Editing elements
+// lives in the Inspector tool. No AI, no network.
 // ============================================================================
 let liState = null;
-let liDrag = null;            // active drag: { sx, sy, bdx, bdy, moved }
-let liSuppressClick = false;  // ignore the click that ends a drag
-const LI_GRID = 8;            // drag snaps to this grid so moves stay tidy
-const liEdits = new Map();    // element -> { orig, dx, dy, colorSet, bgSet, padTouched, marTouched }
-// the inline properties Tweak can change — captured per element so Reset can
-// restore each one exactly (more reliable than round-tripping the whole style)
-const LI_PROPS = ['transform', 'display', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-    'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'color', 'backgroundColor'];
 
-// Inline SVG icons (FontAwesome isn't available inside the page). 16px, currentColor.
+// Inline SVG icons (FontAwesome isn't available inside the page). currentColor.
 const LI_IC = (() => {
     const w = (p) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
     return {
         ruler: w('<path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/>'),
-        pencil: w('<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>'),
         x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
-        hash: w('<line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/>'),
-        reset: w('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'),
-        copy: w('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
-        move: w('<path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/>')
+        hash: w('<line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/>')
     };
 })();
 
 function openMeasureTool() {
     if (liState) { closeMeasureTool(); return; } // card acts as a toggle
-    liState = { mode: 'measure', nums: true, hoverEl: null, anchor: null, target: null, sel: null };
+    liState = { nums: true, hoverEl: null, anchor: null, target: null };
     liInjectStyles();
     liBuildToolbar();
     liBuildLayer();
-    liBuildPanel();
     document.addEventListener('mousemove', liOnMove, true);
-    document.addEventListener('mousedown', liOnDown, true);
-    document.addEventListener('mouseup', liOnUp, true);
     document.addEventListener('click', liOnClick, true);
     document.addEventListener('keydown', liOnKey, true);
     window.addEventListener('scroll', liOnScroll, true);
     window.addEventListener('resize', liOnScroll, true);
-    liSetMode('measure');
 }
 
 function closeMeasureTool() {
     if (!liState) return;
     document.removeEventListener('mousemove', liOnMove, true);
-    document.removeEventListener('mousedown', liOnDown, true);
-    document.removeEventListener('mouseup', liOnUp, true);
     document.removeEventListener('click', liOnClick, true);
     document.removeEventListener('keydown', liOnKey, true);
     window.removeEventListener('scroll', liOnScroll, true);
     window.removeEventListener('resize', liOnScroll, true);
-    liDrag = null;
-    liRestoreAllEdits();
-    const ids = ['qa-li-bar', 'qa-li-layer', 'qa-li-panel', 'qa-li-style'];
+    const ids = ['qa-li-bar', 'qa-li-layer', 'qa-li-style'];
     ids.forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
     liState = null;
 }
@@ -5683,49 +5555,16 @@ function liInjectStyles() {
 .qa-li-lbl{position:fixed;pointer-events:none;background:#7c3aed;color:#fff;font:600 11px/1.4 -apple-system,Segoe UI,sans-serif;padding:1px 6px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:2;}
 .qa-li-lbl.gap{background:#f43f5e;}
 .qa-li-line{position:fixed;pointer-events:none;height:0;border-top:1px dashed #f43f5e;z-index:1;}
-#qa-li-bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:4px;background:#17151f;color:#fff;padding:5px;border-radius:11px;box-shadow:0 8px 28px rgba(0,0,0,.5);font:13px/1 -apple-system,Segoe UI,sans-serif;border:1px solid #2a2738;}
-#qa-li-bar button{all:unset;box-sizing:border-box!important;cursor:pointer!important;margin:0!important;border:none!important;box-shadow:none!important;text-transform:none!important;letter-spacing:normal!important;padding:7px 11px!important;border-radius:8px!important;color:#b9b6c8;background:transparent;display:inline-flex!important;align-items:center!important;gap:6px!important;font:500 13px/1 -apple-system,Segoe UI,sans-serif!important;}
+#qa-li-bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:4px;background:#17151f;color:#fff;padding:5px 8px;border-radius:11px;box-shadow:0 8px 28px rgba(0,0,0,.5);font:13px/1 -apple-system,Segoe UI,sans-serif;border:1px solid #2a2738;}
+#qa-li-bar button{all:unset;box-sizing:border-box!important;cursor:pointer!important;margin:0!important;border:none!important;box-shadow:none!important;text-transform:none!important;letter-spacing:normal!important;padding:7px!important;border-radius:8px!important;color:#b9b6c8;background:transparent;display:inline-flex!important;align-items:center!important;gap:6px!important;font:500 13px/1 -apple-system,Segoe UI,sans-serif!important;}
 #qa-li-bar button svg{width:15px!important;height:15px!important;flex:0 0 auto!important;}
 #qa-li-bar button:hover{background:#262335;color:#fff;}
-#qa-li-bar button.on{background:#7c3aed!important;color:#fff!important;}
-#qa-li-bar .ic{padding:7px!important;}
+#qa-li-bar .qa-li-title{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:#fff;padding:0 4px;}
+#qa-li-bar .qa-li-title svg{width:15px;height:15px;}
 #qa-li-bar .sep{width:1px;height:22px;background:#2a2738;margin:0 3px;}
 #qa-li-bar .qa-li-x:hover{background:#3a1d24;color:#f87171;}
-#qa-li-bar .qa-li-hint{font-size:11px;color:#7e7b90;max-width:220px;padding:0 2px;}
-#qa-li-bar,#qa-li-bar *,#qa-li-layer,#qa-li-layer *{outline:none!important;}
-#qa-li-panel{position:fixed;top:66px;right:16px;z-index:2147483647;width:248px;background:#17151f;color:#e5e7eb;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.55);border:1px solid #2a2738;font:12px/1.45 -apple-system,Segoe UI,sans-serif;padding:0;display:none;overflow:hidden;}
-#qa-li-panel.show{display:block;}
-#qa-li-panel .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid #2a2738;background:#1c1a26;}
-#qa-li-panel .hd .tag{display:inline-block;background:#2d2a3e;color:#c4b5fd;font-weight:600;font-size:11px;padding:2px 7px;border-radius:5px;}
-#qa-li-panel .hd .dim{color:#9b98ac;font-variant-numeric:tabular-nums;margin-left:6px;font-size:11px;}
-#qa-li-panel .hd .iconbtn{all:unset;cursor:pointer;color:#8b8898;padding:5px;border-radius:7px;display:flex;}
-#qa-li-panel .hd .iconbtn:hover{background:#3a1d24;color:#f87171;}
-#qa-li-panel .bd{padding:14px;}
-#qa-li-panel .grp{margin-bottom:14px;}
-#qa-li-panel .grp:last-child{margin-bottom:0;}
-#qa-li-panel .lbl{font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#7e7b90;margin-bottom:7px;display:flex;align-items:center;gap:5px;}
-#qa-li-panel .lbl svg{width:13px;height:13px;}
-#qa-li-panel .mvrow{display:flex;align-items:center;justify-content:space-between;background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:8px 10px;}
-#qa-li-panel .mvrow .hintk{font-size:10px;color:#7e7b90;}
-#qa-li-panel .mv{font-variant-numeric:tabular-nums;color:#fff;font-weight:600;}
-#qa-li-panel .quad{display:flex;gap:5px;}
-#qa-li-panel .quad input{width:100%;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:7px;padding:6px 2px;font-size:12px;text-align:center;-moz-appearance:textfield;}
-#qa-li-panel .quad input:focus{border-color:#7c3aed;}
-#qa-li-panel .quad input::-webkit-inner-spin-button{display:none;}
-#qa-li-panel .colors{display:flex;gap:8px;}
-#qa-li-panel .clr{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:6px 8px;}
-#qa-li-panel .clr span{font-size:11px;color:#b9b6c8;}
-#qa-li-panel input[type=color]{width:30px;height:22px;border:none;border-radius:5px;background:none;padding:0;cursor:pointer;}
-#qa-li-panel input[type=color]::-webkit-color-swatch{border:1px solid #3a3654;border-radius:5px;}
-#qa-li-panel input[type=color]::-webkit-color-swatch-wrapper{padding:0;}
-#qa-li-panel .btns{display:flex!important;gap:8px!important;margin:4px 0 0!important;}
-#qa-li-panel .btns button{flex:1 1 0!important;min-width:0!important;width:auto!important;margin:0!important;border:none!important;box-shadow:none!important;text-transform:none!important;letter-spacing:normal!important;box-sizing:border-box!important;cursor:pointer!important;height:36px!important;border-radius:8px!important;font:600 12px/1 -apple-system,Segoe UI,sans-serif!important;white-space:nowrap!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:6px!important;}
-#qa-li-panel .btns button svg{width:14px!important;height:14px!important;flex:0 0 auto!important;margin:0!important;}
-#qa-li-panel .btns .b-reset{background:#262335!important;color:#d4d2e0!important;}
-#qa-li-panel .btns .b-reset:hover{background:#322f44!important;}
-#qa-li-panel .btns .b-copy{background:#7c3aed!important;color:#fff!important;}
-#qa-li-panel .btns .b-copy:hover{background:#6d28d9!important;}
-#qa-li-panel,#qa-li-panel *{box-sizing:border-box;outline:none!important;}`;
+#qa-li-bar .qa-li-hint{font-size:11px;color:#7e7b90;max-width:240px;padding:0 2px;}
+#qa-li-bar,#qa-li-bar *,#qa-li-layer,#qa-li-layer *{outline:none!important;}`;
     (document.head || document.documentElement).appendChild(s);
 }
 
@@ -5733,15 +5572,12 @@ function liBuildToolbar() {
     const bar = document.createElement('div');
     bar.id = 'qa-li-bar';
     bar.innerHTML = `
-<button data-m="measure" title="Hover for size; click two elements for the gap">${LI_IC.ruler} Measure</button>
-<button data-m="tweak" title="Select an element, then move / pad / colour it">${LI_IC.pencil} Tweak</button>
-<span class="sep"></span>
-<span class="qa-li-hint" id="qa-li-hint"></span>
+<span class="qa-li-title">${LI_IC.ruler} Measure</span>
+<span class="qa-li-hint">Hover for size · click two for the gap</span>
 <span class="sep"></span>
 <button class="qa-li-nums ic on" title="Show / hide numbers">${LI_IC.hash}</button>
 <button class="qa-li-x ic" title="Close (Esc)">${LI_IC.x}</button>`;
     document.body.appendChild(bar);
-    bar.querySelectorAll('button[data-m]').forEach(b => b.addEventListener('click', () => liSetMode(b.dataset.m)));
     bar.querySelector('.qa-li-nums').addEventListener('click', (e) => {
         liState.nums = !liState.nums;
         e.currentTarget.classList.toggle('on', liState.nums);
@@ -5756,109 +5592,37 @@ function liBuildLayer() {
     document.body.appendChild(l);
 }
 
-function liSetMode(mode) {
-    liState.mode = mode;
-    liState.anchor = null; liState.target = null; liState.hoverEl = null;
-    document.querySelectorAll('#qa-li-bar button[data-m]').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
-    const layer = document.getElementById('qa-li-layer');
-    if (layer) layer.innerHTML = '';
-    const hint = document.getElementById('qa-li-hint');
-    if (mode === 'measure') {
-        liDeselect();
-        hint.textContent = 'Hover for size · click two for the gap';
-    } else {
-        hint.textContent = 'Drag an element, or use the arrow keys';
-        if (liState.sel) { liShowPanel(); liRenderEdit(); }
-    }
-}
-
-function liIsUi(el) { return !el || (el.closest && el.closest('#qa-li-bar,#qa-li-layer,#qa-li-panel')); }
+function liIsUi(el) { return !el || (el.closest && el.closest('#qa-li-bar,#qa-li-layer')); }
 
 function liOnMove(e) {
     if (!liState) return;
-    if (liDrag) {                                   // dragging the selected element
-        e.preventDefault();
-        const rec = liEdits.get(liState.sel);
-        if (!rec) return;
-        const snap = (v) => Math.round(v / LI_GRID) * LI_GRID;
-        rec.dx = liDrag.bdx + snap(e.clientX - liDrag.sx);
-        rec.dy = liDrag.bdy + snap(e.clientY - liDrag.sy);
-        liDrag.moved = true;
-        liApplyTransform(liState.sel);
-        liRenderEdit();
-        liUpdateMoveReadout();
-        return;
-    }
     const el = document.elementFromPoint(e.clientX, e.clientY);
     if (liIsUi(el)) return;
     liState.hoverEl = el;
-    if (liState.mode === 'measure') liRenderMeasure();
-    else liRenderEdit();
-}
-
-// Tweak mode: mousedown selects the element and begins an organised drag.
-function liOnDown(e) {
-    if (!liState || liState.mode !== 'tweak' || e.button !== 0) return;
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    if (liIsUi(el)) return; // clicks on our panel/toolbar behave normally
-    e.preventDefault(); e.stopPropagation();
-    if (el !== liState.sel) liSelect(el);
-    const rec = liEdits.get(liState.sel);
-    liDrag = { sx: e.clientX, sy: e.clientY, bdx: rec.dx, bdy: rec.dy, moved: false };
-}
-
-function liOnUp(e) {
-    if (!liDrag) return;
-    e.preventDefault(); e.stopPropagation();
-    if (liDrag.moved) liSuppressClick = true;
-    liDrag = null;
+    liRenderMeasure();
 }
 
 function liOnClick(e) {
     if (!liState) return;
     const el = document.elementFromPoint(e.clientX, e.clientY);
-    if (liIsUi(el)) return; // let our own buttons / panel work
+    if (liIsUi(el)) return; // let our own buttons work
     e.preventDefault(); e.stopPropagation();
-    if (liSuppressClick) { liSuppressClick = false; return; }
-    if (liState.mode === 'measure') {
-        if (!liState.anchor) { liState.anchor = el; liState.target = null; }
-        else if (!liState.target) { liState.target = el; }
-        else { liState.anchor = el; liState.target = null; }
-        liRenderMeasure();
-    } else {
-        liSelect(el); // selection also happens on mousedown; keep click as a fallback
-    }
+    if (!liState.anchor) { liState.anchor = el; liState.target = null; }
+    else if (!liState.target) { liState.target = el; }
+    else { liState.anchor = el; liState.target = null; }
+    liRenderMeasure();
 }
 
 function liOnKey(e) {
     if (!liState) return;
-    // typing in a panel field? leave it alone
-    const a = document.activeElement;
-    const typing = a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest('#qa-li-panel');
-    if (e.key === 'Escape') {
-        e.preventDefault();
-        if (liState.mode === 'tweak' && liState.sel && !typing) { liDeselect(); return; }
-        closeMeasureTool();
-        return;
-    }
-    if (liState.mode === 'tweak' && liState.sel && !typing) {
-        const step = e.shiftKey ? 10 : 1;
-        const rec = liEdits.get(liState.sel);
-        let used = true;
-        if (e.key === 'ArrowUp') rec.dy -= step;
-        else if (e.key === 'ArrowDown') rec.dy += step;
-        else if (e.key === 'ArrowLeft') rec.dx -= step;
-        else if (e.key === 'ArrowRight') rec.dx += step;
-        else used = false;
-        if (used) { e.preventDefault(); liApplyTransform(liState.sel); liRenderEdit(); liUpdateMoveReadout(); }
-    }
+    if (e.key === 'Escape') { e.preventDefault(); closeMeasureTool(); }
 }
 
 function liOnScroll() {
     if (!liState) return;
-    if (liState.mode === 'measure') liRenderMeasure();
-    else liRenderEdit();
+    liRenderMeasure();
 }
+
 
 function liBox(r, css) {
     const d = document.createElement('div');
@@ -5978,173 +5742,6 @@ function liGuide(layer, vertical, pos) {
     layer.appendChild(d);
 }
 
-// ---------- Tweak mode: select, move, pad/margin, colour, reset, copy CSS ----
-
-function liBuildPanel() {
-    const p = document.createElement('div');
-    p.id = 'qa-li-panel';
-    p.innerHTML = `
-<div class="hd">
-  <span><span class="tag" id="qa-li-tag">div</span><span class="dim" id="qa-li-dim"></span></span>
-  <button class="iconbtn" id="qa-li-deselect" title="Deselect">${LI_IC.x}</button>
-</div>
-<div class="bd">
-  <div class="grp">
-    <span class="lbl">${LI_IC.move} Move &middot; drag or arrows (Shift = 10)</span>
-    <div class="mvrow"><span class="mv" id="qa-li-mv">x 0 &middot; y 0</span><span class="hintk">px offset</span></div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Padding &nbsp;T R B L</span>
-    <div class="quad">
-      <input type="number" data-pad="Top"><input type="number" data-pad="Right">
-      <input type="number" data-pad="Bottom"><input type="number" data-pad="Left">
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Margin &nbsp;T R B L</span>
-    <div class="quad">
-      <input type="number" data-mar="Top"><input type="number" data-mar="Right">
-      <input type="number" data-mar="Bottom"><input type="number" data-mar="Left">
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Colour</span>
-    <div class="colors">
-      <label class="clr"><span>Text</span><input type="color" id="qa-li-color"></label>
-      <label class="clr"><span>Bg</span><input type="color" id="qa-li-bg"></label>
-    </div>
-  </div>
-  <div class="btns">
-    <button class="b-reset" id="qa-li-reset" title="Revert all changes made by this tool">${LI_IC.reset} Reset all</button>
-    <button class="b-copy" id="qa-li-copy">${LI_IC.copy} Copy CSS</button>
-  </div>
-</div>`;
-    document.body.appendChild(p);
-    p.querySelector('#qa-li-deselect').addEventListener('click', liDeselect);
-    p.querySelector('#qa-li-reset').addEventListener('click', liResetSel);
-    p.querySelector('#qa-li-copy').addEventListener('click', liCopyCss);
-    p.querySelectorAll('input[data-pad]').forEach(inp => inp.addEventListener('input', () => {
-        if (!liState.sel) return;
-        liState.sel.style['padding' + inp.dataset.pad] = (parseFloat(inp.value) || 0) + 'px';
-        liEdits.get(liState.sel).padTouched = true;
-        liRenderEdit();
-    }));
-    p.querySelectorAll('input[data-mar]').forEach(inp => inp.addEventListener('input', () => {
-        if (!liState.sel) return;
-        liState.sel.style['margin' + inp.dataset.mar] = (parseFloat(inp.value) || 0) + 'px';
-        liEdits.get(liState.sel).marTouched = true;
-        liRenderEdit();
-    }));
-    p.querySelector('#qa-li-color').addEventListener('input', (e) => {
-        if (!liState.sel) return;
-        liState.sel.style.color = e.target.value;
-        liEdits.get(liState.sel).colorSet = true;
-    });
-    p.querySelector('#qa-li-bg').addEventListener('input', (e) => {
-        if (!liState.sel) return;
-        liState.sel.style.backgroundColor = e.target.value;
-        liEdits.get(liState.sel).bgSet = true;
-    });
-}
-
-function liShowPanel() { const p = document.getElementById('qa-li-panel'); if (p) p.classList.add('show'); }
-function liHidePanel() { const p = document.getElementById('qa-li-panel'); if (p) p.classList.remove('show'); }
-
-function liEnsureEdit(el) {
-    if (!liEdits.has(el)) {
-        const orig = {};
-        LI_PROPS.forEach(p => orig[p] = el.style[p] || '');  // '' = was not set inline
-        liEdits.set(el, { orig, dx: 0, dy: 0, colorSet: false, bgSet: false, padTouched: false, marTouched: false });
-    }
-    return liEdits.get(el);
-}
-
-// Restore every managed property to exactly what it was (or clear it if it
-// wasn't set inline). Setting a style property to '' removes it.
-function liRestoreEl(el, rec) {
-    LI_PROPS.forEach(p => { el.style[p] = rec.orig[p] || ''; });
-}
-
-function liSelect(el) {
-    liState.sel = el;
-    liEnsureEdit(el);
-    liFillPanel(el);
-    liShowPanel();
-    liRenderEdit();
-}
-
-function liDeselect() {
-    liState.sel = null;
-    liHidePanel();
-    const layer = document.getElementById('qa-li-layer');
-    if (layer) layer.innerHTML = '';
-}
-
-function liApplyTransform(el) {
-    const rec = liEdits.get(el);
-    const moving = rec.dx || rec.dy;
-    // transform has no effect on inline elements — promote to inline-block so
-    // the move actually happens (Reset restores the original display)
-    if (moving && getComputedStyle(el).display === 'inline') el.style.display = 'inline-block';
-    el.style.transform = moving ? `translate(${rec.dx}px, ${rec.dy}px)` : '';
-}
-
-function liUpdateMoveReadout() {
-    const rec = liState.sel && liEdits.get(liState.sel);
-    const mv = document.getElementById('qa-li-mv');
-    if (mv && rec) mv.textContent = `x ${rec.dx} · y ${rec.dy}`;
-}
-
-function liFillPanel(el) {
-    const cs = getComputedStyle(el);
-    const r = el.getBoundingClientRect();
-    document.getElementById('qa-li-tag').textContent = el.tagName.toLowerCase();
-    document.getElementById('qa-li-dim').textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
-    const p = document.getElementById('qa-li-panel');
-    ['Top', 'Right', 'Bottom', 'Left'].forEach(side => {
-        p.querySelector(`input[data-pad="${side}"]`).value = Math.round(parseFloat(cs['padding' + side]) || 0);
-        p.querySelector(`input[data-mar="${side}"]`).value = Math.round(parseFloat(cs['margin' + side]) || 0);
-    });
-    p.querySelector('#qa-li-color').value = liRgbToHex(cs.color);
-    p.querySelector('#qa-li-bg').value = liRgbToHex(cs.backgroundColor);
-    liUpdateMoveReadout();
-}
-
-function liResetSel() {
-    if (!liEdits.size) { liToast('Nothing to reset'); return; }
-    liRestoreAllEdits();                 // revert every element the tool changed
-    if (liState.sel) { liEnsureEdit(liState.sel); liFillPanel(liState.sel); } // re-baseline current
-    liRenderEdit();
-    liToast('Reset all');
-}
-
-function liRestoreAllEdits() {
-    for (const [el, rec] of liEdits) liRestoreEl(el, rec);
-    liEdits.clear();
-}
-
-function liCopyCss() {
-    if (!liState.sel) return;
-    const el = liState.sel, rec = liEdits.get(el), p = document.getElementById('qa-li-panel');
-    const parts = [];
-    if (rec.dx || rec.dy) parts.push(`transform: translate(${rec.dx}px, ${rec.dy}px);`);
-    const pad = ['Top', 'Right', 'Bottom', 'Left'].map(s => Math.round(parseFloat(p.querySelector(`input[data-pad="${s}"]`).value) || 0));
-    const mar = ['Top', 'Right', 'Bottom', 'Left'].map(s => Math.round(parseFloat(p.querySelector(`input[data-mar="${s}"]`).value) || 0));
-    if (rec.padTouched) parts.push(`padding: ${pad[0]}px ${pad[1]}px ${pad[2]}px ${pad[3]}px;`);
-    if (rec.marTouched) parts.push(`margin: ${mar[0]}px ${mar[1]}px ${mar[2]}px ${mar[3]}px;`);
-    if (rec.colorSet) parts.push(`color: ${p.querySelector('#qa-li-color').value};`);
-    if (rec.bgSet) parts.push(`background-color: ${p.querySelector('#qa-li-bg').value};`);
-    if (!parts.length) { liToast('No changes to copy'); return; }
-    const css = parts.join('\n');
-    navigator.clipboard.writeText(css).then(() => liToast('CSS copied')).catch(() => liToast('Copy failed'));
-}
-
-function liRgbToHex(rgb) {
-    const m = String(rgb).match(/\d+/g);
-    if (!m || m.length < 3) return '#000000';
-    return '#' + m.slice(0, 3).map(n => (+n).toString(16).padStart(2, '0')).join('');
-}
-
 function liToast(msg) {
     const t = document.createElement('div');
     t.textContent = msg;
@@ -6152,23 +5749,3 @@ function liToast(msg) {
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 1500);
 }
-
-// Draw the selected element (and the hovered target) in Tweak mode.
-function liRenderEdit() {
-    const layer = document.getElementById('qa-li-layer');
-    if (!layer) return;
-    layer.innerHTML = '';
-    if (liState.hoverEl && liState.hoverEl !== liState.sel) {
-        layer.appendChild(liBox(liState.hoverEl.getBoundingClientRect(), 'outline:1px dashed rgba(124,58,237,.6);'));
-    }
-    if (liState.sel) {
-        const r = liState.sel.getBoundingClientRect();
-        layer.appendChild(liBox(r, 'outline:2px solid #a78bfa;background:rgba(124,58,237,.10);'));
-        const ly = r.top > 22 ? r.top - 20 : r.bottom + 4;
-        layer.appendChild(liLabel(r.left, ly, `${Math.round(r.width)} × ${Math.round(r.height)}`));
-        // keep the size readout in the panel fresh as padding/margin change it
-        const dim = document.getElementById('qa-li-dim');
-        if (dim) dim.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
-    }
-}
-
