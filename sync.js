@@ -109,7 +109,7 @@ async function syncCollectLocalData() {
     let profiles = [];
     try { profiles = await FormFillerDB.getAllProfiles(); } catch (e) { }
     const syncStore = await chrome.storage.sync.get(['formFillerSettings', 'formFillerCategories', 'formFillerCategoriesUpdatedAt']);
-    const localStore = await chrome.storage.local.get(['aiSaveBehavior', 'syncTombstones']);
+    const localStore = await chrome.storage.local.get(['aiSaveBehavior', 'syncTombstones', 'qaClearData', 'qaResponsive']);
     return {
         version: 1,
         exportedAt: Date.now(),
@@ -118,7 +118,9 @@ async function syncCollectLocalData() {
         settings: syncStore.formFillerSettings || null,
         categories: syncStore.formFillerCategories || null,
         categoriesUpdatedAt: syncStore.formFillerCategoriesUpdatedAt || 0,
-        aiSaveBehavior: localStore.aiSaveBehavior || null
+        aiSaveBehavior: localStore.aiSaveBehavior || null,
+        qaClearData: localStore.qaClearData || null,
+        qaResponsive: localStore.qaResponsive || null
     };
 }
 
@@ -203,9 +205,11 @@ async function syncNow() {
         }
         if (categories && !categories.includes('General')) categories.unshift('General');
 
-        // Settings / AI behavior: local wins when present, cloud fills the gaps
+        // Settings / AI behavior / tool prefs: local wins when present, cloud fills the gaps
         const settings = local.settings || (cloud && cloud.settings) || null;
         const aiSaveBehavior = local.aiSaveBehavior || (cloud && cloud.aiSaveBehavior) || null;
+        const qaClearData = local.qaClearData || (cloud && cloud.qaClearData) || null;
+        const qaResponsive = local.qaResponsive || (cloud && cloud.qaResponsive) || null;
 
         // Apply merged state locally
         await FormFillerDB.saveAllProfiles(merged);
@@ -213,6 +217,8 @@ async function syncNow() {
         if (categories) await chrome.storage.sync.set({ formFillerCategories: categories, formFillerCategoriesUpdatedAt: categoriesUpdatedAt });
         if (settings) await chrome.storage.sync.set({ formFillerSettings: settings });
         if (aiSaveBehavior) await chrome.storage.local.set({ aiSaveBehavior });
+        if (qaClearData) await chrome.storage.local.set({ qaClearData });
+        if (qaResponsive) await chrome.storage.local.set({ qaResponsive });
 
         // Push the merged result back to Drive
         await driveUpload(fileId, {
@@ -223,7 +229,9 @@ async function syncNow() {
             settings,
             categories,
             categoriesUpdatedAt,
-            aiSaveBehavior
+            aiSaveBehavior,
+            qaClearData,
+            qaResponsive
         });
 
         await syncSetMeta({ lastSyncAt: Date.now(), lastError: null });

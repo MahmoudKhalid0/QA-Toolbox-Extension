@@ -76,6 +76,73 @@ chrome.storage.local.get('autoRefresh', (r) => { autoRefresh = (r && r.autoRefre
 function arSaveState() { try { chrome.storage.local.set({ autoRefresh }); } catch (e) { } }
 chrome.tabs.onRemoved.addListener((tabId) => { if (autoRefresh[tabId]) { delete autoRefresh[tabId]; arSaveState(); } });
 
+// ===== Clear Browsing Data — Automation (on browser startup / on tab close).
+// Runs from the background using the data types saved in qaClearData. =====
+const ORIGIN_SCOPED_TYPES =['cookies', 'localStorage', 'indexedDB', 'cacheStorage', 'serviceWorkers', 'fileSystems', 'webSQL'];
+const tabUrlCache = {};
+chrome.tabs.onUpdated.addListener((id, info, tab) => { if (tab && tab.url) tabUrlCache[id] = tab.url; });
+chrome.tabs.onRemoved.addListener((id) => { const url = tabUrlCache[id]; delete tabUrlCache[id]; autoClearOnTabClosed(url); });
+
+async function getClearCfg() { const r = await chrome.storage.local.get('qaClearData'); return Object.assign({ types: {}, auto: {} }, (r && r.qaClearData) || {}); }
+
+function domainsToOrigins(hosts) {
+    const out = [];
+    (hosts || []).forEach(h => {
+        h = String(h || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+        if (h) { out.push('https://' + h, 'http://' + h); }
+    });
+    return out;
+}
+async function clearCookiesForDomain(host) {
+    const bare = host.replace(/:\d+$/, ''); // cookies aren't port-specific
+    try {
+        const cookies = await chrome.cookies.getAll({ domain: bare });
+        for (const c of cookies) {
+            const url = `${c.secure ? 'https' : 'http'}://${c.domain.replace(/^\./, '')}${c.path || '/'}`;
+            try { await chrome.cookies.remove({ url, name: c.name }); } catch (e) { }
+        }
+        return cookies.length;
+    } catch (e) { return 0; }
+}
+async function runAutoClear(originOnly) {
+    try {
+        const cfg = await getClearCfg();
+        const types = Object.keys(cfg.types || {}).filter(k => cfg.types[k]);
+        if (!types.length) return;
+        const want = new Set(types);
+        const domains = originOnly ? [(() => { try { return new URL(originOnly).host; } catch (e) { return ''; } })()].filter(Boolean)
+            : ((cfg.auto && cfg.auto.domains) || []);
+
+        if (domains.length) {
+            // Per-site clear. Cookies go through chrome.cookies (matches domain +
+            // subdomains, ignores port); other storage via browsingData origins.
+            let n = 0;
+            if (want.has('cookies')) for (const d of domains) n += await clearCookiesForDomain(d);
+            const storageTypes = ['localStorage', 'indexedDB', 'cacheStorage', 'serviceWorkers', 'fileSystems', 'webSQL'].filter(t => want.has(t));
+            if (storageTypes.length) {
+                const obj = {}; storageTypes.forEach(t => obj[t] = true);
+                await chrome.browsingData.remove({ since: 0, origins: domainsToOrigins(domains) }, obj);
+            }
+            console.log('[QA auto-clear] domains', domains, 'types', types, 'cookies removed', n);
+        } else {
+            // No domains -> wipe ALL sites and ALL data types
+            const ALL = ['cache', 'cacheStorage', 'cookies', 'fileSystems', 'indexedDB', 'localStorage', 'serviceWorkers', 'webSQL', 'downloads', 'formData', 'history', 'passwords'];
+            const obj = {}; ALL.forEach(t => obj[t] = true);
+            await chrome.browsingData.remove({ since: 0 }, obj);
+            console.log('[QA auto-clear] all sites, all types');
+        }
+    } catch (e) { console.error('auto clear:', e); }
+}
+function autoClearOnTabClosed(url) {
+    if (!url || !/^https?:/i.test(url)) return;
+    getClearCfg().then(cfg => {
+        if (!cfg.auto || !cfg.auto.tabClose) return;
+        let origin = ''; try { origin = new URL(url).origin; } catch (e) { return; }
+        runAutoClear(origin);
+    });
+}
+chrome.runtime.onStartup.addListener(() => { getClearCfg().then(cfg => { if (cfg.auto && cfg.auto.startup) runAutoClear(); }); });
+
 // Migration: Move profiles from sync/local storage to IndexedDB
 (async () => {
     try {

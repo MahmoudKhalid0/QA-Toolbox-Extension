@@ -130,6 +130,7 @@ async function initClearData() {
     const res = await chrome.storage.local.get('qaClearData');
     const cfg = Object.assign({}, CLR_DEFAULT, res.qaClearData || {});
     cfg.types = Object.assign({}, CLR_DEFAULT.types, cfg.types || {});
+    cfg.auto = Object.assign({ startup: false, tabClose: false, domains: [] }, cfg.auto || {});
 
     const save = () => { chrome.storage.local.set({ qaClearData: cfg }); showToast('Settings saved!'); };
 
@@ -137,6 +138,38 @@ async function initClearData() {
     document.getElementById('clrReload').checked = cfg.reload !== false;
     document.getElementById('clrConfirm').checked = !!cfg.confirm;
     document.getElementById('clrSpan').value = String(cfg.span || 0);
+
+    // Automation
+    document.getElementById('autoStartup').checked = !!cfg.auto.startup;
+    document.getElementById('autoTabClose').checked = !!cfg.auto.tabClose;
+    document.getElementById('autoStartup').addEventListener('change', (e) => { cfg.auto.startup = e.target.checked; save(); });
+    document.getElementById('autoTabClose').addEventListener('change', (e) => { cfg.auto.tabClose = e.target.checked; save(); });
+
+    // Automation domains list
+    const domListEl = document.getElementById('autoDomainList');
+    const domInput = document.getElementById('autoDomainInput');
+    const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const renderDomains = () => {
+        const ds = cfg.auto.domains || [];
+        domListEl.innerHTML = !ds.length
+            ? '<div style="font-size:12px; color:#64748b;">No domains — clears all sites.</div>'
+            : ds.map((d, i) => `<div class="category-item"><span>${esc(d)}</span><button class="btn-delete-cat" data-domdel="${i}" title="Remove"><i class="fas fa-xmark"></i></button></div>`).join('');
+    };
+    const addDomain = () => {
+        let d = (domInput.value || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+        if (!d || !/\./.test(d)) { domInput.style.borderColor = '#ef4444'; return; }
+        domInput.style.borderColor = '';
+        if (!cfg.auto.domains.includes(d)) cfg.auto.domains.push(d);
+        domInput.value = ''; save(); renderDomains();
+    };
+    renderDomains();
+    document.getElementById('autoDomainAdd').addEventListener('click', addDomain);
+    domInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') addDomain(); });
+    domInput.addEventListener('blur', () => { if (domInput.value.trim()) addDomain(); }); // don't lose a typed-but-unadded domain
+    domListEl.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-domdel]'); if (!b) return;
+        cfg.auto.domains.splice(+b.dataset.domdel, 1); save(); renderDomains();
+    });
 
     // In "Active tab only": these are blocked (privacy-sensitive, browser-wide).
     // Cache is still allowed but always clears all sites.
