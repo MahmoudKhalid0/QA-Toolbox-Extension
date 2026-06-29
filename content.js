@@ -5606,33 +5606,68 @@ function escapeHtml(text) {
 }
 
 // ============================================================================
-// Measure — on-page tool: hover an element for its size / padding / margin;
-// click two elements to measure the gap (or the 4 insets when one is inside
-// the other); alignment guides extend across the viewport. No AI, no network.
+// Measure & Tweak — on-page tool with two modes:
+//   • Measure : hover for size / padding / margin; click two elements for the
+//               gap (or the 4 insets when one is inside the other); alignment
+//               guides extend across the viewport.
+//   • Tweak   : click an element to select it, then nudge it with the arrow
+//               keys, adjust padding / margin, and change text / background
+//               colour. Everything is non-destructive (Reset) and can be
+//               copied out as ready-to-paste CSS. No AI, no network.
 // ============================================================================
 let liState = null;
+let liDrag = null;            // active drag: { sx, sy, bdx, bdy, moved }
+let liSuppressClick = false;  // ignore the click that ends a drag
+const LI_GRID = 8;            // drag snaps to this grid so moves stay tidy
+const liEdits = new Map();    // element -> { orig, dx, dy, colorSet, bgSet, padTouched, marTouched }
+// the inline properties Tweak can change — captured per element so Reset can
+// restore each one exactly (more reliable than round-tripping the whole style)
+const LI_PROPS = ['transform', 'display', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'color', 'backgroundColor'];
+
+// Inline SVG icons (FontAwesome isn't available inside the page). 16px, currentColor.
+const LI_IC = (() => {
+    const w = (p) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+    return {
+        ruler: w('<path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/>'),
+        pencil: w('<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>'),
+        x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+        hash: w('<line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/>'),
+        reset: w('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'),
+        copy: w('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
+        move: w('<path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/>')
+    };
+})();
 
 function openMeasureTool() {
     if (liState) { closeMeasureTool(); return; } // card acts as a toggle
-    liState = { nums: true, hoverEl: null, anchor: null, target: null };
+    liState = { mode: 'measure', nums: true, hoverEl: null, anchor: null, target: null, sel: null };
     liInjectStyles();
     liBuildToolbar();
     liBuildLayer();
+    liBuildPanel();
     document.addEventListener('mousemove', liOnMove, true);
+    document.addEventListener('mousedown', liOnDown, true);
+    document.addEventListener('mouseup', liOnUp, true);
     document.addEventListener('click', liOnClick, true);
     document.addEventListener('keydown', liOnKey, true);
     window.addEventListener('scroll', liOnScroll, true);
     window.addEventListener('resize', liOnScroll, true);
+    liSetMode('measure');
 }
 
 function closeMeasureTool() {
     if (!liState) return;
     document.removeEventListener('mousemove', liOnMove, true);
+    document.removeEventListener('mousedown', liOnDown, true);
+    document.removeEventListener('mouseup', liOnUp, true);
     document.removeEventListener('click', liOnClick, true);
     document.removeEventListener('keydown', liOnKey, true);
     window.removeEventListener('scroll', liOnScroll, true);
     window.removeEventListener('resize', liOnScroll, true);
-    const ids = ['qa-li-bar', 'qa-li-layer', 'qa-li-style'];
+    liDrag = null;
+    liRestoreAllEdits();
+    const ids = ['qa-li-bar', 'qa-li-layer', 'qa-li-panel', 'qa-li-style'];
     ids.forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
     liState = null;
 }
@@ -5648,15 +5683,49 @@ function liInjectStyles() {
 .qa-li-lbl{position:fixed;pointer-events:none;background:#7c3aed;color:#fff;font:600 11px/1.4 -apple-system,Segoe UI,sans-serif;padding:1px 6px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:2;}
 .qa-li-lbl.gap{background:#f43f5e;}
 .qa-li-line{position:fixed;pointer-events:none;height:0;border-top:1px dashed #f43f5e;z-index:1;}
-#qa-li-bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:6px;background:#1e1b2e;color:#fff;padding:6px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.4);font:13px/1 -apple-system,Segoe UI,sans-serif;}
-#qa-li-bar button{all:unset;cursor:pointer;padding:6px 10px;border-radius:7px;color:#cbd5e1;display:flex;align-items:center;gap:5px;font-size:13px;}
-#qa-li-bar button:hover{background:#2d2a44;color:#fff;}
-#qa-li-bar button.on{background:#7c3aed;color:#fff;}
-#qa-li-bar .sep{width:1px;height:20px;background:#3a3654;margin:0 2px;}
-#qa-li-bar .qa-li-x{color:#f87171;font-weight:700;}
-#qa-li-bar .qa-li-title{font-weight:600;padding:0 4px;}
-#qa-li-bar .qa-li-hint{font-size:11px;color:#94a3b8;max-width:260px;}
-#qa-li-bar,#qa-li-bar *,#qa-li-layer,#qa-li-layer *{outline:none!important;}`;
+#qa-li-bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:4px;background:#17151f;color:#fff;padding:5px;border-radius:11px;box-shadow:0 8px 28px rgba(0,0,0,.5);font:13px/1 -apple-system,Segoe UI,sans-serif;border:1px solid #2a2738;}
+#qa-li-bar button{all:unset;box-sizing:border-box!important;cursor:pointer!important;margin:0!important;border:none!important;box-shadow:none!important;text-transform:none!important;letter-spacing:normal!important;padding:7px 11px!important;border-radius:8px!important;color:#b9b6c8;background:transparent;display:inline-flex!important;align-items:center!important;gap:6px!important;font:500 13px/1 -apple-system,Segoe UI,sans-serif!important;}
+#qa-li-bar button svg{width:15px!important;height:15px!important;flex:0 0 auto!important;}
+#qa-li-bar button:hover{background:#262335;color:#fff;}
+#qa-li-bar button.on{background:#7c3aed!important;color:#fff!important;}
+#qa-li-bar .ic{padding:7px!important;}
+#qa-li-bar .sep{width:1px;height:22px;background:#2a2738;margin:0 3px;}
+#qa-li-bar .qa-li-x:hover{background:#3a1d24;color:#f87171;}
+#qa-li-bar .qa-li-hint{font-size:11px;color:#7e7b90;max-width:220px;padding:0 2px;}
+#qa-li-bar,#qa-li-bar *,#qa-li-layer,#qa-li-layer *{outline:none!important;}
+#qa-li-panel{position:fixed;top:66px;right:16px;z-index:2147483647;width:248px;background:#17151f;color:#e5e7eb;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.55);border:1px solid #2a2738;font:12px/1.45 -apple-system,Segoe UI,sans-serif;padding:0;display:none;overflow:hidden;}
+#qa-li-panel.show{display:block;}
+#qa-li-panel .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid #2a2738;background:#1c1a26;}
+#qa-li-panel .hd .tag{display:inline-block;background:#2d2a3e;color:#c4b5fd;font-weight:600;font-size:11px;padding:2px 7px;border-radius:5px;}
+#qa-li-panel .hd .dim{color:#9b98ac;font-variant-numeric:tabular-nums;margin-left:6px;font-size:11px;}
+#qa-li-panel .hd .iconbtn{all:unset;cursor:pointer;color:#8b8898;padding:5px;border-radius:7px;display:flex;}
+#qa-li-panel .hd .iconbtn:hover{background:#3a1d24;color:#f87171;}
+#qa-li-panel .bd{padding:14px;}
+#qa-li-panel .grp{margin-bottom:14px;}
+#qa-li-panel .grp:last-child{margin-bottom:0;}
+#qa-li-panel .lbl{font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#7e7b90;margin-bottom:7px;display:flex;align-items:center;gap:5px;}
+#qa-li-panel .lbl svg{width:13px;height:13px;}
+#qa-li-panel .mvrow{display:flex;align-items:center;justify-content:space-between;background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:8px 10px;}
+#qa-li-panel .mvrow .hintk{font-size:10px;color:#7e7b90;}
+#qa-li-panel .mv{font-variant-numeric:tabular-nums;color:#fff;font-weight:600;}
+#qa-li-panel .quad{display:flex;gap:5px;}
+#qa-li-panel .quad input{width:100%;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:7px;padding:6px 2px;font-size:12px;text-align:center;-moz-appearance:textfield;}
+#qa-li-panel .quad input:focus{border-color:#7c3aed;}
+#qa-li-panel .quad input::-webkit-inner-spin-button{display:none;}
+#qa-li-panel .colors{display:flex;gap:8px;}
+#qa-li-panel .clr{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:6px 8px;}
+#qa-li-panel .clr span{font-size:11px;color:#b9b6c8;}
+#qa-li-panel input[type=color]{width:30px;height:22px;border:none;border-radius:5px;background:none;padding:0;cursor:pointer;}
+#qa-li-panel input[type=color]::-webkit-color-swatch{border:1px solid #3a3654;border-radius:5px;}
+#qa-li-panel input[type=color]::-webkit-color-swatch-wrapper{padding:0;}
+#qa-li-panel .btns{display:flex!important;gap:8px!important;margin:4px 0 0!important;}
+#qa-li-panel .btns button{flex:1 1 0!important;min-width:0!important;width:auto!important;margin:0!important;border:none!important;box-shadow:none!important;text-transform:none!important;letter-spacing:normal!important;box-sizing:border-box!important;cursor:pointer!important;height:36px!important;border-radius:8px!important;font:600 12px/1 -apple-system,Segoe UI,sans-serif!important;white-space:nowrap!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:6px!important;}
+#qa-li-panel .btns button svg{width:14px!important;height:14px!important;flex:0 0 auto!important;margin:0!important;}
+#qa-li-panel .btns .b-reset{background:#262335!important;color:#d4d2e0!important;}
+#qa-li-panel .btns .b-reset:hover{background:#322f44!important;}
+#qa-li-panel .btns .b-copy{background:#7c3aed!important;color:#fff!important;}
+#qa-li-panel .btns .b-copy:hover{background:#6d28d9!important;}
+#qa-li-panel,#qa-li-panel *{box-sizing:border-box;outline:none!important;}`;
     (document.head || document.documentElement).appendChild(s);
 }
 
@@ -5664,12 +5733,15 @@ function liBuildToolbar() {
     const bar = document.createElement('div');
     bar.id = 'qa-li-bar';
     bar.innerHTML = `
-<span class="qa-li-title">📏 Measure</span>
-<span class="qa-li-hint">Hover for size · click two elements for the gap</span>
+<button data-m="measure" title="Hover for size; click two elements for the gap">${LI_IC.ruler} Measure</button>
+<button data-m="tweak" title="Select an element, then move / pad / colour it">${LI_IC.pencil} Tweak</button>
 <span class="sep"></span>
-<button class="qa-li-nums on" title="Show / hide numbers">123</button>
-<button class="qa-li-x" title="Close (Esc)">✕</button>`;
+<span class="qa-li-hint" id="qa-li-hint"></span>
+<span class="sep"></span>
+<button class="qa-li-nums ic on" title="Show / hide numbers">${LI_IC.hash}</button>
+<button class="qa-li-x ic" title="Close (Esc)">${LI_IC.x}</button>`;
     document.body.appendChild(bar);
+    bar.querySelectorAll('button[data-m]').forEach(b => b.addEventListener('click', () => liSetMode(b.dataset.m)));
     bar.querySelector('.qa-li-nums').addEventListener('click', (e) => {
         liState.nums = !liState.nums;
         e.currentTarget.classList.toggle('on', liState.nums);
@@ -5684,35 +5756,108 @@ function liBuildLayer() {
     document.body.appendChild(l);
 }
 
-function liIsUi(el) { return !el || (el.closest && el.closest('#qa-li-bar,#qa-li-layer')); }
+function liSetMode(mode) {
+    liState.mode = mode;
+    liState.anchor = null; liState.target = null; liState.hoverEl = null;
+    document.querySelectorAll('#qa-li-bar button[data-m]').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
+    const layer = document.getElementById('qa-li-layer');
+    if (layer) layer.innerHTML = '';
+    const hint = document.getElementById('qa-li-hint');
+    if (mode === 'measure') {
+        liDeselect();
+        hint.textContent = 'Hover for size · click two for the gap';
+    } else {
+        hint.textContent = 'Drag an element, or use the arrow keys';
+        if (liState.sel) { liShowPanel(); liRenderEdit(); }
+    }
+}
+
+function liIsUi(el) { return !el || (el.closest && el.closest('#qa-li-bar,#qa-li-layer,#qa-li-panel')); }
 
 function liOnMove(e) {
     if (!liState) return;
+    if (liDrag) {                                   // dragging the selected element
+        e.preventDefault();
+        const rec = liEdits.get(liState.sel);
+        if (!rec) return;
+        const snap = (v) => Math.round(v / LI_GRID) * LI_GRID;
+        rec.dx = liDrag.bdx + snap(e.clientX - liDrag.sx);
+        rec.dy = liDrag.bdy + snap(e.clientY - liDrag.sy);
+        liDrag.moved = true;
+        liApplyTransform(liState.sel);
+        liRenderEdit();
+        liUpdateMoveReadout();
+        return;
+    }
     const el = document.elementFromPoint(e.clientX, e.clientY);
     if (liIsUi(el)) return;
     liState.hoverEl = el;
-    liRenderMeasure();
+    if (liState.mode === 'measure') liRenderMeasure();
+    else liRenderEdit();
+}
+
+// Tweak mode: mousedown selects the element and begins an organised drag.
+function liOnDown(e) {
+    if (!liState || liState.mode !== 'tweak' || e.button !== 0) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (liIsUi(el)) return; // clicks on our panel/toolbar behave normally
+    e.preventDefault(); e.stopPropagation();
+    if (el !== liState.sel) liSelect(el);
+    const rec = liEdits.get(liState.sel);
+    liDrag = { sx: e.clientX, sy: e.clientY, bdx: rec.dx, bdy: rec.dy, moved: false };
+}
+
+function liOnUp(e) {
+    if (!liDrag) return;
+    e.preventDefault(); e.stopPropagation();
+    if (liDrag.moved) liSuppressClick = true;
+    liDrag = null;
 }
 
 function liOnClick(e) {
     if (!liState) return;
     const el = document.elementFromPoint(e.clientX, e.clientY);
-    if (liIsUi(el)) return; // let our own buttons work
+    if (liIsUi(el)) return; // let our own buttons / panel work
     e.preventDefault(); e.stopPropagation();
-    if (!liState.anchor) { liState.anchor = el; liState.target = null; }
-    else if (!liState.target) { liState.target = el; }
-    else { liState.anchor = el; liState.target = null; }
-    liRenderMeasure();
+    if (liSuppressClick) { liSuppressClick = false; return; }
+    if (liState.mode === 'measure') {
+        if (!liState.anchor) { liState.anchor = el; liState.target = null; }
+        else if (!liState.target) { liState.target = el; }
+        else { liState.anchor = el; liState.target = null; }
+        liRenderMeasure();
+    } else {
+        liSelect(el); // selection also happens on mousedown; keep click as a fallback
+    }
 }
 
 function liOnKey(e) {
     if (!liState) return;
-    if (e.key === 'Escape') { e.preventDefault(); closeMeasureTool(); }
+    // typing in a panel field? leave it alone
+    const a = document.activeElement;
+    const typing = a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest('#qa-li-panel');
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        if (liState.mode === 'tweak' && liState.sel && !typing) { liDeselect(); return; }
+        closeMeasureTool();
+        return;
+    }
+    if (liState.mode === 'tweak' && liState.sel && !typing) {
+        const step = e.shiftKey ? 10 : 1;
+        const rec = liEdits.get(liState.sel);
+        let used = true;
+        if (e.key === 'ArrowUp') rec.dy -= step;
+        else if (e.key === 'ArrowDown') rec.dy += step;
+        else if (e.key === 'ArrowLeft') rec.dx -= step;
+        else if (e.key === 'ArrowRight') rec.dx += step;
+        else used = false;
+        if (used) { e.preventDefault(); liApplyTransform(liState.sel); liRenderEdit(); liUpdateMoveReadout(); }
+    }
 }
 
 function liOnScroll() {
     if (!liState) return;
-    liRenderMeasure();
+    if (liState.mode === 'measure') liRenderMeasure();
+    else liRenderEdit();
 }
 
 function liBox(r, css) {
@@ -5831,5 +5976,199 @@ function liGuide(layer, vertical, pos) {
     if (vertical) d.style.cssText = `position:fixed;left:${pos}px;top:0;width:0;height:100vh;border-left:1px dashed rgba(124,58,237,.75);pointer-events:none;`;
     else d.style.cssText = `position:fixed;top:${pos}px;left:0;height:0;width:100vw;border-top:1px dashed rgba(124,58,237,.75);pointer-events:none;`;
     layer.appendChild(d);
+}
+
+// ---------- Tweak mode: select, move, pad/margin, colour, reset, copy CSS ----
+
+function liBuildPanel() {
+    const p = document.createElement('div');
+    p.id = 'qa-li-panel';
+    p.innerHTML = `
+<div class="hd">
+  <span><span class="tag" id="qa-li-tag">div</span><span class="dim" id="qa-li-dim"></span></span>
+  <button class="iconbtn" id="qa-li-deselect" title="Deselect">${LI_IC.x}</button>
+</div>
+<div class="bd">
+  <div class="grp">
+    <span class="lbl">${LI_IC.move} Move &middot; drag or arrows (Shift = 10)</span>
+    <div class="mvrow"><span class="mv" id="qa-li-mv">x 0 &middot; y 0</span><span class="hintk">px offset</span></div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Padding &nbsp;T R B L</span>
+    <div class="quad">
+      <input type="number" data-pad="Top"><input type="number" data-pad="Right">
+      <input type="number" data-pad="Bottom"><input type="number" data-pad="Left">
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Margin &nbsp;T R B L</span>
+    <div class="quad">
+      <input type="number" data-mar="Top"><input type="number" data-mar="Right">
+      <input type="number" data-mar="Bottom"><input type="number" data-mar="Left">
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Colour</span>
+    <div class="colors">
+      <label class="clr"><span>Text</span><input type="color" id="qa-li-color"></label>
+      <label class="clr"><span>Bg</span><input type="color" id="qa-li-bg"></label>
+    </div>
+  </div>
+  <div class="btns">
+    <button class="b-reset" id="qa-li-reset" title="Revert all changes made by this tool">${LI_IC.reset} Reset all</button>
+    <button class="b-copy" id="qa-li-copy">${LI_IC.copy} Copy CSS</button>
+  </div>
+</div>`;
+    document.body.appendChild(p);
+    p.querySelector('#qa-li-deselect').addEventListener('click', liDeselect);
+    p.querySelector('#qa-li-reset').addEventListener('click', liResetSel);
+    p.querySelector('#qa-li-copy').addEventListener('click', liCopyCss);
+    p.querySelectorAll('input[data-pad]').forEach(inp => inp.addEventListener('input', () => {
+        if (!liState.sel) return;
+        liState.sel.style['padding' + inp.dataset.pad] = (parseFloat(inp.value) || 0) + 'px';
+        liEdits.get(liState.sel).padTouched = true;
+        liRenderEdit();
+    }));
+    p.querySelectorAll('input[data-mar]').forEach(inp => inp.addEventListener('input', () => {
+        if (!liState.sel) return;
+        liState.sel.style['margin' + inp.dataset.mar] = (parseFloat(inp.value) || 0) + 'px';
+        liEdits.get(liState.sel).marTouched = true;
+        liRenderEdit();
+    }));
+    p.querySelector('#qa-li-color').addEventListener('input', (e) => {
+        if (!liState.sel) return;
+        liState.sel.style.color = e.target.value;
+        liEdits.get(liState.sel).colorSet = true;
+    });
+    p.querySelector('#qa-li-bg').addEventListener('input', (e) => {
+        if (!liState.sel) return;
+        liState.sel.style.backgroundColor = e.target.value;
+        liEdits.get(liState.sel).bgSet = true;
+    });
+}
+
+function liShowPanel() { const p = document.getElementById('qa-li-panel'); if (p) p.classList.add('show'); }
+function liHidePanel() { const p = document.getElementById('qa-li-panel'); if (p) p.classList.remove('show'); }
+
+function liEnsureEdit(el) {
+    if (!liEdits.has(el)) {
+        const orig = {};
+        LI_PROPS.forEach(p => orig[p] = el.style[p] || '');  // '' = was not set inline
+        liEdits.set(el, { orig, dx: 0, dy: 0, colorSet: false, bgSet: false, padTouched: false, marTouched: false });
+    }
+    return liEdits.get(el);
+}
+
+// Restore every managed property to exactly what it was (or clear it if it
+// wasn't set inline). Setting a style property to '' removes it.
+function liRestoreEl(el, rec) {
+    LI_PROPS.forEach(p => { el.style[p] = rec.orig[p] || ''; });
+}
+
+function liSelect(el) {
+    liState.sel = el;
+    liEnsureEdit(el);
+    liFillPanel(el);
+    liShowPanel();
+    liRenderEdit();
+}
+
+function liDeselect() {
+    liState.sel = null;
+    liHidePanel();
+    const layer = document.getElementById('qa-li-layer');
+    if (layer) layer.innerHTML = '';
+}
+
+function liApplyTransform(el) {
+    const rec = liEdits.get(el);
+    const moving = rec.dx || rec.dy;
+    // transform has no effect on inline elements — promote to inline-block so
+    // the move actually happens (Reset restores the original display)
+    if (moving && getComputedStyle(el).display === 'inline') el.style.display = 'inline-block';
+    el.style.transform = moving ? `translate(${rec.dx}px, ${rec.dy}px)` : '';
+}
+
+function liUpdateMoveReadout() {
+    const rec = liState.sel && liEdits.get(liState.sel);
+    const mv = document.getElementById('qa-li-mv');
+    if (mv && rec) mv.textContent = `x ${rec.dx} · y ${rec.dy}`;
+}
+
+function liFillPanel(el) {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    document.getElementById('qa-li-tag').textContent = el.tagName.toLowerCase();
+    document.getElementById('qa-li-dim').textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
+    const p = document.getElementById('qa-li-panel');
+    ['Top', 'Right', 'Bottom', 'Left'].forEach(side => {
+        p.querySelector(`input[data-pad="${side}"]`).value = Math.round(parseFloat(cs['padding' + side]) || 0);
+        p.querySelector(`input[data-mar="${side}"]`).value = Math.round(parseFloat(cs['margin' + side]) || 0);
+    });
+    p.querySelector('#qa-li-color').value = liRgbToHex(cs.color);
+    p.querySelector('#qa-li-bg').value = liRgbToHex(cs.backgroundColor);
+    liUpdateMoveReadout();
+}
+
+function liResetSel() {
+    if (!liEdits.size) { liToast('Nothing to reset'); return; }
+    liRestoreAllEdits();                 // revert every element the tool changed
+    if (liState.sel) { liEnsureEdit(liState.sel); liFillPanel(liState.sel); } // re-baseline current
+    liRenderEdit();
+    liToast('Reset all');
+}
+
+function liRestoreAllEdits() {
+    for (const [el, rec] of liEdits) liRestoreEl(el, rec);
+    liEdits.clear();
+}
+
+function liCopyCss() {
+    if (!liState.sel) return;
+    const el = liState.sel, rec = liEdits.get(el), p = document.getElementById('qa-li-panel');
+    const parts = [];
+    if (rec.dx || rec.dy) parts.push(`transform: translate(${rec.dx}px, ${rec.dy}px);`);
+    const pad = ['Top', 'Right', 'Bottom', 'Left'].map(s => Math.round(parseFloat(p.querySelector(`input[data-pad="${s}"]`).value) || 0));
+    const mar = ['Top', 'Right', 'Bottom', 'Left'].map(s => Math.round(parseFloat(p.querySelector(`input[data-mar="${s}"]`).value) || 0));
+    if (rec.padTouched) parts.push(`padding: ${pad[0]}px ${pad[1]}px ${pad[2]}px ${pad[3]}px;`);
+    if (rec.marTouched) parts.push(`margin: ${mar[0]}px ${mar[1]}px ${mar[2]}px ${mar[3]}px;`);
+    if (rec.colorSet) parts.push(`color: ${p.querySelector('#qa-li-color').value};`);
+    if (rec.bgSet) parts.push(`background-color: ${p.querySelector('#qa-li-bg').value};`);
+    if (!parts.length) { liToast('No changes to copy'); return; }
+    const css = parts.join('\n');
+    navigator.clipboard.writeText(css).then(() => liToast('CSS copied')).catch(() => liToast('Copy failed'));
+}
+
+function liRgbToHex(rgb) {
+    const m = String(rgb).match(/\d+/g);
+    if (!m || m.length < 3) return '#000000';
+    return '#' + m.slice(0, 3).map(n => (+n).toString(16).padStart(2, '0')).join('');
+}
+
+function liToast(msg) {
+    const t = document.createElement('div');
+    t.textContent = msg;
+    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1e1b2e;color:#fff;padding:9px 16px;border-radius:8px;font:13px -apple-system,Segoe UI,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);';
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 1500);
+}
+
+// Draw the selected element (and the hovered target) in Tweak mode.
+function liRenderEdit() {
+    const layer = document.getElementById('qa-li-layer');
+    if (!layer) return;
+    layer.innerHTML = '';
+    if (liState.hoverEl && liState.hoverEl !== liState.sel) {
+        layer.appendChild(liBox(liState.hoverEl.getBoundingClientRect(), 'outline:1px dashed rgba(124,58,237,.6);'));
+    }
+    if (liState.sel) {
+        const r = liState.sel.getBoundingClientRect();
+        layer.appendChild(liBox(r, 'outline:2px solid #a78bfa;background:rgba(124,58,237,.10);'));
+        const ly = r.top > 22 ? r.top - 20 : r.bottom + 4;
+        layer.appendChild(liLabel(r.left, ly, `${Math.round(r.width)} × ${Math.round(r.height)}`));
+        // keep the size readout in the panel fresh as padding/margin change it
+        const dim = document.getElementById('qa-li-dim');
+        if (dim) dim.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
+    }
 }
 
