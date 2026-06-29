@@ -5,8 +5,7 @@ const exportConfigTarget = typeof globalThis !== 'undefined' ? globalThis : self
 exportConfigTarget.AI_CONFIG = {
     // Paste the Anthropic API key here
     apiKey: 'PUT-YOUR-KEY-HERE',
-    // Cheap/fast model for high-volume tasks (form fill, locators)
-    model: 'claude-haiku-4-5',
-    // Smarter model for quality-sensitive tasks (test cases, bug reports)
+    // All tools use Sonnet. (smartModel kept as an alias for older references.)
+    model: 'claude-sonnet-4-6',
     smartModel: 'claude-sonnet-4-6'
 };

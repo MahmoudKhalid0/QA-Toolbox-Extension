@@ -1882,7 +1882,7 @@ async function generateFieldValueWithAI(apiKey, field, mode, url) {
             'anthropic-dangerous-direct-browser-access': 'true'
         },
         body: JSON.stringify({
-            model: AI_CONFIG.model,
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
             max_tokens: 1024,
             temperature: 1, // variety across repeated clicks on the same field
             output_config: { format: { type: 'json_schema', schema } },
@@ -2029,7 +2029,7 @@ async function generateProfileWithAI(apiKey, scan, categories, isFollowUp = fals
             'anthropic-dangerous-direct-browser-access': 'true'
         },
         body: JSON.stringify({
-            model: AI_CONFIG.model,
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
             max_tokens: 8192,
             output_config: { format: { type: 'json_schema', schema } },
             messages: [{ role: 'user', content: prompt }]
