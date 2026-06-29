@@ -75,6 +75,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         runSecurityScan();
         sendResponse({ success: true });
     }
+    if (request.action === 'runPerformance') {
+        runPerformance();
+        sendResponse({ success: true });
+    }
     if (request.action === 'settingsChanged') {
         refreshFieldAiIconSetting();
     }
@@ -2577,6 +2581,24 @@ function qaOpenPanel(titleHtml, tool) {
             #qa-result-panel .qa-secrow .nm { font-weight: 600; }
             #qa-result-panel .qa-secrow .ds { color: #94a3b8; font-size: 11px; margin-top: 2px; }
             #qa-result-panel .qa-grp { font-size: 9.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: #64748b; margin: 12px 0 6px; }
+            /* Performance */
+            #qa-result-panel .pf-vitals { display: flex; gap: 8px; margin-bottom: 12px; }
+            #qa-result-panel .pf-vital { flex: 1; background: rgba(255,255,255,0.05); border-radius: 10px; padding: 9px 4px; text-align: center; border-top: 3px solid #64748b; }
+            #qa-result-panel .pf-vital.pf-good { border-top-color: #10b981; } #qa-result-panel .pf-vital.pf-mid { border-top-color: #f59e0b; } #qa-result-panel .pf-vital.pf-bad { border-top-color: #ef4444; }
+            #qa-result-panel .pf-vn { font-size: 15px; font-weight: 800; }
+            #qa-result-panel .pf-good .pf-vn { color: #6ee7b7; } #qa-result-panel .pf-mid .pf-vn { color: #fcd34d; } #qa-result-panel .pf-bad .pf-vn { color: #f87171; }
+            #qa-result-panel .pf-vl { font-size: 9.5px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; margin-top: 2px; }
+            #qa-result-panel .pf-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 11px; }
+            #qa-result-panel .pf-bar-l { width: 92px; color: #cbd5e1; flex-shrink: 0; }
+            #qa-result-panel .pf-bar-track { flex: 1; height: 8px; background: rgba(255,255,255,0.06); border-radius: 5px; overflow: hidden; }
+            #qa-result-panel .pf-bar { height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6); border-radius: 5px; }
+            #qa-result-panel .pf-bar-v { width: 52px; text-align: right; color: #94a3b8; flex-shrink: 0; font-family: Consolas, monospace; }
+            #qa-result-panel .pf-res { display: flex; justify-content: space-between; font-size: 11.5px; color: #cbd5e1; padding: 4px 2px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+            #qa-result-panel .pf-slow { background: rgba(255,255,255,0.03); border-radius: 7px; padding: 6px 8px; margin-bottom: 4px; }
+            #qa-result-panel .pf-slow-top { display: flex; gap: 8px; font-size: 10.5px; }
+            #qa-result-panel .pf-slow-dur { color: #fca5a5; font-weight: 700; font-family: Consolas, monospace; }
+            #qa-result-panel .pf-slow-type { color: #a5b4fc; } #qa-result-panel .pf-slow-sz { color: #94a3b8; margin-left: auto; }
+            #qa-result-panel .pf-slow-url { font-size: 10px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; direction: ltr; }
         </style>
         <div class="qa-head">
             <span class="qa-title">${titleHtml}</span>
@@ -2869,6 +2891,128 @@ function secRenderPanel(body, ai, data) {
     if (!data.cookies.total) html += secrow('pass', 'No cookies', 'This page set no cookies');
     else (data.cookies.details || []).forEach(c => html += secrow(c.risky ? 'fail' : 'pass', c.name, `HttpOnly:${c.httpOnly ? '✓' : '✗'} Secure:${c.secure ? '✓' : '✗'} SameSite:${c.sameSite}${c.risks && c.risks.length ? ' — ' + c.risks.join(' · ') : ''}`));
     body.innerHTML = html;
+}
+
+// ---- Performance Monitor (collected in the page; AI explains the result) ----
+function perfRate(metric, val) {
+    const T = { lcp: [2500, 4000], fcp: [1800, 3000], ttfb: [800, 1800], load: [3000, 6000], dcl: [2000, 4000] };
+    const t = T[metric]; if (!t || !val) return 'na';
+    return val <= t[0] ? 'good' : val <= t[1] ? 'mid' : 'bad';
+}
+function perfMs(v) { return v ? (v >= 1000 ? (v / 1000).toFixed(2) + 's' : Math.round(v) + 'ms') : '—'; }
+function perfKb(b) { return b >= 1048576 ? (b / 1048576).toFixed(2) + ' MB' : Math.round(b / 1024) + ' KB'; }
+
+async function collectPerf() {
+    const nav = performance.getEntriesByType('navigation')[0] || {};
+    const paint = performance.getEntriesByType('paint') || [];
+    const fcp = (paint.find(p => p.name === 'first-contentful-paint') || {}).startTime || 0;
+    const lcp = await new Promise(res => {
+        let v = 0;
+        try {
+            const po = new PerformanceObserver(list => { const e = list.getEntries(); if (e.length) v = e[e.length - 1].startTime; });
+            po.observe({ type: 'largest-contentful-paint', buffered: true });
+            setTimeout(() => { try { po.disconnect(); } catch (e) { } res(v); }, 300);
+        } catch (e) { res(0); }
+    });
+    const d = (a, b) => Math.max(0, (nav[a] || 0) - (nav[b] || 0));
+    const resAll = performance.getEntriesByType('resource') || [];
+    const byType = {}; let totalSize = 0;
+    resAll.forEach(r => {
+        const t = r.initiatorType || 'other';
+        const size = r.transferSize || r.encodedBodySize || 0;
+        byType[t] = byType[t] || { count: 0, size: 0 };
+        byType[t].count++; byType[t].size += size; totalSize += size;
+    });
+    const slowest = resAll.map(r => ({ name: r.name, type: r.initiatorType || 'other', dur: Math.round(r.duration || 0), size: r.transferSize || r.encodedBodySize || 0 }))
+        .sort((a, b) => b.dur - a.dur).slice(0, 8);
+    return {
+        ttfb: nav.responseStart || 0,
+        fcp, lcp,
+        domInteractive: nav.domInteractive || 0,
+        dcl: nav.domContentLoadedEventEnd || 0,
+        load: nav.loadEventEnd || 0,
+        phases: { dns: d('domainLookupEnd', 'domainLookupStart'), tcp: d('connectEnd', 'connectStart'), request: d('responseStart', 'requestStart'), response: d('responseEnd', 'responseStart'), dom: d('domComplete', 'responseEnd') },
+        resourceCount: resAll.length,
+        totalSize,
+        byType,
+        slowest,
+        memory: performance.memory ? { used: performance.memory.usedJSHeapSize, limit: performance.memory.jsHeapSizeLimit } : null
+    };
+}
+
+let perfLast = null;
+async function runPerformance() {
+    const body = qaOpenPanel('&#9889; Performance', 'perf');
+    try {
+        const m = await collectPerf();
+        if (qaAborted()) return;
+        perfLast = m;
+        perfRender(body, m);
+    } finally {
+        if (!qaAborted()) { qaToolDone('perf'); qaActiveTool = null; }
+    }
+}
+
+function perfRender(body, m) {
+    const vital = (label, key, val) => {
+        const r = perfRate(key, val);
+        return `<div class="pf-vital pf-${r}"><div class="pf-vn">${perfMs(val)}</div><div class="pf-vl">${label}</div></div>`;
+    };
+    let html = `<div class="pf-vitals">
+        ${vital('LCP', 'lcp', m.lcp)}
+        ${vital('FCP', 'fcp', m.fcp)}
+        ${vital('TTFB', 'ttfb', m.ttfb)}
+        ${vital('Load', 'load', m.load)}
+    </div>`;
+    html += `<button class="qa-btn" id="pf-explain"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Optimize</button>`;
+
+    // Navigation phases as bars
+    const phases = m.phases; const maxP = Math.max(1, ...Object.values(phases));
+    html += `<div class="qa-grp">Load phases</div>`;
+    const labels = { dns: 'DNS', tcp: 'TCP', request: 'Request (TTFB)', response: 'Download', dom: 'DOM build' };
+    html += Object.keys(labels).map(k => `<div class="pf-bar-row">
+        <div class="pf-bar-l">${labels[k]}</div>
+        <div class="pf-bar-track"><div class="pf-bar" style="width:${Math.round((phases[k] / maxP) * 100)}%"></div></div>
+        <div class="pf-bar-v">${perfMs(phases[k])}</div>
+    </div>`).join('');
+
+    // Resources summary
+    html += `<div class="qa-grp">Resources (${m.resourceCount} · ${perfKb(m.totalSize)})</div>`;
+    html += Object.entries(m.byType).sort((a, b) => b[1].size - a[1].size).map(([t, v]) =>
+        `<div class="pf-res"><span>${qaEsc(t)}</span><span>${v.count} · ${perfKb(v.size)}</span></div>`).join('');
+
+    // Slowest
+    if (m.slowest.length) {
+        html += `<div class="qa-grp">Slowest resources</div>`;
+        html += m.slowest.filter(s => s.dur > 0).map(s => `<div class="pf-slow">
+            <div class="pf-slow-top"><span class="pf-slow-dur">${perfMs(s.dur)}</span> <span class="pf-slow-type">${qaEsc(s.type)}</span> <span class="pf-slow-sz">${perfKb(s.size)}</span></div>
+            <div class="pf-slow-url">${qaEsc(s.name)}</div>
+        </div>`).join('');
+    }
+
+    if (m.memory) html += `<div class="qa-grp">JS memory</div><div class="pf-res"><span>Used heap</span><span>${perfKb(m.memory.used)} / ${perfKb(m.memory.limit)}</span></div>`;
+
+    body.innerHTML = html;
+
+    const ex = body.querySelector('#pf-explain');
+    if (ex) ex.addEventListener('click', () => {
+        ex.disabled = true; ex.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing with AI…';
+        chrome.runtime.sendMessage({ action: 'aiExplainPerformance', metrics: perfLast, url: location.href }, (resp) => {
+            if (chrome.runtime.lastError || !resp || resp.error) {
+                ex.disabled = false; ex.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Explain & Optimize';
+                alert((resp && resp.error === 'no_api_key') ? 'AI key not configured in the extension settings.' : 'AI failed: ' + ((resp && resp.error) || 'error'));
+                return;
+            }
+            const findings = resp.findings || [];
+            let h = `<button class="qa-btn" id="pf-back" style="background:rgba(255,255,255,0.12);"><i class="fas fa-arrow-left"></i> Back to metrics</button>`;
+            h += findings.length ? findings.map(f => `<div class="qa-find">
+                <h5>${qaEsc(f.title)} <span class="sev ${qaEsc(f.severity)}">${qaEsc(f.severity)}</span></h5>
+                <p>${qaEsc(f.cause)}</p><p class="fix"><i class="fas fa-lightbulb"></i> ${qaEsc(f.fix)}</p></div>`).join('')
+                : '<div class="qa-empty">The AI found nothing actionable — performance looks good. ✅</div>';
+            body.innerHTML = h;
+            body.querySelector('#pf-back').addEventListener('click', () => perfRender(body, perfLast));
+        });
+    });
 }
 
 // ==================== Image Text Extractor (OCR) ====================

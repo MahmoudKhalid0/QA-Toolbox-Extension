@@ -984,6 +984,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // AI: explain performance metrics and suggest optimizations
+    if (request.action === 'aiExplainPerformance') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
+                const result = await explainPerformanceWithAI(AI_CONFIG.apiKey, request.metrics, request.url);
+                sendResponse({ findings: result.findings });
+            } catch (err) {
+                console.error('aiExplainPerformance error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Selection tools: translate the selected text (smart model)
     if (request.action === 'aiTranslateText') {
         (async () => {
@@ -1401,6 +1416,67 @@ async function explainLinksWithAI(apiKey, broken, url) {
         '',
         `Page URL: ${url || ''}`,
         `Broken links: ${JSON.stringify(items)}`
+    ].join('\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
+            max_tokens: 4096,
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content: prompt }]
+        })
+    });
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
+        throw new Error(message);
+    }
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
+    const block = (data.content || []).find(b => b.type === 'text');
+    if (!block || !block.text) throw new Error('Empty AI response');
+    return JSON.parse(block.text);
+}
+
+// AI: analyse page performance metrics and suggest concrete optimizations.
+async function explainPerformanceWithAI(apiKey, metrics, url) {
+    const schema = {
+        type: 'object',
+        properties: {
+            findings: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        title: { type: 'string', description: 'short title of the performance issue' },
+                        severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+                        cause: { type: 'string', description: 'what is slow and why, in plain language' },
+                        fix: { type: 'string', description: 'concrete optimization (e.g. compress images, defer JS, enable caching/CDN)' }
+                    },
+                    required: ['title', 'severity', 'cause', 'fix'],
+                    additionalProperties: false
+                }
+            }
+        },
+        required: ['findings'],
+        additionalProperties: false
+    };
+
+    const prompt = [
+        'You are a senior web performance engineer. Below are real performance metrics captured from a web page (times in ms, sizes in bytes).',
+        'Identify the biggest performance problems and explain each: a title, severity, what is slow and the likely cause, and a concrete fix.',
+        'Use the Core Web Vitals thresholds: LCP good<2500 poor>4000; FCP good<1800 poor>3000; TTFB good<800 poor>1800. Consider large/slow resources, heavy resource types, big total transfer, slow TTFB (server), and long DOM build.',
+        'Base everything on the data only. Do not invent metrics. If performance is already good, return few/no findings. Write in English.',
+        '',
+        `Page URL: ${url || ''}`,
+        `Metrics: ${JSON.stringify(metrics)}`
     ].join('\n');
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
