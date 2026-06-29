@@ -3129,8 +3129,11 @@ function doClearData() {
         const cfg = Object.assign({}, CLEAR_DEFAULT, res && res.qaClearData ? res.qaClearData : {});
         cfg.types = Object.assign({}, CLEAR_DEFAULT.types, cfg.types || {});
         const scope = cfg.activeTab ? 'site' : 'all';
-        const types = Object.keys(cfg.types).filter(k => cfg.types[k]);
-        if (!types.length) { showFabAiStatus('error', 'No data types selected — open Settings'); return; }
+        let types = Object.keys(cfg.types).filter(k => cfg.types[k]);
+        // "Active tab only" must touch ONLY this site: global types (cache,
+        // downloads, history…) can't be limited to one origin, so skip them here.
+        if (scope === 'site') types = types.filter(k => CLEAR_ORIGIN_SCOPED.includes(k));
+        if (!types.length) { showFabAiStatus('error', scope === 'site' ? 'In "active tab only" pick site data (cookies/storage), or turn it off' : 'No data types selected — open Settings'); return; }
         let host = ''; try { host = new URL(location.href).host; } catch (e) { }
         const target = scope === 'site' ? (host || 'this site') : 'ALL sites';
 

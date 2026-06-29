@@ -138,15 +138,21 @@ async function initClearData() {
     document.getElementById('clrConfirm').checked = !!cfg.confirm;
     document.getElementById('clrSpan').value = String(cfg.span || 0);
 
+    // Types that can't be scoped to one site (only cleared in "all sites" mode)
+    const GLOBAL_TYPES = ['cache', 'downloads', 'formData', 'history', 'passwords'];
     const typesEl = document.getElementById('clrTypes');
     const renderTypes = () => {
-        typesEl.innerHTML = CLR_TYPES.map(([k, label]) =>
-            `<label class="clr-chk"><input type="checkbox" data-type="${k}" ${cfg.types[k] ? 'checked' : ''}><span>${label}</span></label>`
-        ).join('');
+        const siteMode = document.getElementById('clrActiveTab').checked;
+        typesEl.innerHTML = CLR_TYPES.map(([k, label]) => {
+            const dim = siteMode && GLOBAL_TYPES.includes(k);
+            return `<label class="clr-chk ${dim ? 'dim' : ''}"${dim ? ' title="Global data — only cleared in \'all sites\' mode"' : ''}>
+                <input type="checkbox" data-type="${k}" ${cfg.types[k] ? 'checked' : ''} ${dim ? 'disabled' : ''}>
+                <span>${label}${dim ? ' <span style="color:#f59e0b;">&#9888;</span>' : ''}</span></label>`;
+        }).join('');
     };
     renderTypes();
 
-    document.getElementById('clrActiveTab').addEventListener('change', (e) => { cfg.activeTab = e.target.checked; save(); });
+    document.getElementById('clrActiveTab').addEventListener('change', (e) => { cfg.activeTab = e.target.checked; save(); renderTypes(); });
     document.getElementById('clrReload').addEventListener('change', (e) => { cfg.reload = e.target.checked; save(); });
     document.getElementById('clrConfirm').addEventListener('change', (e) => { cfg.confirm = e.target.checked; save(); });
     document.getElementById('clrSpan').addEventListener('change', (e) => { cfg.span = parseInt(e.target.value, 10) || 0; save(); });
