@@ -11,6 +11,7 @@
         "sidePanel",
         "tabs",
         "cookies",
+        "browsingData",
         "identity",
         "identity.email"
     ],

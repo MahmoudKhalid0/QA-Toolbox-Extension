@@ -3017,6 +3017,88 @@ function perfRender(body, m) {
     });
 }
 
+// Custom on-page confirm dialog (replaces the browser's window.confirm).
+// Returns a Promise<boolean>.
+function qaConfirm(message, opts) {
+    opts = opts || {};
+    return new Promise((resolve) => {
+        const old = document.getElementById('qa-confirm'); if (old) old.remove();
+        const o = document.createElement('div');
+        o.id = 'qa-confirm';
+        o.innerHTML = `
+            <style>
+                #qa-confirm { position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: center; justify-content: center;
+                    background: rgba(0,0,0,0.55); direction: ltr; font-family: 'Segoe UI', Arial, sans-serif; animation: qac-fade .15s ease-out; }
+                @keyframes qac-fade { from { opacity: 0; } to { opacity: 1; } }
+                #qa-confirm .qac-box { width: 340px; max-width: 90vw; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                    border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; box-shadow: 0 12px 50px rgba(0,0,0,0.6); padding: 20px; color: #fff; }
+                #qa-confirm .qac-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+                #qa-confirm .qac-msg { font-size: 13px; color: #cbd5e1; line-height: 1.6; }
+                #qa-confirm .qac-btns { display: flex; gap: 10px; margin-top: 18px; }
+                #qa-confirm .qac-btns button { flex: 1; border: none; border-radius: 9px; padding: 10px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+                #qa-confirm .qac-cancel { background: rgba(255,255,255,0.1); color: #e2e8f0; }
+                #qa-confirm .qac-cancel:hover { background: rgba(255,255,255,0.18); }
+                #qa-confirm .qac-ok { color: #1a1a1a; background: linear-gradient(135deg, ${opts.danger ? '#fbbf24, #f59e0b' : '#a78bfa, #8b5cf6'}); }
+                #qa-confirm .qac-ok:hover { filter: brightness(1.08); }
+            </style>
+            <div class="qac-box">
+                <div class="qac-title">${opts.danger ? '&#9888;&#65039; ' : ''}${qaEsc(opts.title || 'Are you sure?')}</div>
+                <div class="qac-msg">${qaEsc(message)}</div>
+                <div class="qac-btns">
+                    <button class="qac-cancel">${qaEsc(opts.cancelText || 'Cancel')}</button>
+                    <button class="qac-ok">${qaEsc(opts.confirmText || 'Confirm')}</button>
+                </div>
+            </div>`;
+        document.body.appendChild(o);
+        const done = (v) => { o.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+        const onKey = (e) => { if (e.key === 'Escape') done(false); else if (e.key === 'Enter') done(true); };
+        document.addEventListener('keydown', onKey, true);
+        o.querySelector('.qac-cancel').addEventListener('click', () => done(false));
+        o.querySelector('.qac-ok').addEventListener('click', () => done(true));
+        o.addEventListener('click', (e) => { if (e.target === o) done(false); });
+        o.querySelector('.qac-ok').focus();
+    });
+}
+
+// ---- Clear browsing data: runs from the floating button using the options
+// saved in Settings (no per-click panel). ----
+const CLEAR_DEFAULT = {
+    activeTab: true, span: 0, reload: true, confirm: false,
+    types: { cache: true, cacheStorage: true, cookies: true, localStorage: true, indexedDB: true, serviceWorkers: true, fileSystems: false, webSQL: false, downloads: false, formData: false, history: false, passwords: false }
+};
+const CLEAR_ORIGIN_SCOPED = ['cookies', 'localStorage', 'indexedDB', 'cacheStorage', 'serviceWorkers', 'fileSystems', 'webSQL'];
+
+function doClearData() {
+    chrome.storage.local.get('qaClearData', (res) => {
+        const cfg = Object.assign({}, CLEAR_DEFAULT, res && res.qaClearData ? res.qaClearData : {});
+        cfg.types = Object.assign({}, CLEAR_DEFAULT.types, cfg.types || {});
+        const scope = cfg.activeTab ? 'site' : 'all';
+        const types = Object.keys(cfg.types).filter(k => cfg.types[k]);
+        if (!types.length) { showFabAiStatus('error', 'No data types selected — open Settings'); return; }
+        let host = ''; try { host = new URL(location.href).host; } catch (e) { }
+        const target = scope === 'site' ? (host || 'this site') : 'ALL sites';
+
+        const run = () => {
+            showFabAiStatus('loading', 'Clearing data…');
+            const since = cfg.span ? Date.now() - cfg.span : 0;
+            chrome.runtime.sendMessage({ action: 'clearBrowsingData', dataTypes: types, since, scope, origin: location.origin, autoReload: cfg.reload }, (resp) => {
+                if (chrome.runtime.lastError || !resp || !resp.success) {
+                    showFabAiStatus('error', 'Clear failed: ' + ((resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'error'));
+                } else {
+                    showFabAiStatus('success', 'Data cleared' + (cfg.reload ? ' — reloading…' : ''));
+                }
+            });
+        };
+
+        if (cfg.confirm) {
+            qaConfirm(`This will clear ${types.length} data type(s) for ${target}. This can't be undone.`,
+                { title: 'Clear browsing data?', confirmText: 'Clear now', danger: true }).then(ok => { if (ok) run(); });
+        } else {
+            run();
+        }
+    });
+}
+
 // ==================== Image Text Extractor (OCR) ====================
 // Pick an image; the AI (smart model, vision) reads its text. Images only -
 // if a non-image element is picked, ask the user to pick an image.
@@ -3707,6 +3789,13 @@ function createFloatingButton() {
                 return;
             }
 
+            // Clear browsing data — runs using the options saved in Settings
+            if (e.target.closest('#ff-menu-cleardata')) {
+                menu.style.display = 'none';
+                doClearData();
+                return;
+            }
+
             // Standalone "AI Fill" option - scan + AI-fill the current page
             const aiItem = e.target.closest('#ff-menu-ai-fill');
             if (aiItem) {
@@ -3763,6 +3852,10 @@ function createFloatingButton() {
             <div class="ff-menu-item ff-action" id="ff-menu-incognito" title="Open this page in a private window (clean session)">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="#94a3b8" style="flex-shrink:0;" aria-hidden="true"><path d="M2 11l1.5-5A2 2 0 0 1 5.4 4.6h13.2a2 2 0 0 1 1.9 1.4L22 11v1H2v-1zm6 2.5A2.5 2.5 0 1 0 8 18a2.5 2.5 0 0 0 0-4.5zm8 0a2.5 2.5 0 1 0 0 4.5 2.5 2.5 0 0 0 0-4.5z"/></svg>
                 <span style="font-weight:600;">Open in Incognito</span>
+            </div>
+            <div class="ff-menu-item ff-action" id="ff-menu-cleardata" title="Clear cache, cookies & storage for this site or all sites">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#f59e0b" style="flex-shrink:0;" aria-hidden="true"><path d="M9 3v1H4v2h16V4h-5V3H9zM6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13H6zm4 3h1v8h-1v-8zm3 0h1v8h-1v-8z"/></svg>
+                <span style="font-weight:600;">Clear browsing data</span>
             </div>
         `;
         menuHtml += `<div class="ff-menu-divider"></div>`;

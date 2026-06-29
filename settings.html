@@ -259,6 +259,33 @@
             transform: translateY(0);
             opacity: 1;
         }
+
+        /* Clear-data data types */
+        .clr-types {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px 14px;
+        }
+        .clr-chk {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.02);
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 14px;
+        }
+        .clr-chk input {
+            width: 16px;
+            height: 16px;
+            accent-color: #10b981;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .clr-chk.dim { opacity: 0.45; cursor: not-allowed; }
+        .clr-sel { color: #667eea; cursor: pointer; text-decoration: none; font-weight: 600; }
+        .clr-sel:hover { text-decoration: underline; }
     </style>
 </head>
 
@@ -322,6 +349,69 @@
                     <option value="always">Always save automatically</option>
                     <option value="never">Never save (fill only)</option>
                 </select>
+            </div>
+        </div>
+
+        <div class="settings-card">
+            <h3 class="section-title"><i class="fas fa-trash-can"></i> Clear Browsing Data</h3>
+            <p style="font-size: 12px; color: #888; margin-bottom: 16px;">Configure what the floating button's
+                "Clear browsing data" removes. It runs instantly with these options.</p>
+
+            <div class="setting-item">
+                <div class="setting-info">
+                    <h4>Active tab only</h4>
+                    <p>Clear data only for the current site (off = all sites)</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="clrActiveTab">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="setting-item">
+                <div class="setting-info">
+                    <h4>Time range</h4>
+                    <p>How far back to clear</p>
+                </div>
+                <select id="clrSpan" class="select-setting">
+                    <option value="900000">Last 15 minutes</option>
+                    <option value="3600000">Last hour</option>
+                    <option value="86400000">Last 24 hours</option>
+                    <option value="604800000">Last 7 days</option>
+                    <option value="2419200000">Last 4 weeks</option>
+                    <option value="0">Everything</option>
+                </select>
+            </div>
+
+            <h4 style="font-size: 13px; margin: 18px 0 10px; color: #cbd5e1;">Data to remove</h4>
+            <div class="clr-types" id="clrTypes"></div>
+            <div style="font-size: 12px; color: #888; margin-top: 12px;">Select:
+                <a class="clr-sel" data-sel="all">All</a> &middot;
+                <a class="clr-sel" data-sel="default">Default</a> &middot;
+                <a class="clr-sel" data-sel="none">None</a>
+            </div>
+            <p style="font-size: 11px; color: #f59e0b; margin-top: 8px;">Note: in "Active tab only" mode, site data
+                (Cookies, Local Storage, IndexedDB…) is cleared for the current site only, while global data
+                (Cache, Downloads, History, Passwords) can't be scoped and is cleared for all sites.</p>
+
+            <div class="setting-item" style="margin-top: 16px;">
+                <div class="setting-info">
+                    <h4>Reload after clearing</h4>
+                    <p>Refresh the page once data is cleared</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="clrReload">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="setting-item">
+                <div class="setting-info">
+                    <h4>Confirm before clearing</h4>
+                    <p>Ask for confirmation when you click the button</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="clrConfirm">
+                    <span class="slider"></span>
+                </label>
             </div>
         </div>
 

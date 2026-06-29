@@ -10,6 +10,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('charCounterToggle').addEventListener('change', (e) => updateSetting('charCounter', e.target.checked));
     document.getElementById('selectionAiToggle').addEventListener('change', (e) => updateSetting('selectionAiTools', e.target.checked));
 
+    // Clear Browsing Data settings
+    initClearData();
+
     // AI Save Behavior Handler
     document.getElementById('aiSaveBehaviorSelect').addEventListener('change', async (e) => {
         await chrome.storage.local.set({ aiSaveBehavior: e.target.value });
@@ -109,6 +112,53 @@ async function syncSignOut() {
     await chrome.runtime.sendMessage({ action: 'syncSignOut' }).catch(() => { });
     showToast('Signed out. Your local data stays on this device.');
     refreshSyncUi();
+}
+
+// ---- Clear Browsing Data settings (stored in local as 'qaClearData') ----
+const CLR_TYPES = [
+    ['cache', 'Cache'], ['cacheStorage', 'Cache Storage'], ['cookies', 'Cookies'],
+    ['fileSystems', 'File Systems'], ['indexedDB', 'IndexedDB'], ['localStorage', 'Local Storage'],
+    ['serviceWorkers', 'Service Workers'], ['webSQL', 'WebSQL'],
+    ['downloads', 'Downloads'], ['formData', 'Form Data'], ['history', 'History'], ['passwords', 'Passwords']
+];
+const CLR_DEFAULT = {
+    activeTab: true, span: 0, reload: true, confirm: false,
+    types: { cache: true, cacheStorage: true, cookies: true, localStorage: true, indexedDB: true, serviceWorkers: true, fileSystems: false, webSQL: false, downloads: false, formData: false, history: false, passwords: false }
+};
+
+async function initClearData() {
+    const res = await chrome.storage.local.get('qaClearData');
+    const cfg = Object.assign({}, CLR_DEFAULT, res.qaClearData || {});
+    cfg.types = Object.assign({}, CLR_DEFAULT.types, cfg.types || {});
+
+    const save = () => { chrome.storage.local.set({ qaClearData: cfg }); showToast('Settings saved!'); };
+
+    document.getElementById('clrActiveTab').checked = cfg.activeTab !== false;
+    document.getElementById('clrReload').checked = cfg.reload !== false;
+    document.getElementById('clrConfirm').checked = !!cfg.confirm;
+    document.getElementById('clrSpan').value = String(cfg.span || 0);
+
+    const typesEl = document.getElementById('clrTypes');
+    const renderTypes = () => {
+        typesEl.innerHTML = CLR_TYPES.map(([k, label]) =>
+            `<label class="clr-chk"><input type="checkbox" data-type="${k}" ${cfg.types[k] ? 'checked' : ''}><span>${label}</span></label>`
+        ).join('');
+    };
+    renderTypes();
+
+    document.getElementById('clrActiveTab').addEventListener('change', (e) => { cfg.activeTab = e.target.checked; save(); });
+    document.getElementById('clrReload').addEventListener('change', (e) => { cfg.reload = e.target.checked; save(); });
+    document.getElementById('clrConfirm').addEventListener('change', (e) => { cfg.confirm = e.target.checked; save(); });
+    document.getElementById('clrSpan').addEventListener('change', (e) => { cfg.span = parseInt(e.target.value, 10) || 0; save(); });
+    typesEl.addEventListener('change', (e) => {
+        const cb = e.target.closest('input[data-type]'); if (!cb) return;
+        cfg.types[cb.dataset.type] = cb.checked; save();
+    });
+    document.querySelectorAll('.clr-sel').forEach(a => a.addEventListener('click', () => {
+        const sel = a.dataset.sel;
+        CLR_TYPES.forEach(([k]) => { cfg.types[k] = sel === 'all' ? true : sel === 'none' ? false : CLR_DEFAULT.types[k]; });
+        renderTypes(); save();
+    }));
 }
 
 async function loadSettings() {

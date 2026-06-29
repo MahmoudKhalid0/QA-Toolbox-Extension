@@ -970,6 +970,42 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // Clear browsing data (cache/cookies/storage/...) for this site or all sites
+    if (request.action === 'clearBrowsingData') {
+        (async () => {
+            try {
+                const dataTypes = request.dataTypes || [];
+                const since = request.since || 0;
+                const scope = request.scope || 'site';
+                const origin = request.origin;
+                const tabId = sender.tab ? sender.tab.id : request.tabId;
+                const ORIGIN_SCOPED = ['cookies', 'localStorage', 'indexedDB', 'cacheStorage', 'serviceWorkers', 'fileSystems', 'webSQL'];
+                const want = {}; dataTypes.forEach(t => { want[t] = true; });
+                const skipped = [];
+
+                if (scope === 'site' && origin) {
+                    const scoped = {}, global = {};
+                    dataTypes.forEach(t => { (ORIGIN_SCOPED.includes(t) ? scoped : global)[t] = true; });
+                    // Origin-scoped types -> only this site
+                    if (Object.keys(scoped).length) await chrome.browsingData.remove({ since, origins: [origin] }, scoped);
+                    // Global types (cache, history, downloads...) can't be scoped -> cleared everywhere
+                    if (Object.keys(global).length) await chrome.browsingData.remove({ since }, global);
+                } else {
+                    await chrome.browsingData.remove({ since }, want);
+                }
+
+                if (request.autoReload && tabId != null) {
+                    try { chrome.tabs.reload(tabId, { bypassCache: true }); } catch (e) { }
+                }
+                sendResponse({ success: true, skipped });
+            } catch (err) {
+                console.error('clearBrowsingData error:', err);
+                sendResponse({ success: false, error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Link Health: check a list of links for broken/dead URLs
     if (request.action === 'checkLinks') {
         (async () => {
