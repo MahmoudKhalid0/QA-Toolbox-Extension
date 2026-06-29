@@ -1602,6 +1602,26 @@
                     <i class="fas fa-play tool-card-go"></i>
                 </button>
 
+                <button class="tool-card" id="autorefreshToolBtn" title="Auto-reload this tab on a timer">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #f97316, #ef4444);">
+                        <i class="fas fa-arrows-rotate"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>Auto Refresh</h4>
+                        <p>Reload the current tab automatically every N seconds &mdash; per tab, start &amp; stop anytime</p>
+                    </div>
+                    <i class="fas fa-chevron-down tool-card-chevron"></i>
+                </button>
+                <div class="tool-options hidden" id="autorefreshOptions">
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="number" id="arSeconds" min="2" placeholder="30" style="width:70px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#fff; padding:8px; outline:none;">
+                        <span style="font-size:12px; color:#94a3b8;">seconds</span>
+                        <button class="dbg-btn dbg-explain" id="arStartBtn"><i class="fas fa-play"></i> Start on this tab</button>
+                    </div>
+                    <div class="dbg-status" id="arStatusMsg" style="margin-top:6px;"></div>
+                    <div id="arList" style="margin-top:8px;"></div>
+                </div>
+
                 <button class="tool-card" id="storageToolBtn" title="View & edit cookies, local & session storage">
                     <div class="tool-card-icon" style="background: linear-gradient(135deg, #0ea5e9, #38bdf8);">
                         <i class="fas fa-database"></i>

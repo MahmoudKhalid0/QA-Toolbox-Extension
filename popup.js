@@ -350,7 +350,8 @@ document.getElementById('addBtn').addEventListener('click', () => {
 
 // Tools tab accordion: opening one expandable tool collapses the others
 const TOOL_SECTIONS = [
-    { card: 'inspectorToolBtn', panel: 'inspectorOptions' }
+    { card: 'inspectorToolBtn', panel: 'inspectorOptions' },
+    { card: 'autorefreshToolBtn', panel: 'autorefreshOptions' }
 ];
 function toggleToolSection(cardId, panelId) {
     const willOpen = document.getElementById(panelId).classList.contains('hidden');
@@ -388,6 +389,58 @@ chrome.runtime.onMessage.addListener((request) => {
 document.getElementById('inspectorToolBtn').addEventListener('click', () => {
     toggleToolSection('inspectorToolBtn', 'inspectorOptions');
 });
+
+// ── Auto Refresh card ──
+(function setupAutoRefresh() {
+    const card = document.getElementById('autorefreshToolBtn');
+    if (!card) return;
+    const secInput = document.getElementById('arSeconds');
+    const startBtn = document.getElementById('arStartBtn');
+    const msg = document.getElementById('arStatusMsg');
+    const listEl = document.getElementById('arList');
+
+    const hostOf = (u) => { try { return new URL(u).host || u; } catch (e) { return u || ''; } };
+    function renderList() {
+        chrome.runtime.sendMessage({ action: 'arList' }, (r) => {
+            const items = (r && r.items) || [];
+            if (!items.length) { listEl.innerHTML = '<div style="font-size:11.5px;color:#64748b;padding:4px 2px;">No tabs are auto-refreshing.</div>'; return; }
+            listEl.innerHTML = '<div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin:4px 2px;">Active</div>'
+                + items.map(it => `<div class="ar-item" style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,0.04);border-radius:8px;padding:7px 10px;margin-bottom:4px;font-size:12px;">
+                    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(it.url || '')}">${escapeHtml(hostOf(it.url))}</span>
+                    <span style="color:#fbbf24;flex-shrink:0;">${it.seconds}s</span>
+                    <button class="dbg-btn" data-arstop="${it.tabId}" style="padding:3px 8px;">Stop</button>
+                </div>`).join('');
+        });
+    }
+
+    const isOpen = () => { const p = document.getElementById('autorefreshOptions'); return p && !p.classList.contains('hidden'); };
+    async function refreshUI() {
+        const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (msg.style.color !== 'rgb(248, 113, 113)') { // don't clobber an error message
+            msg.style.color = '#94a3b8';
+            msg.textContent = t && t.url ? 'This tab: ' + hostOf(t.url) : '';
+        }
+        renderList();
+    }
+
+    card.addEventListener('click', () => { toggleToolSection('autorefreshToolBtn', 'autorefreshOptions'); if (isOpen()) refreshUI(); });
+    startBtn.addEventListener('click', async () => {
+        const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!t || t.id == null) return;
+        const s = Math.max(2, parseInt(secInput.value, 10) || 0);
+        if (!s) { msg.style.color = '#f87171'; msg.textContent = 'Enter seconds (min 2)'; return; }
+        secInput.value = s;
+        chrome.runtime.sendMessage({ action: 'arSet', tabId: t.id, seconds: s }, () => refreshUI());
+    });
+    listEl.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-arstop]'); if (!b) return;
+        chrome.runtime.sendMessage({ action: 'arStop', tabId: +b.dataset.arstop }, () => renderList());
+    });
+    // Keep "This tab" + the list live while the card is open (tab switches,
+    // or stopping from the on-page badge)
+    chrome.tabs.onActivated.addListener(() => { if (isOpen()) refreshUI(); });
+    setInterval(() => { if (isOpen()) refreshUI(); }, 2000);
+})();
 
 // ── Cookies & Storage card → opens the viewer/editor panel on the page ──
 document.getElementById('storageToolBtn').addEventListener('click', async () => {

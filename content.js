@@ -87,6 +87,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         openStoragePanel();
         sendResponse({ success: true });
     }
+    if (request.action === 'arStart') { arArm(request.seconds); sendResponse({ success: true }); }
+    if (request.action === 'arStop') { arArm(0); sendResponse({ success: true }); }
     if (request.action === 'settingsChanged') {
         refreshFieldAiIconSetting();
     }
@@ -107,6 +109,52 @@ window.addEventListener('message', (e) => {
     if (e.data.__qaConsole) chrome.runtime.sendMessage({ action: 'consoleBatch', batch: e.data.batch }).catch(() => { });
     else if (e.data.__qaNetwork) chrome.runtime.sendMessage({ action: 'networkBatch', batch: e.data.batch }).catch(() => { });
 }, false);
+
+// Auto Refresh: re-arm the reload timer on every page load using the interval
+// saved for this tab in the background. The countdown shows in the TAB TITLE
+// (stopping is done from the extension side panel).
+// Auto-refresh indicator = a SMOOTHLY pulsing orange dot as the tab's favicon
+// (replaces the site icon while active) + a countdown in the title. The favicon
+// is redrawn ~11x/sec for a smooth pulse; the countdown updates each second.
+let arCountdown = null, arSavedIcons = null;
+const AR_TITLE_RE = /^↻ \d+s · /;
+function arTitle(left) { document.title = `↻ ${left}s · ${document.title.replace(AR_TITLE_RE, '')}`; }
+function arArm(seconds) {
+    if (arCountdown) { clearInterval(arCountdown); arCountdown = null; }
+    if (!(seconds > 0)) { arClearIndicator(); return; }
+    let left = seconds;
+    arTitle(left);
+    if (arSavedIcons === null) { // hide the site's own favicons so ours shows
+        arSavedIcons = [...document.querySelectorAll('link[rel~="icon"]:not(#qa-ar-favicon)')];
+        arSavedIcons.forEach(l => { l.rel = 'qa-disabled-icon'; });
+    }
+    arDrawFavicon(); // a clean static dot (the tab strip can't animate smoothly)
+    arCountdown = setInterval(() => {
+        left--;
+        if (left <= 0) { clearInterval(arCountdown); arCountdown = null; try { location.reload(); } catch (e) { } return; }
+        arTitle(left);
+    }, 1000);
+}
+function arDrawFavicon() {
+    let link = document.getElementById('qa-ar-favicon');
+    if (!link) { link = document.createElement('link'); link.id = 'qa-ar-favicon'; link.rel = 'icon'; (document.head || document.documentElement).appendChild(link); }
+    const c = document.createElement('canvas'); c.width = 32; c.height = 32;
+    const ctx = c.getContext('2d');
+    ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(16, 16, 15, 0, Math.PI * 2); ctx.fillStyle = '#f97316'; ctx.fill();
+    ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(16, 16, 10, 0, Math.PI * 2); ctx.fillStyle = '#f97316'; ctx.fill();
+    try { link.href = c.toDataURL('image/png'); } catch (e) { }
+}
+function arClearIndicator() {
+    document.title = document.title.replace(AR_TITLE_RE, '');
+    const link = document.getElementById('qa-ar-favicon'); if (link) link.remove();
+    if (arSavedIcons) { arSavedIcons.forEach(l => { l.rel = 'icon'; }); arSavedIcons = null; }
+}
+try {
+    chrome.runtime.sendMessage({ action: 'arGet' }, (r) => {
+        if (chrome.runtime.lastError) return;
+        if (r && r.seconds) arArm(r.seconds);
+    });
+} catch (e) { }
 
 // Floating Button Support
 let matchingProfiles = [];

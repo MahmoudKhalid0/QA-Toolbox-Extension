@@ -68,6 +68,14 @@ chrome.webNavigation && chrome.webNavigation.onCommitted && chrome.webNavigation
 });
 chrome.tabs.onRemoved.addListener((tabId) => { consoleLogs.delete(tabId); networkReqs.delete(tabId); });
 
+// ===== Auto Refresh: per-tab reload interval (seconds). The page's content
+// script re-arms a timer on each load; the interval is kept here (and in
+// storage) so it survives the reloads. =====
+let autoRefresh = {};
+chrome.storage.local.get('autoRefresh', (r) => { autoRefresh = (r && r.autoRefresh) || {}; });
+function arSaveState() { try { chrome.storage.local.set({ autoRefresh }); } catch (e) { } }
+chrome.tabs.onRemoved.addListener((tabId) => { if (autoRefresh[tabId]) { delete autoRefresh[tabId]; arSaveState(); } });
+
 // Migration: Move profiles from sync/local storage to IndexedDB
 (async () => {
     try {
@@ -968,6 +976,45 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
         });
         return true;
+    }
+
+    // Auto Refresh: content script asks for its tab's interval on each load
+    if (request.action === 'arGet') {
+        const id = sender.tab && sender.tab.id;
+        sendResponse({ seconds: (id != null && autoRefresh[id]) || 0 });
+        return false;
+    }
+    if (request.action === 'arStatus') {
+        sendResponse({ seconds: autoRefresh[request.tabId] || 0 });
+        return false;
+    }
+    if (request.action === 'arList') {
+        const ids = Object.keys(autoRefresh).map(Number);
+        Promise.all(ids.map(id => new Promise(res => {
+            chrome.tabs.get(id, (t) => {
+                if (chrome.runtime.lastError || !t) { delete autoRefresh[id]; res(null); }
+                else res({ tabId: id, seconds: autoRefresh[id], url: t.url, title: t.title });
+            });
+        }))).then(items => { arSaveState(); sendResponse({ items: items.filter(Boolean) }); });
+        return true;
+    }
+    if (request.action === 'arSet') {
+        autoRefresh[request.tabId] = request.seconds; arSaveState();
+        chrome.tabs.sendMessage(request.tabId, { action: 'arStart', seconds: request.seconds }).catch(() => { });
+        sendResponse({ success: true });
+        return false;
+    }
+    if (request.action === 'arStop') {
+        delete autoRefresh[request.tabId]; arSaveState();
+        chrome.tabs.sendMessage(request.tabId, { action: 'arStop' }).catch(() => { });
+        sendResponse({ success: true });
+        return false;
+    }
+    if (request.action === 'arStopSelf') { // from the on-page badge
+        const id = sender.tab && sender.tab.id;
+        if (id != null) { delete autoRefresh[id]; arSaveState(); }
+        sendResponse({ success: true });
+        return false;
     }
 
     // Cookie viewer/editor (chrome.cookies gives httpOnly cookies too)
