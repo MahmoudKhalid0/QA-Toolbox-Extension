@@ -1012,7 +1012,6 @@ let inspectorDragCleanup = null;
 // ============================================================================
 let insRuleSnaps = null;     // CSSStyleDeclaration -> original cssText (for Reset)
 let insDisabled = null;      // CSSStyleDeclaration -> { prop: {value, priority} }
-let insInline = null;        // prop(kebab) -> value  (our inline edits, for Copy CSS)
 
 const INS_IC = (() => {
     const w = (p) => `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -1055,7 +1054,7 @@ function closeInspectorPanel() {
     const old = document.getElementById('ff-insp-panel'); if (old) old.remove();
     inspectedElement = null;
     inspectedOriginalStyle = null;
-    insRuleSnaps = null; insDisabled = null; insInline = null;
+    insRuleSnaps = null; insDisabled = null;
 }
 
 function insToHex(color) {
@@ -1098,7 +1097,10 @@ function insMatchedBlocks(el) {
             } catch (e) { }
         }
     };
-    for (const sheet of document.styleSheets) { try { collect(sheet.cssRules); } catch (e) { } }
+    for (const sheet of document.styleSheets) {
+        if (sheet.ownerNode && sheet.ownerNode.id === 'qa-ins-state') continue; // our own injected rule
+        try { collect(sheet.cssRules); } catch (e) { }
+    }
     blocks.reverse();
     if (el.getAttribute('style') || (insDisabled && insDisabled.has(el.style))) {
         blocks.unshift({ selector: 'element.style', style: el.style });
@@ -1112,7 +1114,6 @@ function showInspectorPanel(el) {
     inspectedOriginalStyle = el.getAttribute('style');
     insRuleSnaps = new Map();
     insDisabled = new Map();
-    insInline = {};
 
     const sel = (() => { try { return generateSelector(el); } catch (e) { return ''; } })();
 
@@ -1122,8 +1123,8 @@ function showInspectorPanel(el) {
     style.textContent = `
 #qa-ins{position:fixed;top:16px;right:16px;width:328px;max-height:88vh;z-index:2147483647;display:flex;flex-direction:column;
   background:#17151f;color:#e5e7eb;border:1px solid #2a2738;border-radius:14px;box-shadow:0 14px 44px rgba(0,0,0,.6);
-  font:12px/1.45 -apple-system,Segoe UI,sans-serif;overflow:hidden;}
-#qa-ins *{box-sizing:border-box;outline:none!important;}
+  font:12px/1.45 -apple-system,Segoe UI,sans-serif;overflow:hidden;direction:ltr;text-align:left;}
+#qa-ins *{box-sizing:border-box;outline:none!important;direction:ltr;text-align:left;}
 #qa-ins .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px;background:#1c1a26;border-bottom:1px solid #2a2738;cursor:move;user-select:none;}
 #qa-ins .hd .tag{background:#2d2a3e;color:#c4b5fd;font-weight:600;font-size:11px;padding:2px 7px;border-radius:5px;word-break:break-all;}
 #qa-ins .hd .dim{color:#9b98ac;font-variant-numeric:tabular-nums;margin-left:6px;font-size:11px;}
@@ -1275,12 +1276,12 @@ function showInspectorPanel(el) {
 
     // ---------- helpers ----------
     const $ = (s) => panel.querySelector(s);
-    // element-state edits use !important so they take effect even over the page's
-    // own rules. Re-render the rules so "element.style" reflects it at once.
+    // Box-model edits also go through the class-wide base rule (so they apply to
+    // every element sharing the selector, like the Quick edit does).
     const setInline = (prop, value) => {
-        el.style.setProperty(prop, value, 'important');
-        insInline[prop] = value;
-        if (typeof renderRules === 'function') renderRules();
+        insStateStyles.element[prop] = value;
+        rebuildStateStyle();
+        renderRules();
     };
     const snapRule = (st) => { if (!insRuleSnaps.has(st)) insRuleSnaps.set(st, st.cssText); };
     // a short, readable selector for copied CSS / state blocks: #id, else tag.class.class
@@ -1304,10 +1305,12 @@ function showInspectorPanel(el) {
     $('#qa-ins-pick').addEventListener('click', () => { closeInspectorPanel(); startInspectMode(); });
 
     // ---------- quick edit (state-aware, searchable) ----------
-    const INS_STATES = ['hover', 'focus', 'active'];     // pseudo-classes we support
-    let insState = 'element';                            // element | hover | focus | active
-    const insStateStyles = { hover: {}, focus: {}, active: {} };    // enabled decls
-    const insStateDisabled = { hover: {}, focus: {}, active: {} };  // toggled-off decls
+    // Edits apply to the element's SELECTOR (class-based), so every element that
+    // shares the class gets the same style — e.g. a button repeated in many cards.
+    const INS_STATES = ['element', 'hover', 'focus', 'active'];   // element = base rule (no pseudo)
+    let insState = 'element';
+    const insStateStyles = { element: {}, hover: {}, focus: {}, active: {} };   // enabled decls
+    const insStateDisabled = { element: {}, hover: {}, focus: {}, active: {} }; // toggled-off decls
     // each state keeps its own list of property rows (independent of the others)
     const insQuickProps = {
         element: ['color', 'background-color', 'font-size', 'opacity', 'border-radius'],
@@ -1315,37 +1318,46 @@ function showInspectorPanel(el) {
     };
     const qrows = $('#qa-ins-qrows');
 
-    // build/refresh the injected rule for :hover / :focus / :active edits.
-    // The class is repeated to raise specificity so it beats the page's own
-    // state rules; !important then beats any equal-specificity declaration.
-    const INS_TARGET_SEL = '.qa-ins-target.qa-ins-target.qa-ins-target';
+    // Raise specificity by repeating the selector's classes (same match set,
+    // higher specificity) so our rule beats the page's own rules; !important
+    // then wins any equal-specificity declaration.
+    const boostSelector = (s) => {
+        const cls = s.match(/\.[\w-]+/g);
+        return cls ? s + cls.join('') + cls.join('') : s;
+    };
+    const stateSuffix = (state) => (state === 'element' ? '' : ':' + state);
+
+    // build/refresh the single injected stylesheet for all quick edits
     const rebuildStateStyle = () => {
         const has = INS_STATES.some(s => Object.keys(insStateStyles[s]).length);
         let styleEl = document.getElementById('qa-ins-state');
-        if (!has) { el.classList.remove('qa-ins-target'); if (styleEl) styleEl.remove(); return; }
-        el.classList.add('qa-ins-target');
+        if (!has) { if (styleEl) styleEl.remove(); return; }
         if (!styleEl) { styleEl = document.createElement('style'); styleEl.id = 'qa-ins-state'; document.head.appendChild(styleEl); }
+        const base = boostSelector(copySelector());
         const block = (state) => {
             const m = insStateStyles[state]; const keys = Object.keys(m);
             if (!keys.length) return '';
-            return `${INS_TARGET_SEL}:${state}{${keys.map(k => `${k}:${m[k]}!important`).join(';')}}`;
+            return `${base}${stateSuffix(state)}{${keys.map(k => `${k}:${m[k]}!important`).join(';')}}`;
         };
         styleEl.textContent = INS_STATES.map(block).join('');
     };
 
     // current value of a property for the active state (for prefilling the input)
     const valueOf = (prop, type) => {
+        const raw = insStateStyles[insState][prop];
+        if (raw != null) {
+            if (type === 'color') return insToHex(raw);
+            if (type === 'px' || type === 'num') { const n = parseFloat(raw); return isNaN(n) ? '' : n; }
+            return raw;
+        }
+        // not edited yet: prefill the base state from the element's computed value
         if (insState === 'element') {
             const cv = getComputedStyle(el).getPropertyValue(prop);
             if (type === 'color') return insToHex(cv);
             if (type === 'px' || type === 'num') { const n = parseFloat(cv); return isNaN(n) ? '' : Math.round(n * 100) / 100; }
             return cv.trim();
         }
-        const raw = insStateStyles[insState][prop];
-        if (raw == null) return type === 'color' ? '#000000' : '';
-        if (type === 'color') return insToHex(raw);
-        if (type === 'px' || type === 'num') { const n = parseFloat(raw); return isNaN(n) ? '' : n; }
-        return raw;
+        return type === 'color' ? '#000000' : '';
     };
 
     // apply a value for prop in the active state ('' clears it)
@@ -1356,16 +1368,10 @@ function showInspectorPanel(el) {
             else if (type === 'num') css = String(parseFloat(rawVal));
             else css = String(rawVal);
         }
-        if (insState === 'element') {
-            if (css === '') { el.style.removeProperty(prop); delete insInline[prop]; }
-            else { el.style.setProperty(prop, css, 'important'); insInline[prop] = css; }
-            renderRules();
-        } else {
-            if (css === '') delete insStateStyles[insState][prop];
-            else insStateStyles[insState][prop] = css;
-            rebuildStateStyle();
-            renderRules();   // show the :hover/:focus/:active code in the rules list
-        }
+        if (css === '') delete insStateStyles[insState][prop];
+        else insStateStyles[insState][prop] = css;
+        rebuildStateStyle();
+        renderRules();   // show the rule in the list
     };
 
     const renderQRows = () => {
@@ -1512,7 +1518,7 @@ function showInspectorPanel(el) {
                 `<div class="decl${d.off ? ' off' : ''}" data-state="${stt}" data-prop="${escapeHtml(d.prop)}">` +
                 `<input type="checkbox" class="dchk-state"${d.off ? '' : ' checked'}>` +
                 `<span class="k">${escapeHtml(d.prop)}</span>: <span class="v">${insColorize(escapeHtml(d.value), el)} !important</span>;</div>`).join('');
-            return `<div class="rule"><span class="rsel">${escapeHtml(copySelector())}:${stt} {</span>${rows}<div class="rsel">}</div></div>`;
+            return `<div class="rule"><span class="rsel">${escapeHtml(copySelector() + stateSuffix(stt))} {</span>${rows}<div class="rsel">}</div></div>`;
         }).join('');
         rulesEl.innerHTML = (stateHtml + html) || '<div class="empty">No matching properties</div>';
         rulesEl.scrollTop = prevScroll;
@@ -1661,8 +1667,8 @@ function showInspectorPanel(el) {
     $('#qa-ins-reset').addEventListener('click', () => {
         if (inspectedOriginalStyle != null) el.setAttribute('style', inspectedOriginalStyle); else el.removeAttribute('style');
         for (const [st, css] of insRuleSnaps) st.cssText = css;
-        insRuleSnaps.clear(); insDisabled.clear(); insInline = {};
-        // clear hover / focus / active edits (enabled + disabled)
+        insRuleSnaps.clear(); insDisabled.clear();
+        // clear all quick edits (element/hover/focus/active, enabled + disabled)
         INS_STATES.forEach(s => { insStateStyles[s] = {}; insStateDisabled[s] = {}; });
         rebuildStateStyle();
         renderQRows();
@@ -1677,7 +1683,7 @@ function showInspectorPanel(el) {
             const keys = Object.keys(map);
             if (keys.length) blocks.push(`${sl}${suffix} {\n${keys.map(k => `  ${k}: ${map[k]}${imp ? ' !important' : ''};`).join('\n')}\n}`);
         };
-        block('', insInline, true);
+        block('', insStateStyles.element, true);
         block(':hover', insStateStyles.hover, true);
         block(':focus', insStateStyles.focus, true);
         block(':active', insStateStyles.active, true);
@@ -2071,7 +2077,7 @@ function toggleSelectionMenu() {
     menu.id = 'ff-sel-menu';
     menu.style.cssText = 'position:fixed;z-index:2147483647;background:rgba(15,15,35,0.97);backdrop-filter:blur(8px);' +
         'border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:5px;box-shadow:0 8px 28px rgba(0,0,0,0.5);' +
-        'font-family:\'Segoe UI\',Arial,sans-serif;min-width:175px;';
+        'font-family:\'Segoe UI\',Arial,sans-serif;min-width:175px;direction:ltr;text-align:left;';
     menu.innerHTML = `
         <div class="ff-sel-opt" data-act="translate" style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:7px;cursor:pointer;color:#e0e0e0;font-size:13px;">
             <i class="fas fa-language" style="color:#38bdf8;"></i> Translate (AR &#8596; EN)
@@ -2384,7 +2390,7 @@ function toggleFieldAiMenu() {
     menu.id = 'ff-ai-field-menu';
     menu.style.cssText = 'position:fixed;z-index:2147483647;background:rgba(15,15,35,0.97);backdrop-filter:blur(8px);' +
         'border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:5px;box-shadow:0 8px 28px rgba(0,0,0,0.5);' +
-        'font-family:\'Segoe UI\',Arial,sans-serif;min-width:160px;';
+        'font-family:\'Segoe UI\',Arial,sans-serif;min-width:160px;direction:ltr;text-align:left;';
     menu.innerHTML = `
         <div class="ff-ai-opt" data-mode="valid" style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:7px;cursor:pointer;color:#e0e0e0;font-size:13px;">
             <i class="fas fa-circle-check" style="color:#4ade80;"></i> Fill with valid data
@@ -5569,7 +5575,7 @@ function liInjectStyles() {
 .qa-li-lbl{position:fixed;pointer-events:none;background:#7c3aed;color:#fff;font:600 11px/1.4 -apple-system,Segoe UI,sans-serif;padding:1px 6px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:2;}
 .qa-li-lbl.gap{background:#f43f5e;}
 .qa-li-line{position:fixed;pointer-events:none;height:0;border-top:1px dashed #f43f5e;z-index:1;}
-#qa-li-bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:4px;background:#17151f;color:#fff;padding:5px 8px;border-radius:11px;box-shadow:0 8px 28px rgba(0,0,0,.5);font:13px/1 -apple-system,Segoe UI,sans-serif;border:1px solid #2a2738;}
+#qa-li-bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:4px;background:#17151f;color:#fff;padding:5px 8px;border-radius:11px;box-shadow:0 8px 28px rgba(0,0,0,.5);font:13px/1 -apple-system,Segoe UI,sans-serif;border:1px solid #2a2738;direction:ltr;}
 #qa-li-bar button{all:unset;box-sizing:border-box!important;cursor:pointer!important;margin:0!important;border:none!important;box-shadow:none!important;text-transform:none!important;letter-spacing:normal!important;padding:7px!important;border-radius:8px!important;color:#b9b6c8;background:transparent;display:inline-flex!important;align-items:center!important;gap:6px!important;font:500 13px/1 -apple-system,Segoe UI,sans-serif!important;}
 #qa-li-bar button svg{width:15px!important;height:15px!important;flex:0 0 auto!important;}
 #qa-li-bar button:hover{background:#262335;color:#fff;}
