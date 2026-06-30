@@ -389,9 +389,12 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
         const inputs = item.querySelectorAll('.field-input');
         const uniqueTextCb = item.querySelector('.unique-text-cb');
         const uniqueNumberCb = item.querySelector('.unique-number-cb');
+        const numberRangeCb = item.querySelector('.number-range-cb');
         const sequentialCb = item.querySelector('.sequential-cb');
         const smartDateCb = item.querySelector('.smart-date-cb');
         const digitsInput = item.querySelector('.digits-input');
+        const rangeMinInput = item.querySelector('.range-min');
+        const rangeMaxInput = item.querySelector('.range-max');
 
         // Smart Date Settings
         const dateDirection = item.querySelector('.date-direction')?.value;
@@ -406,12 +409,15 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
                 type: currentFields[index]?.type || 'text',
                 uniqueText: uniqueTextCb?.checked || false,
                 uniqueNumber: uniqueNumberCb?.checked || false,
+                numberRange: numberRangeCb?.checked || false,
                 sequentialSelect: sequentialCb?.checked || false,
                 isSmartDate: smartDateCb?.checked || false,
                 dateDirection: dateDirection || 'future',
                 dateFormat: dateFormat || 'DD/MM/YYYY',
                 dateSeparator: dateSeparator || '/',
-                digits: parseInt(digitsInput?.value) || 5
+                digits: parseInt(digitsInput?.value) || 5,
+                rangeMin: rangeMinInput && rangeMinInput.value !== '' ? parseInt(rangeMinInput.value) : (currentFields[index]?.rangeMin ?? 1),
+                rangeMax: rangeMaxInput && rangeMaxInput.value !== '' ? parseInt(rangeMaxInput.value) : (currentFields[index]?.rangeMax ?? 100)
             });
         }
     });
@@ -692,6 +698,12 @@ function syncFieldInputs() {
 
             const separator = item.querySelector('.date-separator');
             if (separator) currentFields[idx].dateSeparator = separator.value;
+
+            // Number range bounds (preserve typed-but-not-blurred values across re-render)
+            const rMin = item.querySelector('.range-min');
+            if (rMin && rMin.value !== '') currentFields[idx].rangeMin = parseInt(rMin.value);
+            const rMax = item.querySelector('.range-max');
+            if (rMax && rMax.value !== '') currentFields[idx].rangeMax = parseInt(rMax.value);
         }
     });
 }
@@ -700,7 +712,7 @@ function renderFields() {
     const container = document.getElementById('fieldsContainer');
     container.innerHTML = currentFields.map((field, index) => {
         const actionType = field.actionType || 'fill';
-        const isOptionActive = field.uniqueText || field.uniqueNumber || field.sequentialSelect || field.isSmartDate;
+        const isOptionActive = field.uniqueText || field.uniqueNumber || field.numberRange || field.sequentialSelect || field.isSmartDate;
 
         // Locked if not 'fill' or if options are active
         const isValueDisabled = (actionType !== 'fill' && actionType !== 'wait') || isOptionActive;
@@ -744,6 +756,13 @@ function renderFields() {
                     <input type="checkbox" class="unique-number-cb" ${field.uniqueNumber ? 'checked' : ''}>
                     <i class="fas fa-hashtag"></i> Unique number
                     <input type="number" class="digits-input" value="${field.digits || 5}" min="1" max="50" title="Number of digits (1-50)" ${!field.uniqueNumber ? 'disabled style="opacity:0.3; pointer-events:none;"' : ''}>
+                </label>
+                <label class="field-option ${field.numberRange ? 'active' : ''}">
+                    <input type="checkbox" class="number-range-cb" ${field.numberRange ? 'checked' : ''}>
+                    <i class="fas fa-arrow-down-1-9"></i> Number range
+                    <input type="number" class="range-input range-min" value="${field.rangeMin ?? 1}" title="Minimum value" ${!field.numberRange ? 'disabled style="opacity:0.3; pointer-events:none;"' : ''}>
+                    <span class="range-sep">–</span>
+                    <input type="number" class="range-input range-max" value="${field.rangeMax ?? 100}" title="Maximum value" ${!field.numberRange ? 'disabled style="opacity:0.3; pointer-events:none;"' : ''}>
                 </label>
                 <label class="field-option ${field.sequentialSelect ? 'active' : ''}">
                     <input type="checkbox" class="sequential-cb" ${field.sequentialSelect ? 'checked' : ''}>
@@ -801,6 +820,7 @@ function renderFields() {
             if (type !== 'fill') {
                 currentFields[idx].uniqueText = false;
                 currentFields[idx].uniqueNumber = false;
+                currentFields[idx].numberRange = false;
                 currentFields[idx].sequentialSelect = false;
                 currentFields[idx].isSmartDate = false;
             }
@@ -824,6 +844,7 @@ function renderFields() {
             if (cb.checked) {
                 currentFields[idx].uniqueText = true;
                 currentFields[idx].uniqueNumber = false;
+                currentFields[idx].numberRange = false;
                 currentFields[idx].sequentialSelect = false;
                 currentFields[idx].isSmartDate = false;
                 // Initialize digits if not set
@@ -841,6 +862,7 @@ function renderFields() {
             if (cb.checked) {
                 currentFields[idx].uniqueNumber = true;
                 currentFields[idx].uniqueText = false;
+                currentFields[idx].numberRange = false;
                 currentFields[idx].sequentialSelect = false;
                 currentFields[idx].isSmartDate = false;
             } else {
@@ -848,6 +870,41 @@ function renderFields() {
             }
             renderFields();
         });
+    });
+
+    // Number range checkbox handler
+    container.querySelectorAll('.number-range-cb').forEach((cb, idx) => {
+        cb.addEventListener('change', () => {
+            syncFieldInputs();
+            if (cb.checked) {
+                currentFields[idx].numberRange = true;
+                currentFields[idx].uniqueText = false;
+                currentFields[idx].uniqueNumber = false;
+                currentFields[idx].sequentialSelect = false;
+                currentFields[idx].isSmartDate = false;
+                // Initialize range bounds if not set
+                if (currentFields[idx].rangeMin === undefined) currentFields[idx].rangeMin = 1;
+                if (currentFields[idx].rangeMax === undefined) currentFields[idx].rangeMax = 100;
+            } else {
+                currentFields[idx].numberRange = false;
+            }
+            renderFields();
+        });
+    });
+
+    // Number range min/max input handlers (read field index from the parent item)
+    container.querySelectorAll('.range-min, .range-max').forEach((input) => {
+        input.addEventListener('change', () => {
+            const item = input.closest('.field-item');
+            const idx = item ? parseInt(item.dataset.index) : -1;
+            if (!currentFields[idx]) return;
+            let v = parseInt(input.value);
+            if (isNaN(v)) v = input.classList.contains('range-min') ? 1 : 100;
+            input.value = v;
+            if (input.classList.contains('range-min')) currentFields[idx].rangeMin = v;
+            else currentFields[idx].rangeMax = v;
+        });
+        input.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
     });
 
     // Sequential checkbox handler
@@ -858,6 +915,7 @@ function renderFields() {
                 currentFields[idx].sequentialSelect = true;
                 currentFields[idx].uniqueText = false;
                 currentFields[idx].uniqueNumber = false;
+                currentFields[idx].numberRange = false;
                 currentFields[idx].isSmartDate = false;
             } else {
                 currentFields[idx].sequentialSelect = false;
@@ -874,6 +932,7 @@ function renderFields() {
                 currentFields[idx].isSmartDate = true;
                 currentFields[idx].uniqueText = false;
                 currentFields[idx].uniqueNumber = false;
+                currentFields[idx].numberRange = false;
                 currentFields[idx].sequentialSelect = false;
             } else {
                 currentFields[idx].isSmartDate = false;
@@ -882,12 +941,18 @@ function renderFields() {
         });
     });
 
-    // Digits input handler
-    container.querySelectorAll('.digits-input').forEach((input, idx) => {
+    // Digits input handler.
+    // NOTE: every field renders two .digits-input elements (one under Unique text,
+    // one under Unique number), so the forEach index does NOT map to the field
+    // index — read the field index from the parent .field-item instead.
+    container.querySelectorAll('.digits-input').forEach((input) => {
         input.addEventListener('change', () => {
-            let value = parseInt(input.value) || 5;
-            // Validate: min 1, max 50
-            value = Math.max(1, Math.min(50, value));
+            const item = input.closest('.field-item');
+            const idx = item ? parseInt(item.dataset.index) : -1;
+            if (!currentFields[idx]) return;
+            let value = parseInt(input.value);
+            if (isNaN(value)) value = 5;
+            value = Math.max(1, Math.min(50, value));  // clamp 1–50
             input.value = value;
             currentFields[idx].digits = value;
         });

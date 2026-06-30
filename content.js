@@ -4904,9 +4904,22 @@ async function fillFormFields(fieldsData) {
     }
 
     const storageKey = 'ff_sequential_indices';
-    const storageResult = await new Promise(resolve => chrome.storage.local.get([storageKey], resolve));
+    const counterKey = 'ff_unique_counters';   // monotonic counters → truly unique values
+    const storageResult = await new Promise(resolve => chrome.storage.local.get([storageKey, counterKey], resolve));
     const allIndices = storageResult[storageKey] || {};
+    const allCounters = storageResult[counterKey] || {};
     let updatedAny = false;
+    let countersUpdated = false;
+
+    // Next persistent counter for (profile, selector, kind) — guarantees no repeats
+    // across fills, even across sessions. Starts at 1.
+    const nextUnique = (selector, kind) => {
+        const ckey = `${profileId}_${selector}_${kind}`;
+        const n = (allCounters[ckey] || 0) + 1;
+        allCounters[ckey] = n;
+        countersUpdated = true;
+        return n;
+    };
 
     for (const field of fields) {
         const action = field.actionType || 'fill';
@@ -5040,16 +5053,26 @@ async function fillFormFields(fieldsData) {
             } else {
                 value = resolveSmartVariables(field.value);
                 if (field.uniqueText) {
-                    const digits = Math.min(field.digits || 5, 50);
-                    let res = "";
-                    for (let i = 0; i < digits; i++) res += Math.floor(Math.random() * 10).toString();
-                    value = value + res;
+                    // base value + a zero-padded counter → always unique, never repeats
+                    const digits = Math.min(Math.max(1, field.digits || 5), 50);
+                    const n = nextUnique(field.selector, 'text');
+                    value = value + String(n).padStart(digits, '0');
                 }
                 else if (field.uniqueNumber) {
-                    const digits = Math.min(field.digits || 5, 50);
-                    let res = Math.floor(1 + Math.random() * 9).toString();
-                    for (let i = 1; i < digits; i++) res += Math.floor(Math.random() * 10).toString();
-                    value = res;
+                    // an N-digit number that increments (no leading zero), grows if it
+                    // overflows the width. BigInt keeps it exact for large digit counts.
+                    const digits = Math.min(Math.max(1, field.digits || 5), 50);
+                    const n = nextUnique(field.selector, 'number');
+                    value = String(10n ** BigInt(digits - 1) + BigInt(n - 1));
+                }
+                else if (field.numberRange) {
+                    // random integer between min and max (inclusive); tolerate swapped/blank bounds
+                    let lo = Number.isFinite(field.rangeMin) ? Math.round(field.rangeMin) : parseInt(field.rangeMin);
+                    let hi = Number.isFinite(field.rangeMax) ? Math.round(field.rangeMax) : parseInt(field.rangeMax);
+                    if (!Number.isFinite(lo)) lo = 1;
+                    if (!Number.isFinite(hi)) hi = 100;
+                    if (lo > hi) { const t = lo; lo = hi; hi = t; }
+                    value = String(Math.floor(Math.random() * (hi - lo + 1)) + lo);
                 }
             }
 
@@ -5110,7 +5133,10 @@ async function fillFormFields(fieldsData) {
         }
     }
 
-    if (updatedAny) chrome.storage.local.set({ [storageKey]: allIndices });
+    const toPersist = {};
+    if (updatedAny) toPersist[storageKey] = allIndices;
+    if (countersUpdated) toPersist[counterKey] = allCounters;
+    if (Object.keys(toPersist).length) chrome.storage.local.set(toPersist);
 
     // Show warning modal if there are failed fields and we're on the profile's page
     if (failedFields.length > 0 && profileUrl) {
