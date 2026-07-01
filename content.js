@@ -92,6 +92,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ open: !!liState });   // report new toggle state to the panel
     }
     if (request.action === 'measureStatus') { sendResponse({ open: !!liState }); }
+    if (request.action === 'openTextMatch') {
+        openTextMatchPanel();
+        sendResponse({ success: true });
+    }
     if (request.action === 'arStart') { arArm(request.seconds); sendResponse({ success: true }); }
     if (request.action === 'arStop') { arArm(0); sendResponse({ success: true }); }
     if (request.action === 'highlightBySelector') { sendResponse(highlightSelector(request.query)); }
@@ -5793,4 +5797,213 @@ function liToast(msg) {
     t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1e1b2e;color:#fff;padding:9px 16px;border-radius:8px;font:13px -apple-system,Segoe UI,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);';
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 1500);
+}
+// ============================================================================
+// Text Match — paste text (one item per line) and check each line against the
+// page's VISIBLE text. Matching is deterministic and tolerant: it ignores
+// punctuation, Arabic diacritics/tatweel, alef/hamza forms, letter case and
+// whitespace differences; order doesn't matter. Every line counted as "found"
+// is exactly what gets highlighted GREEN on the page (count == highlight).
+// A counter shows found / missing. Works for Arabic & English. No AI.
+// ============================================================================
+const TM_IC = (() => {
+    const w = (p) => `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+    return {
+        x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+        check: w('<path d="M20 6 9 17l-5-5"/>')
+    };
+})();
+
+// character classes for normalization (no global flag → safe for .test)
+const TM_DROP = /[\p{M}\p{Cf}ـ]/u;  // combining marks, format/bidi chars, tatweel
+const TM_ALNUM = /[\p{L}\p{N}]/u;        // a letter or a number
+const TM_ALEF = /[آأإٱ]/; // آ أ إ ٱ
+
+// Normalize text → { norm, map }. `map[j]` is the source index of norm char j.
+// Letters/numbers are folded; marks are dropped; everything else becomes a
+// single space (so punctuation/bullets/dashes don't block a match).
+function tmNorm(raw) {
+    const out = [], map = [];
+    let prevSpace = false;
+    for (let i = 0; i < raw.length; i++) {
+        const c = raw[i];
+        if (TM_DROP.test(c)) continue;
+        if (!TM_ALNUM.test(c)) {                 // punctuation / space / symbol
+            if (prevSpace) continue;
+            out.push(' '); map.push(i); prevSpace = true; continue;
+        }
+        prevSpace = false;
+        let d;
+        if (TM_ALEF.test(c)) d = 'ا';
+        else if (c === 'ى') d = 'ي';   // ى → ي
+        else if (c === 'ة') d = 'ه';   // ة → ه
+        else { d = c.toLowerCase(); if (d.length !== 1) d = c; }
+        out.push(d); map.push(i);
+    }
+    return { norm: out.join(''), map };
+}
+
+// Concatenate all visible text nodes into one string + a per-char node map,
+// so a match found in the concatenation can be turned back into a DOM Range.
+function tmCollect() {
+    const rawArr = [], nodeMap = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+        acceptNode(n) {
+            if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
+            const p = n.parentElement;
+            if (!p || p.closest('#qa-tm, script, style, noscript')) return NodeFilter.FILTER_REJECT;
+            const st = getComputedStyle(p);
+            if (st.display === 'none' || st.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+        }
+    });
+    let n, total = 0;
+    while ((n = walker.nextNode())) {
+        const v = n.nodeValue;
+        for (let k = 0; k < v.length; k++) { rawArr.push(v[k]); nodeMap.push({ node: n, offset: k }); }
+        rawArr.push('\n'); nodeMap.push(null);   // boundary between nodes
+        total += v.length;
+        if (total > 400000) break;               // safety cap for huge pages
+    }
+    return { raw: rawArr.join(''), nodeMap };
+}
+
+function tmClearHighlight() {
+    try { if (window.CSS && CSS.highlights) CSS.highlights.delete('qa-tm-found'); } catch (e) { }
+}
+
+function closeTextMatchPanel() {
+    tmClearHighlight();
+    const p = document.getElementById('qa-tm');
+    if (p) p.remove();
+    const s = document.getElementById('qa-tm-style');
+    if (s) s.remove();
+}
+
+function openTextMatchPanel() {
+    if (document.getElementById('qa-tm')) { closeTextMatchPanel(); return; } // toggle
+
+    const style = document.createElement('style');
+    style.id = 'qa-tm-style';
+    style.textContent = `
+::highlight(qa-tm-found){background:rgba(16,185,129,.45);color:inherit;}
+#qa-tm{position:fixed;top:16px;right:16px;width:330px;max-height:88vh;z-index:2147483647;display:flex;flex-direction:column;direction:ltr;
+  background:#17151f;color:#e5e7eb;border:1px solid #2a2738;border-radius:14px;box-shadow:0 14px 44px rgba(0,0,0,.6);
+  font:13px/1.45 -apple-system,Segoe UI,sans-serif;overflow:hidden;}
+#qa-tm *{box-sizing:border-box;}
+#qa-tm .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px;background:#1c1a26;border-bottom:1px solid #2a2738;cursor:move;user-select:none;}
+#qa-tm .hd .ttl{font-weight:600;display:flex;align-items:center;gap:7px;}
+#qa-tm .hd .ttl svg{width:15px;height:15px;color:#34d399;}
+#qa-tm .iconbtn{all:unset;cursor:pointer;color:#8b8898;padding:5px;border-radius:7px;display:flex;}
+#qa-tm .iconbtn:hover{background:#3a1d24;color:#f87171;}
+#qa-tm .bd{padding:13px;overflow-y:auto;}
+#qa-tm textarea{width:100%;min-height:120px;max-height:260px;resize:vertical;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:8px;padding:9px 10px;font:13px/1.6 -apple-system,Segoe UI,sans-serif;}
+#qa-tm textarea:focus{outline:none;border-color:#7c3aed;}
+#qa-tm .hint{font-size:11px;color:#6b6878;margin:6px 2px 10px;}
+#qa-tm .go{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;width:100%;background:#7c3aed;color:#fff;font-weight:600;font-size:13px;padding:10px 0;border-radius:9px;}
+#qa-tm .go:hover{background:#6d28d9;}
+#qa-tm .result{margin-top:14px;display:none;}
+#qa-tm .result.show{display:block;}
+#qa-tm .counts{display:flex;gap:8px;}
+#qa-tm .count{flex:1;text-align:center;padding:12px 0;border-radius:10px;font-weight:700;}
+#qa-tm .count .n{font-size:22px;display:block;line-height:1;}
+#qa-tm .count .l{font-size:10px;text-transform:uppercase;letter-spacing:.5px;opacity:.85;margin-top:4px;}
+#qa-tm .count.ok{background:rgba(16,185,129,.14);color:#34d399;border:1px solid rgba(16,185,129,.35);}
+#qa-tm .count.no{background:rgba(244,63,94,.14);color:#f87171;border:1px solid rgba(244,63,94,.35);}
+#qa-tm .note{font-size:11px;color:#6b6878;margin-top:9px;text-align:center;}
+#qa-tm .err{color:#f87171;font-size:12px;margin-top:10px;}`;
+    (document.head || document.documentElement).appendChild(style);
+
+    const panel = document.createElement('div');
+    panel.id = 'qa-tm';
+    panel.innerHTML = `
+<div class="hd">
+  <span class="ttl">${TM_IC.check} Text Match</span>
+  <button class="iconbtn" id="qa-tm-close" title="Close">${TM_IC.x}</button>
+</div>
+<div class="bd">
+  <textarea id="qa-tm-input" placeholder="Paste text — one item per line (Arabic or English)" spellcheck="false" dir="auto"></textarea>
+  <div class="hint">Each line is checked against the page · found lines are highlighted green on the page</div>
+  <button class="go" id="qa-tm-run">Check</button>
+  <div class="result" id="qa-tm-result">
+    <div class="counts">
+      <div class="count ok"><span class="n" id="qa-tm-found">0</span><span class="l">Found</span></div>
+      <div class="count no"><span class="n" id="qa-tm-missing">0</span><span class="l">Missing</span></div>
+    </div>
+    <div class="note" id="qa-tm-note"></div>
+  </div>
+  <div class="err" id="qa-tm-err"></div>
+</div>`;
+    document.body.appendChild(panel);
+
+    const ta = panel.querySelector('#qa-tm-input');
+    const result = panel.querySelector('#qa-tm-result');
+    const errEl = panel.querySelector('#qa-tm-err');
+
+    const runCheck = () => {
+        errEl.textContent = '';
+        tmClearHighlight();
+        const lines = ta.value.split('\n').map(l => l.trim()).filter(Boolean);
+        if (!lines.length) { result.classList.remove('show'); errEl.textContent = 'Paste some text first.'; return; }
+
+        // read the page's visible text WITHOUT our own panel (it's in the DOM)
+        panel.style.display = 'none';
+        const { raw, nodeMap } = tmCollect();
+        panel.style.display = '';
+        const { norm: pageNorm, map } = tmNorm(raw);
+
+        const canHL = window.CSS && CSS.highlights && typeof Highlight !== 'undefined';
+        const hl = canHL ? new Highlight() : null;
+        let found = 0, first = null;
+
+        for (const line of lines) {
+            const nline = tmNorm(line).norm.trim();
+            if (!nline) continue;                        // line was only punctuation/space
+            if (pageNorm.indexOf(nline) === -1) continue; // not on the page
+            found++;
+            if (!hl) continue;
+            // highlight every occurrence
+            let from = 0, oc, guard = 0;
+            while ((oc = pageNorm.indexOf(nline, from)) !== -1 && guard++ < 500) {
+                const sInfo = nodeMap[map[oc]];
+                const eInfo = nodeMap[map[oc + nline.length - 1]];
+                if (sInfo && eInfo) {
+                    try {
+                        const rg = document.createRange();
+                        rg.setStart(sInfo.node, sInfo.offset);
+                        rg.setEnd(eInfo.node, eInfo.offset + 1);
+                        hl.add(rg);
+                        if (!first) first = sInfo.node;
+                    } catch (e) { }
+                }
+                from = oc + nline.length;
+            }
+        }
+        if (hl) CSS.highlights.set('qa-tm-found', hl);
+
+        panel.querySelector('#qa-tm-found').textContent = found;
+        panel.querySelector('#qa-tm-missing').textContent = lines.length - found;
+        result.classList.add('show');
+        const note = panel.querySelector('#qa-tm-note');
+        if (!found) note.textContent = 'Nothing matched on the page.';
+        else if (canHL) note.textContent = 'Found text is highlighted green on the page.';
+        else note.textContent = 'Highlighting not supported in this browser.';
+        if (first && first.parentElement) { try { first.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { } }
+    };
+
+    panel.querySelector('#qa-tm-run').addEventListener('click', runCheck);
+    panel.querySelector('#qa-tm-close').addEventListener('click', closeTextMatchPanel);
+    ta.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runCheck(); } });
+
+    // drag by header
+    let off = null;
+    const head = panel.querySelector('.hd');
+    const down = (e) => { if (e.target.closest('button')) return; const r = panel.getBoundingClientRect(); off = { dx: e.clientX - r.left, dy: e.clientY - r.top }; e.preventDefault(); };
+    const move = (e) => { if (!off) return; panel.style.right = 'auto'; panel.style.left = Math.max(4, Math.min(innerWidth - 80, e.clientX - off.dx)) + 'px'; panel.style.top = Math.max(4, Math.min(innerHeight - 50, e.clientY - off.dy)) + 'px'; };
+    const up = () => { off = null; };
+    head.addEventListener('mousedown', down);
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+
+    ta.focus();
 }

@@ -1256,6 +1256,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+
     // Right-click fill: generate one valid/invalid value for a single field
     if (request.action === 'aiGenerateFieldValue') {
         (async () => {
