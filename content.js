@@ -5799,12 +5799,12 @@ function liToast(msg) {
     setTimeout(() => t.remove(), 1500);
 }
 // ============================================================================
-// Text Match — paste text (one item per line) and check each line against the
-// page's VISIBLE text. Matching is deterministic and tolerant: it ignores
-// punctuation, Arabic diacritics/tatweel, alef/hamza forms, letter case and
-// whitespace differences; order doesn't matter. Every line counted as "found"
-// is exactly what gets highlighted GREEN on the page (count == highlight).
-// A counter shows found / missing. Works for Arabic & English. No AI.
+// Text Match — paste a reference text; it is compared WORD-BY-WORD against the
+// page (exact, case- & symbol-sensitive; order preserved via LCS). On the page,
+// words that match the reference are highlighted GREEN and words that DIFFER
+// are highlighted RED — so only the actual differences stand out, not the whole
+// block. Counter shows matched / different words. Works for Arabic & English.
+// No AI.
 // ============================================================================
 const TM_IC = (() => {
     const w = (p) => `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -5814,37 +5814,10 @@ const TM_IC = (() => {
     };
 })();
 
-// character classes for normalization (no global flag → safe for .test)
-const TM_DROP = /[\p{M}\p{Cf}ـ]/u;  // combining marks, format/bidi chars, tatweel
-const TM_ALNUM = /[\p{L}\p{N}]/u;        // a letter or a number
-const TM_ALEF = /[آأإٱ]/; // آ أ إ ٱ
+const TM_GAP = 12;   // max run of consecutive differing words to mark red between matches
 
-// Normalize text → { norm, map }. `map[j]` is the source index of norm char j.
-// Letters/numbers are folded; marks are dropped; everything else becomes a
-// single space (so punctuation/bullets/dashes don't block a match).
-function tmNorm(raw) {
-    const out = [], map = [];
-    let prevSpace = false;
-    for (let i = 0; i < raw.length; i++) {
-        const c = raw[i];
-        if (TM_DROP.test(c)) continue;
-        if (!TM_ALNUM.test(c)) {                 // punctuation / space / symbol
-            if (prevSpace) continue;
-            out.push(' '); map.push(i); prevSpace = true; continue;
-        }
-        prevSpace = false;
-        let d;
-        if (TM_ALEF.test(c)) d = 'ا';
-        else if (c === 'ى') d = 'ي';   // ى → ي
-        else if (c === 'ة') d = 'ه';   // ة → ه
-        else { d = c.toLowerCase(); if (d.length !== 1) d = c; }
-        out.push(d); map.push(i);
-    }
-    return { norm: out.join(''), map };
-}
-
-// Concatenate all visible text nodes into one string + a per-char node map,
-// so a match found in the concatenation can be turned back into a DOM Range.
+// Concatenate all VISIBLE text nodes into one string + a per-char node map,
+// so any span can be turned back into a DOM Range. A '\n' separates nodes.
 function tmCollect() {
     const rawArr = [], nodeMap = [];
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
@@ -5861,15 +5834,58 @@ function tmCollect() {
     while ((n = walker.nextNode())) {
         const v = n.nodeValue;
         for (let k = 0; k < v.length; k++) { rawArr.push(v[k]); nodeMap.push({ node: n, offset: k }); }
-        rawArr.push('\n'); nodeMap.push(null);   // boundary between nodes
+        rawArr.push('\n'); nodeMap.push(null);
         total += v.length;
-        if (total > 400000) break;               // safety cap for huge pages
+        if (total > 400000) break;
     }
     return { raw: rawArr.join(''), nodeMap };
 }
 
+// Split visible page text into whitespace-delimited word tokens, each with its
+// exact DOM Range. Node boundaries are whitespace, so a token never spans nodes.
+function tmPageTokens(cap) {
+    const { raw, nodeMap } = tmCollect();
+    const toks = [];
+    let i = 0;
+    while (i < raw.length) {
+        if (/\s/.test(raw[i])) { i++; continue; }
+        let j = i;
+        while (j < raw.length && !/\s/.test(raw[j])) j++;
+        const s = nodeMap[i], e = nodeMap[j - 1];
+        if (s && e) toks.push({ word: raw.slice(i, j), s, e });
+        i = j;
+        if (toks.length >= cap) break;
+    }
+    return toks;
+}
+
+// Longest Common Subsequence between two word arrays → matched [refIdx, pageIdx]
+// pairs (exact string equality). Diagonal DP with Uint16 table.
+function tmLCS(a, b) {
+    const n = a.length, m = b.length;
+    if (!n || !m) return [];
+    const W = m + 1;
+    const dp = new Uint16Array((n + 1) * W);
+    for (let i = n - 1; i >= 0; i--) {
+        const rowi = i * W, rowi1 = (i + 1) * W;
+        for (let j = m - 1; j >= 0; j--) {
+            dp[rowi + j] = (a[i] === b[j])
+                ? dp[rowi1 + (j + 1)] + 1
+                : Math.max(dp[rowi1 + j], dp[rowi + (j + 1)]);
+        }
+    }
+    const pairs = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+        if (a[i] === b[j]) { pairs.push([i, j]); i++; j++; }
+        else if (dp[(i + 1) * W + j] >= dp[i * W + (j + 1)]) i++;
+        else j++;
+    }
+    return pairs;
+}
+
 function tmClearHighlight() {
-    try { if (window.CSS && CSS.highlights) CSS.highlights.delete('qa-tm-found'); } catch (e) { }
+    try { if (window.CSS && CSS.highlights) { CSS.highlights.delete('qa-tm-found'); CSS.highlights.delete('qa-tm-diff'); } } catch (e) { }
 }
 
 function closeTextMatchPanel() {
@@ -5887,6 +5903,7 @@ function openTextMatchPanel() {
     style.id = 'qa-tm-style';
     style.textContent = `
 ::highlight(qa-tm-found){background:rgba(16,185,129,.45);color:inherit;}
+::highlight(qa-tm-diff){background:rgba(244,63,94,.5);color:inherit;}
 #qa-tm{position:fixed;top:16px;right:16px;width:330px;max-height:88vh;z-index:2147483647;display:flex;flex-direction:column;direction:ltr;
   background:#17151f;color:#e5e7eb;border:1px solid #2a2738;border-radius:14px;box-shadow:0 14px 44px rgba(0,0,0,.6);
   font:13px/1.45 -apple-system,Segoe UI,sans-serif;overflow:hidden;}
@@ -5922,13 +5939,13 @@ function openTextMatchPanel() {
   <button class="iconbtn" id="qa-tm-close" title="Close">${TM_IC.x}</button>
 </div>
 <div class="bd">
-  <textarea id="qa-tm-input" placeholder="Paste text — one item per line (Arabic or English)" spellcheck="false" dir="auto"></textarea>
-  <div class="hint">Each line is checked against the page · found lines are highlighted green on the page</div>
-  <button class="go" id="qa-tm-run">Check</button>
+  <textarea id="qa-tm-input" placeholder="Paste the reference text (Arabic or English)" spellcheck="false" dir="auto"></textarea>
+  <div class="hint">Compared word-by-word against the page · matching words = green, different = red (exact, case &amp; symbol sensitive)</div>
+  <button class="go" id="qa-tm-run">Compare</button>
   <div class="result" id="qa-tm-result">
     <div class="counts">
-      <div class="count ok"><span class="n" id="qa-tm-found">0</span><span class="l">Found</span></div>
-      <div class="count no"><span class="n" id="qa-tm-missing">0</span><span class="l">Missing</span></div>
+      <div class="count ok"><span class="n" id="qa-tm-match">0</span><span class="l">Matched</span></div>
+      <div class="count no"><span class="n" id="qa-tm-diff">0</span><span class="l">Different</span></div>
     </div>
     <div class="note" id="qa-tm-note"></div>
   </div>
@@ -5943,51 +5960,62 @@ function openTextMatchPanel() {
     const runCheck = () => {
         errEl.textContent = '';
         tmClearHighlight();
-        const lines = ta.value.split('\n').map(l => l.trim()).filter(Boolean);
-        if (!lines.length) { result.classList.remove('show'); errEl.textContent = 'Paste some text first.'; return; }
+        const refWords = ta.value.split(/\s+/).filter(Boolean).slice(0, 2500);
+        if (!refWords.length) { result.classList.remove('show'); errEl.textContent = 'Paste some text first.'; return; }
 
-        // read the page's visible text WITHOUT our own panel (it's in the DOM)
+        // page word tokens (without our own panel)
         panel.style.display = 'none';
-        const { raw, nodeMap } = tmCollect();
+        const pageToks = tmPageTokens(8000);
         panel.style.display = '';
-        const { norm: pageNorm, map } = tmNorm(raw);
+        const pageWords = pageToks.map(t => t.word);
+
+        const pairs = tmLCS(refWords, pageWords);          // matched [refIdx, pageIdx]
+        const matchedPage = pairs.map(p => p[1]);          // increasing page indices
+        const matchedSet = new Set(matchedPage);
 
         const canHL = window.CSS && CSS.highlights && typeof Highlight !== 'undefined';
-        const hl = canHL ? new Highlight() : null;
-        let found = 0, first = null;
+        const green = canHL ? new Highlight() : null;
+        const red = canHL ? new Highlight() : null;
+        let first = null, diffCount = 0;
 
-        for (const line of lines) {
-            const nline = tmNorm(line).norm.trim();
-            if (!nline) continue;                        // line was only punctuation/space
-            if (pageNorm.indexOf(nline) === -1) continue; // not on the page
-            found++;
-            if (!hl) continue;
-            // highlight every occurrence
-            let from = 0, oc, guard = 0;
-            while ((oc = pageNorm.indexOf(nline, from)) !== -1 && guard++ < 500) {
-                const sInfo = nodeMap[map[oc]];
-                const eInfo = nodeMap[map[oc + nline.length - 1]];
-                if (sInfo && eInfo) {
-                    try {
-                        const rg = document.createRange();
-                        rg.setStart(sInfo.node, sInfo.offset);
-                        rg.setEnd(eInfo.node, eInfo.offset + 1);
-                        hl.add(rg);
-                        if (!first) first = sInfo.node;
-                    } catch (e) { }
+        const addRange = (hl, tok) => {
+            try { const r = document.createRange(); r.setStart(tok.s.node, tok.s.offset); r.setEnd(tok.e.node, tok.e.offset + 1); hl.add(r); return r; }
+            catch (e) { return null; }
+        };
+
+        if (canHL) {
+            for (const pi of matchedPage) { const r = addRange(green, pageToks[pi]); if (r && !first) first = pageToks[pi].s.node; }
+            // mark small runs of differing page words (insertions) BETWEEN matched words red
+            for (let k = 0; k < matchedPage.length - 1; k++) {
+                const a = matchedPage[k], b = matchedPage[k + 1];
+                const gap = b - a - 1;
+                if (gap > 0 && gap <= TM_GAP) {
+                    for (let pi = a + 1; pi < b; pi++) { if (!matchedSet.has(pi)) { addRange(red, pageToks[pi]); diffCount++; } }
                 }
-                from = oc + nline.length;
+            }
+            CSS.highlights.set('qa-tm-found', green);
+            CSS.highlights.set('qa-tm-diff', red);
+        } else {
+            // count differences even without highlighting
+            for (let k = 0; k < matchedPage.length - 1; k++) {
+                const gap = matchedPage[k + 1] - matchedPage[k] - 1;
+                if (gap > 0 && gap <= TM_GAP) diffCount += gap;
             }
         }
-        if (hl) CSS.highlights.set('qa-tm-found', hl);
 
-        panel.querySelector('#qa-tm-found').textContent = found;
-        panel.querySelector('#qa-tm-missing').textContent = lines.length - found;
+        const matchCount = matchedPage.length;
+        const missingRef = refWords.length - matchCount; // reference words not found on the page
+        panel.querySelector('#qa-tm-match').textContent = matchCount;
+        panel.querySelector('#qa-tm-diff').textContent = diffCount;
         result.classList.add('show');
+
         const note = panel.querySelector('#qa-tm-note');
-        if (!found) note.textContent = 'Nothing matched on the page.';
-        else if (canHL) note.textContent = 'Found text is highlighted green on the page.';
-        else note.textContent = 'Highlighting not supported in this browser.';
+        if (!matchCount) note.textContent = 'No matching text found on the page.';
+        else {
+            let msg = canHL ? 'Green = matches · red = differs on the page.' : 'Highlighting not supported in this browser.';
+            if (missingRef > 0) msg += ` ${missingRef} reference word${missingRef > 1 ? 's' : ''} not on the page.`;
+            note.textContent = msg;
+        }
         if (first && first.parentElement) { try { first.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { } }
     };
 
