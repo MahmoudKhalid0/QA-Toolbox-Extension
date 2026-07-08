@@ -2533,7 +2533,7 @@ function qaOpenPanel(titleHtml, tool) {
             #qa-result-panel .qa-body { padding: 12px 14px; overflow-y: auto; }
             #qa-result-panel .qa-empty { text-align: center; color: #94a3b8; padding: 24px 8px; }
             /* Link rows */
-            #qa-result-panel .qa-sum { display: flex; gap: 8px; margin-bottom: 12px; }
+            #qa-result-panel .qa-sum { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; } #qa-result-panel .qa-sum .qa-stat { flex: 1 1 21%; min-width: 74px; }
             #qa-result-panel .qa-stat { flex: 1; background: rgba(255,255,255,0.05); border-radius: 10px; padding: 9px; text-align: center; }
             #qa-result-panel .qa-stat .n { font-size: 19px; font-weight: 800; }
             #qa-result-panel .qa-stat .l { font-size: 9.5px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; margin-top: 2px; }
@@ -2541,13 +2541,19 @@ function qaOpenPanel(titleHtml, tool) {
             #qa-result-panel .lhrow { display: flex; gap: 8px; align-items: center; padding: 7px 9px; border-radius: 8px; background: rgba(255,255,255,0.03); border-left: 3px solid #475569; margin-bottom: 4px; }
             #qa-result-panel .lhst { font-weight: 700; font-size: 10.5px; font-family: Consolas, monospace; min-width: 30px; text-align: center; flex-shrink: 0; }
             #qa-result-panel .s-ok.lhrow, #qa-result-panel .lhrow.s-ok { border-left-color: #10b981; } #qa-result-panel .lhst.s-ok { color: #6ee7b7; }
-            #qa-result-panel .lhrow.s-redir { border-left-color: #f59e0b; } #qa-result-panel .lhst.s-redir { color: #fcd34d; }
-            #qa-result-panel .lhrow.s-auth { border-left-color: #0ea5e9; } #qa-result-panel .lhst.s-auth { color: #7dd3fc; }
+            #qa-result-panel .lhrow.s-redir { border-left-color: #fde047; } #qa-result-panel .lhst.s-redir { color: #fef08a; }
+            #qa-result-panel .lhrow.s-auth { border-left-color: #3b82f6; } #qa-result-panel .lhst.s-auth { color: #93c5fd; }
             #qa-result-panel .lhrow.s-forbid { border-left-color: #a855f7; } #qa-result-panel .lhst.s-forbid { color: #c084fc; }
             #qa-result-panel .lhrow.s-broken { border-left-color: #ef4444; background: rgba(239,68,68,0.07); } #qa-result-panel .lhst.s-broken { color: #f87171; }
-            #qa-result-panel .lhrow.s-soft { border-left-color: #fb923c; background: rgba(251,146,60,0.08); } #qa-result-panel .lhst.s-soft { color: #fdba74; }
+            #qa-result-panel .lhrow.s-soft { border-left-color: #f97316; background: rgba(249,115,22,0.08); } #qa-result-panel .lhst.s-soft { color: #fdba74; }
             #qa-result-panel .lhrow.s-unknown { border-left-color: #64748b; } #qa-result-panel .lhst.s-unknown { color: #94a3b8; }
             #qa-result-panel .lhrow.s-nourl { border-left-color: #2dd4bf; background: rgba(45,212,191,0.06); } #qa-result-panel .lhst.s-nourl { color: #5eead4; font-size: 8.5px; }
+            #qa-result-panel .lh-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 10px; color: #94a3b8; margin: 2px 2px 10px; line-height: 1.5; }
+            #qa-result-panel .lh-legend b { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+            #qa-result-panel .lh-loc { background: rgba(255,255,255,0.08); border: none; color: #94a3b8; width: 26px; height: 26px; border-radius: 6px; cursor: pointer; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
+            #qa-result-panel .lh-loc:hover { background: rgba(255,255,255,0.2); color: #fff; }
+            #qa-result-panel .lhhref[data-href] { cursor: pointer; }
+            #qa-result-panel .lhhref[data-href]:hover { text-decoration: underline; color: #93c5fd; }
             #qa-result-panel .qa-stat.nourl .n { color: #5eead4; }
             #qa-result-panel .lhinfo { flex: 1; min-width: 0; }
             #qa-result-panel .lhhref { color: #60a5fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2639,18 +2645,21 @@ function qaOpenPanel(titleHtml, tool) {
 }
 
 // ---- Link Health (runs in the page so same-origin cert/session apply) ----
+// Statuses that mean "the checker was refused", NOT "the page is broken":
+// auth walls, bot blocks, rate limits, legal blocks, LinkedIn's 999...
+const LH_BLOCKED = new Set([401, 403, 405, 406, 407, 418, 429, 451, 999]);
 function lhClassify(r) {
     if (r.soft) return { kind: 's-soft', label: '200⚠' };
     const s = r.status;
     if (s >= 200 && s < 300) return { kind: 's-ok', label: String(s) };
     if (s >= 300 && s < 400) return { kind: 's-redir', label: String(s) };
-    if (s === 401) return { kind: 's-auth', label: '401' };
-    if (s === 403) return { kind: 's-forbid', label: '403' };
+    if (s === 401 || s === 407) return { kind: 's-auth', label: String(s) };
+    if (LH_BLOCKED.has(s)) return { kind: 's-forbid', label: String(s) };
     if (s >= 400) return { kind: 's-broken', label: String(s) };
     return { kind: 's-unknown', label: r.error ? 'ERR' : '0' };
 }
-const LH_COLORS = { 's-ok': '#10b981', 's-redir': '#f59e0b', 's-auth': '#0ea5e9', 's-forbid': '#a855f7', 's-broken': '#ef4444', 's-unknown': '#64748b', 's-soft': '#fb923c' };
-function lhIsBroken(r) { return r.soft || (r.status >= 400 && r.status !== 401 && r.status !== 403) || (r.status === 0 && r.error && r.error !== 'Timeout'); }
+const LH_COLORS = { 's-ok': '#10b981', 's-redir': '#fde047', 's-auth': '#3b82f6', 's-forbid': '#a855f7', 's-broken': '#ef4444', 's-unknown': '#64748b', 's-soft': '#f97316' };
+function lhIsBroken(r) { return r.soft || (r.status >= 400 && !LH_BLOCKED.has(r.status)) || (r.status === 0 && r.error && r.error !== 'Timeout'); }
 
 function qaToolDone(tool) { try { chrome.runtime.sendMessage({ action: 'toolScanDone', tool }); } catch (e) { } }
 
@@ -2689,7 +2698,7 @@ async function runLinkHealthInner(body) {
     if (!links.length && !lhNoUrl.length) { body.innerHTML = '<div class="qa-empty">No links found on this page.</div>'; return; }
     const MAX = 200;
     links = links.slice(0, MAX);
-    body.innerHTML = `<div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Checking ${links.length} link(s)…</div>`;
+    body.innerHTML = `<div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Checking links… <b id="lh-prog">0/${links.length}</b></div>`;
 
     const origin = location.origin;
     const same = links.filter(l => { try { return new URL(l.href).origin === origin; } catch (e) { return false; } });
@@ -2700,12 +2709,17 @@ async function runLinkHealthInner(body) {
         const onAbort = () => { try { ctrl.abort(); } catch (e) { } };
         if (myCtrl) myCtrl.signal.addEventListener('abort', onAbort);
         const cleanup = () => { clearTimeout(timer); if (myCtrl) myCtrl.signal.removeEventListener('abort', onAbort); };
-        return fetch(u, { method: method || 'GET', redirect: 'follow', signal: ctrl.signal })
+        // 'PEEK' = GET but cancel the body once headers arrive: as reliable as
+        // a real visit (HEAD answers are often wrong) at almost HEAD's cost
+        const real = method === 'PEEK' ? 'GET' : (method || 'GET');
+        return fetch(u, { method: real, redirect: 'follow', signal: ctrl.signal })
             .then(async r => {
                 let len = null;
-                if ((method || 'GET') === 'GET') { let t = ''; try { t = await r.text(); } catch (e) { } len = t.replace(/\s+/g, ' ').trim().length; }
+                if (real === 'GET' && method !== 'PEEK') { let t = ''; try { t = await r.text(); } catch (e) { } len = t.replace(/\s+/g, ' ').trim().length; }
+                const out = { status: r.status, ok: r.ok, redirected: r.redirected, finalUrl: r.url, len };
                 cleanup();
-                return { status: r.status, ok: r.ok, redirected: r.redirected, finalUrl: r.url, len };
+                if (method === 'PEEK') { try { ctrl.abort(); } catch (e) { } }
+                return out;
             })
             .catch(e => { cleanup(); return { status: 0, ok: false, error: e.name === 'AbortError' ? 'Timeout' : (e.message || 'Failed'), finalUrl: u, len: null }; });
     }
@@ -2739,20 +2753,33 @@ async function runLinkHealthInner(body) {
         return false;
     }
 
+    const LH_TRANSIENT = new Set([408, 425, 429, 500, 502, 503, 504, 521, 522, 523, 524]);
     async function checkHere(list) {
         const out = new Array(list.length); let i = 0;
         async function worker() {
             while (i < list.length) {
                 if (aborted()) return; // panel closed → stop
                 const idx = i++; const href = list[idx].href;
-                // In soft-404 mode we GET (need the body length); otherwise HEAD is enough.
-                const res = await sniff(href, softMode ? 'GET' : 'HEAD');
-                if (res.status === 405 || res.status === 501) Object.assign(res, await sniff(href, 'GET'));
+                // In soft-404 mode we GET (need the body length); otherwise PEEK
+                // (a real GET whose body is cancelled after the headers).
+                let res = await sniff(href, softMode ? 'GET' : 'PEEK');
+                // transient failure -> pause and retry once before judging
+                if (!aborted() && (res.status === 0 || LH_TRANSIENT.has(res.status))) {
+                    await new Promise(r2 => setTimeout(r2, 1500));
+                    const retry = await sniff(href, softMode ? 'GET' : 'PEEK');
+                    if (retry.status !== 0 && !LH_TRANSIENT.has(retry.status)) res = retry;
+                    else if (res.status === 0 && retry.status !== 0) res = retry;
+                }
                 if (softMode && res.status >= 200 && res.status < 400) res.soft = isSoft(href, res);
                 out[idx] = res;
+                Object.assign(list[idx], res);
+                lhDone++; lhPaint(list[idx]); lhProgress();
+                // all same-origin = same host: pace the requests so the site's
+                // own rate-limit/WAF never fires
+                await new Promise(r2 => setTimeout(r2, 120 + Math.random() * 130));
             }
         }
-        await Promise.all(Array.from({ length: Math.min(6, list.length) }, worker));
+        await Promise.all(Array.from({ length: Math.min(3, list.length) }, worker));
         return out;
     }
     function checkBg(list) {
@@ -2764,25 +2791,51 @@ async function runLinkHealthInner(body) {
         });
     }
 
-    const [sameRes, crossRes] = await Promise.all([
-        same.length ? checkHere(same) : Promise.resolve([]),
-        cross.length ? checkBg(cross) : Promise.resolve([])
-    ]);
-    if (aborted()) return; // panel closed mid-scan
-    same.forEach((l, i) => Object.assign(l, sameRes[i] || { status: 0, ok: false }));
-    cross.forEach((l, i) => Object.assign(l, crossRes[i] || { status: 0, ok: false }));
-
-    // Colour the actual links on the page by status
-    links.forEach(l => {
+    // progressive painting: each link is coloured on the page the moment ITS
+    // check finishes - no waiting for the whole batch
+    let lhDone = 0;
+    const lhProgress = () => {
+        const el = body.querySelector('#lh-prog');
+        if (el) el.textContent = `${lhDone}/${links.length}`;
+    };
+    const lhPaint = (l) => {
         const c = lhClassify(l); const color = LH_COLORS[c.kind];
-        l.els.forEach(el => {
+        (l.els || []).forEach(el => {
             if (!el.isConnected) return;
             el.style.setProperty('outline', `2px solid ${color}`, 'important');
             el.style.setProperty('outline-offset', '1px', 'important');
             el.setAttribute('data-qa-link', c.label);
             el.title = `QA Link Health: ${l.soft ? 'Soft 404 — HTTP 200 but the page looks like a not-found/redirect' : (l.status === 0 ? (l.error || 'Unreachable') : l.status)}`;
         });
-    });
+    };
+    // cross-origin: one background batch PER HOST, painted as each host finishes
+    async function checkBgProgressive(list) {
+        const byHost = new Map();
+        list.forEach((l, i) => {
+            let h = ''; try { h = new URL(l.href).host; } catch (e) { }
+            if (!byHost.has(h)) byHost.set(h, []);
+            byHost.get(h).push(i);
+        });
+        const out = new Array(list.length);
+        await Promise.all([...byHost.values()].map(async idxs => {
+            const res = await checkBg(idxs.map(i => list[i]));
+            if (aborted()) return;
+            idxs.forEach((i, k) => {
+                out[i] = res[k] || { status: 0, ok: false };
+                Object.assign(list[i], out[i]);
+                lhDone++; lhPaint(list[i]); lhProgress();
+            });
+        }));
+        return out;
+    }
+
+    const [sameRes, crossRes] = await Promise.all([
+        same.length ? checkHere(same) : Promise.resolve([]),
+        cross.length ? checkBgProgressive(cross) : Promise.resolve([])
+    ]);
+    if (aborted()) return; // panel closed mid-scan
+    same.forEach((l, i) => Object.assign(l, sameRes[i] || { status: 0, ok: false }));
+    cross.forEach((l, i) => Object.assign(l, crossRes[i] || { status: 0, ok: false }));
 
     // Mark the no-URL anchors with a distinct dashed outline
     lhNoUrl.forEach(n => {
@@ -2801,48 +2854,72 @@ function lhRenderResults(body, links) {
     const order = { 's-broken': 0, 's-soft': 1, 's-unknown': 2, 's-redir': 3, 's-auth': 4, 's-forbid': 5, 's-ok': 6 };
     const rows = links.map(l => ({ l, c: lhClassify(l) })).sort((a, b) => order[a.c.kind] - order[b.c.kind]);
     lhBrokenCache = links.filter(lhIsBroken).map(l => ({ href: l.href, text: l.text, status: l.status, error: l.soft ? 'Soft 404 (HTTP 200 but content looks like a not-found page or redirect to home)' : l.error }));
-    const okCount = links.filter(l => l.status >= 200 && l.status < 400 && !l.soft).length;
+    // per-category counts (mirror the row classification exactly)
+    const kc = {};
+    rows.forEach(({ c }) => { kc[c.kind] = (kc[c.kind] || 0) + 1; });
 
+    const LOC_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/></svg>';
+    const tile = (n, label, color) => `<div class="qa-stat"><div class="n" style="color:${color};">${n}</div><div class="l">${label}</div></div>`;
     let html = `<div class="qa-sum">
-        <div class="qa-stat"><div class="n">${links.length}</div><div class="l">Checked</div></div>
-        <div class="qa-stat ok"><div class="n">${okCount}</div><div class="l">OK</div></div>
-        <div class="qa-stat bad"><div class="n">${lhBrokenCache.length}</div><div class="l">Broken</div></div>
-        <div class="qa-stat nourl"><div class="n">${lhNoUrl.length}</div><div class="l">No URL</div></div>
+        ${tile(links.length, 'Checked', '#fff')}
+        ${tile(kc['s-ok'] || 0, 'OK', LH_COLORS['s-ok'])}
+        ${tile(kc['s-broken'] || 0, 'Broken', LH_COLORS['s-broken'])}
+        ${tile(kc['s-forbid'] || 0, 'Blocked', LH_COLORS['s-forbid'])}
+        ${tile(kc['s-soft'] || 0, 'Soft 404', LH_COLORS['s-soft'])}
+        ${tile(kc['s-redir'] || 0, 'Redirect', LH_COLORS['s-redir'])}
+        ${tile(kc['s-auth'] || 0, 'Login', LH_COLORS['s-auth'])}
+        ${(kc['s-unknown'] || 0) ? tile(kc['s-unknown'], 'Unreachable', LH_COLORS['s-unknown']) : ''}
+        ${tile(lhNoUrl.length, 'No URL', '#2dd4bf')}
+    </div>
+    <div class="lh-legend">
+        <span><b style="background:#10b981"></b>OK — verified working</span>
+        <span><b style="background:#ef4444"></b>Broken — page really missing (404/410/5xx)</span>
+        <span><b style="background:#a855f7"></b>Blocked — server refused the automated check (403/429…); usually fine for real visitors, verify manually</span>
+        <span><b style="background:#f97316"></b>Soft 404 — says OK but shows an error page</span>
+        <span><b style="background:#fde047"></b>Redirect</span>
+        <span><b style="background:#3b82f6"></b>Login required</span>
     </div>`;
-    if (lhBrokenCache.length) html += `<button class="qa-btn" id="lh-explain"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Fix (${lhBrokenCache.length})</button>`;
-    html += rows.map(({ l, c }) => `<div class="lhrow ${c.kind}">
+    html += rows.map(({ l, c }, i) => `<div class="lhrow ${c.kind}">
         <span class="lhst ${c.kind}">${qaEsc(c.label)}</span>
-        <div class="lhinfo"><div class="lhhref">${qaEsc(l.href)}</div>${l.text ? `<div class="lhtext">${qaEsc(l.text)}</div>` : ''}</div>
+        <div class="lhinfo"><div class="lhhref" data-href="${qaEsc(l.href)}" title="Open the link in a new tab">${qaEsc(l.href)}</div>${l.text ? `<div class="lhtext">${qaEsc(l.text)}</div>` : ''}</div>
+        <button class="lh-loc" data-i="${i}" title="Show this link on the page">${LOC_SVG}</button>
     </div>`).join('');
 
     if (lhNoUrl.length) {
         html += `<div class="qa-grp">Links without a real URL (${lhNoUrl.length})</div>`;
-        html += lhNoUrl.map(n => `<div class="lhrow s-nourl">
+        html += lhNoUrl.map((n, i) => `<div class="lhrow s-nourl">
             <span class="lhst s-nourl" title="${qaEsc(n.reason)}">NO&nbsp;URL</span>
             <div class="lhinfo"><div class="lhtext" style="color:#cbd5e1;">${qaEsc(n.text || '(no text)')}</div><div class="lhtext">${qaEsc(n.reason)}${n.handler ? ' · has JS handler' : ''}</div></div>
+            <button class="lh-loc" data-n="${i}" title="Show this link on the page">${LOC_SVG}</button>
         </div>`).join('');
     }
     body.innerHTML = html;
 
-    const ex = body.querySelector('#lh-explain');
-    if (ex) ex.addEventListener('click', () => {
-        ex.disabled = true; ex.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing with AI…';
-        chrome.runtime.sendMessage({ action: 'aiExplainLinks', broken: lhBrokenCache, url: location.href }, (resp) => {
-            if (chrome.runtime.lastError || !resp || resp.error) {
-                ex.disabled = false; ex.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Explain & Fix';
-                alert((resp && resp.error === 'no_api_key') ? 'AI key not configured in the extension settings.' : 'AI failed: ' + ((resp && resp.error) || 'error'));
-                return;
-            }
-            const findings = resp.findings || [];
-            let h = `<button class="qa-btn" id="lh-back" style="background:rgba(255,255,255,0.12);"><i class="fas fa-arrow-left"></i> Back to links</button>`;
-            h += findings.length ? findings.map(f => `<div class="qa-find">
-                <h5>${qaEsc(f.title)} <span class="sev ${qaEsc(f.severity)}">${qaEsc(f.severity)}</span></h5>
-                <p>${qaEsc(f.cause)}</p><p class="fix"><i class="fas fa-lightbulb"></i> ${qaEsc(f.fix)}</p></div>`).join('')
-                : '<div class="qa-empty">The AI found nothing actionable.</div>';
-            body.innerHTML = h;
-            body.querySelector('#lh-back').addEventListener('click', () => lhRenderResults(body, links));
-        });
-    });
+    // locate: scroll to the anchor on the page and flash a black outline on it
+    const lhFlash = (el) => {
+        try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { }
+        setTimeout(() => {
+            try {
+                const r = el.getBoundingClientRect();
+                const box = document.createElement('div');
+                box.style.cssText = `position:fixed;left:${r.left - 4}px;top:${r.top - 4}px;width:${r.width + 8}px;height:${r.height + 8}px;border:2px solid #000;border-radius:5px;z-index:2147483646;pointer-events:none;`;
+                document.body.appendChild(box);
+                setTimeout(() => box.remove(), 2400);
+            } catch (e) { }
+        }, 500);
+    };
+    body.querySelectorAll('.lh-loc').forEach(btn => btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        let el = null;
+        if (btn.dataset.i !== undefined) { const d = rows[+btn.dataset.i]; el = d && d.l.els && d.l.els.find(x => x.isConnected); }
+        else if (btn.dataset.n !== undefined) { const n = lhNoUrl[+btn.dataset.n]; el = n && n.el && n.el.isConnected ? n.el : null; }
+        if (el) lhFlash(el);
+    }));
+    // clicking the URL opens it in a new tab
+    body.querySelectorAll('.lhhref[data-href]').forEach(a => a.addEventListener('click', () => {
+        try { window.open(a.dataset.href, '_blank', 'noopener'); } catch (e) { }
+    }));
+
 }
 
 // ---- Performance Monitor (collected in the page; AI explains the result) ----
@@ -6365,6 +6442,8 @@ function openTextMatchPanel() {
             return false;
         });
 
+        // words of whole-missing lines ("not on page") are differences too
+        diffCount += unlocated;
         panel.querySelector('#qa-tm-match').textContent = matchCount;
         panel.querySelector('#qa-tm-diff').textContent = diffCount;
         // list every difference with one context word each side; click scrolls to it.
@@ -6481,6 +6560,12 @@ function qaAddMinimize(panel, headerEl, beforeBtn) {
         }
         btn.innerHTML = min ? MAX : MIN;
     });
-    if (beforeBtn && beforeBtn.parentElement) beforeBtn.parentElement.insertBefore(btn, beforeBtn);
-    else headerEl.appendChild(btn);
+    if (beforeBtn && beforeBtn.parentElement) {
+        // keep the two buttons glued together even in space-between headers
+        const wrap = document.createElement('span');
+        wrap.style.cssText = 'display:inline-flex;align-items:center;flex:0 0 auto;';
+        beforeBtn.parentElement.insertBefore(wrap, beforeBtn);
+        wrap.appendChild(btn);
+        wrap.appendChild(beforeBtn);
+    } else headerEl.appendChild(btn);
 }

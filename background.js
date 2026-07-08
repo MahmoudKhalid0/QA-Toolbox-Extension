@@ -1180,21 +1180,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         })();
         return true;
     }
-    // AI: explain/group broken links and suggest fixes
-    if (request.action === 'aiExplainLinks') {
-        (async () => {
-            try {
-                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
-                const result = await explainLinksWithAI(AI_CONFIG.apiKey, request.broken, request.url);
-                sendResponse({ findings: result.findings });
-            } catch (err) {
-                console.error('aiExplainLinks error:', err);
-                sendResponse({ error: String(err.message || err) });
-            }
-        })();
-        return true;
-    }
-
     // AI: explain performance metrics and suggest optimizations
     if (request.action === 'aiExplainPerformance') {
         (async () => {
@@ -1555,106 +1540,70 @@ async function explainNetworkWithAI(apiKey, reqs, url) {
 }
 
 // ===== Link Health: check links for broken/dead URLs (concurrent, capped) =====
-async function checkOneLink(href) {
+// Transient statuses: worth ONE retry before judging (rate limits, hiccups,
+// overloaded servers) - professional checkers never fail these on first sight.
+const LINK_TRANSIENT = new Set([408, 425, 429, 500, 502, 503, 504, 521, 522, 523, 524]);
+
+// One attempt. GET (not HEAD - many servers lie to HEAD) and the body download
+// is aborted as soon as the response headers arrive, so it costs almost the
+// same as HEAD but behaves exactly like a real browser visit.
+async function linkAttempt(href, timeoutMs) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-        let resp = await fetch(href, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal, credentials: 'omit' });
-        // Some servers reject HEAD - retry with GET
-        if (resp.status === 405 || resp.status === 501 || resp.status === 403) {
-            resp = await fetch(href, { method: 'GET', redirect: 'follow', signal: ctrl.signal, credentials: 'omit' });
-        }
+        const resp = await fetch(href, { method: 'GET', redirect: 'follow', signal: ctrl.signal, credentials: 'omit', cache: 'no-store' });
+        const out = { status: resp.status, ok: resp.ok, redirected: resp.redirected, finalUrl: resp.url };
         clearTimeout(timer);
-        return { status: resp.status, ok: resp.ok, redirected: resp.redirected, finalUrl: resp.url };
+        try { ctrl.abort(); } catch (e) { }   // cancel the body download
+        return out;
     } catch (e) {
         clearTimeout(timer);
         return { status: 0, ok: false, error: e.name === 'AbortError' ? 'Timeout' : (e.message || 'Network error') };
     }
 }
 
-async function checkLinks(links) {
-    const CONCURRENCY = 6;
-    const results = new Array(links.length);
-    let idx = 0;
-    async function worker() {
-        while (idx < links.length) {
-            const i = idx++;
-            const r = await checkOneLink(links[i].href);
-            results[i] = { ...links[i], ...r };
-        }
+async function checkOneLink(href) {
+    let r = await linkAttempt(href, 12000);
+    // transient failure -> wait a moment and retry once before judging
+    if (r.status === 0 || LINK_TRANSIENT.has(r.status)) {
+        await new Promise(res => setTimeout(res, 1500));
+        const r2 = await linkAttempt(href, 15000);
+        // a clean result on retry clears the false alarm; a different failure
+        // (e.g. timeout -> real status) is also more informative
+        if (r2.status !== 0 && !LINK_TRANSIENT.has(r2.status)) r = r2;
+        else if (r.status === 0 && r2.status !== 0) r = r2;
+        r.retried = true;
     }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, links.length) }, worker));
-    return results;
+    return r;
 }
 
-// AI: group/prioritize broken links and suggest likely causes/fixes.
-async function explainLinksWithAI(apiKey, broken, url) {
-    const items = (broken || []).slice(0, 40).map(l => ({
-        href: String(l.href || '').slice(0, 300),
-        text: String(l.text || '').slice(0, 100),
-        status: l.status, error: l.error || ''
-    }));
-    if (!items.length) return { findings: [] };
-
-    const schema = {
-        type: 'object',
-        properties: {
-            findings: {
-                type: 'array',
-                items: {
-                    type: 'object',
-                    properties: {
-                        title: { type: 'string', description: 'short title of the issue/group' },
-                        severity: { type: 'string', enum: ['high', 'medium', 'low'] },
-                        cause: { type: 'string', description: 'likely reason the link(s) are broken' },
-                        fix: { type: 'string', description: 'concrete suggestion (fix the URL, remove it, etc.)' },
-                        relatedMessage: { type: 'string', description: 'the link(s) this is about' }
-                    },
-                    required: ['title', 'severity', 'cause', 'fix', 'relatedMessage'],
-                    additionalProperties: false
-                }
-            }
-        },
-        required: ['findings'],
-        additionalProperties: false
-    };
-
-    const prompt = [
-        'You are a senior web QA engineer. Below are broken/unreachable links found on a web page (HTTP status or network error).',
-        'GROUP related broken links (same domain, same path pattern, same status) and explain them: for each give a title, severity, the likely cause, and a concrete fix.',
-        'A 404 is a missing page; 0/Timeout/Network error may be a dead domain, an offline server, or a link that blocks automated checks; 401/403 may be auth-protected (not truly broken). Note that distinction.',
-        'An item whose error mentions "Soft 404" returned HTTP 200 but the page content looks like a not-found page or silently redirects to the home page - treat it as effectively broken and suggest fixing or removing the link / restoring the target page.',
-        'Base everything only on the data. Do not invent links. Write in English.',
-        '',
-        `Page URL: ${url || ''}`,
-        `Broken links: ${JSON.stringify(items)}`
-    ].join('\n');
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-            model: AI_CONFIG.smartModel || AI_CONFIG.model,
-            max_tokens: 4096,
-            output_config: { format: { type: 'json_schema', schema } },
-            messages: [{ role: 'user', content: prompt }]
-        })
+// Per-host scheduling: requests to the SAME host run one-at-a-time with a
+// small delay (parallel bursts trip rate-limits/WAFs -> false "broken"),
+// while different hosts are checked in parallel (8 workers).
+async function checkLinks(links) {
+    const results = new Array(links.length);
+    const byHost = new Map();
+    links.forEach((l, i) => {
+        let host = '';
+        try { host = new URL(l.href).host; } catch (e) { }
+        if (!byHost.has(host)) byHost.set(host, []);
+        byHost.get(host).push(i);
     });
-    if (!response.ok) {
-        let message = `Claude API error (${response.status})`;
-        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
-        throw new Error(message);
+    const hostQueues = [...byHost.values()];
+    let qi = 0;
+    async function worker() {
+        while (qi < hostQueues.length) {
+            const queue = hostQueues[qi++];
+            for (let k = 0; k < queue.length; k++) {
+                const i = queue[k];
+                const r = await checkOneLink(links[i].href);
+                results[i] = { ...links[i], ...r };
+                if (k < queue.length - 1) await new Promise(res => setTimeout(res, 150 + Math.random() * 200));
+            }
+        }
     }
-    const data = await response.json();
-    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
-    const block = (data.content || []).find(b => b.type === 'text');
-    if (!block || !block.text) throw new Error('Empty AI response');
-    return JSON.parse(block.text);
+    await Promise.all(Array.from({ length: Math.min(8, hostQueues.length) }, worker));
+    return results;
 }
 
 // AI: analyse page performance metrics and suggest concrete optimizations.
