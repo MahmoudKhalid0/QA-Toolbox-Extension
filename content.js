@@ -1306,6 +1306,7 @@ function showInspectorPanel(el) {
 
     // ---------- header ----------
     $('#qa-ins-close').addEventListener('click', closeInspectorPanel);
+    qaAddMinimize(panel, panel.querySelector('.hd'), $('#qa-ins-close'));
     $('#qa-ins-pick').addEventListener('click', () => { closeInspectorPanel(); startInspectMode(); });
 
     // ---------- quick edit (state-aware, searchable) ----------
@@ -2608,6 +2609,7 @@ function qaOpenPanel(titleHtml, tool) {
     `;
     document.body.appendChild(panel);
     panel.querySelector('#qa-close').addEventListener('click', qaClosePanel);
+    qaAddMinimize(panel, panel.querySelector('.qa-head'), panel.querySelector('#qa-close'));
 
     // Drag the panel by its header
     (function makeDraggable() {
@@ -3150,6 +3152,7 @@ function openStoragePanel() {
     document.body.appendChild(panel);
 
     panel.querySelector('#st-close').addEventListener('click', () => panel.remove());
+    qaAddMinimize(panel, panel.querySelector('.st-head'), panel.querySelector('#st-close'));
     panel.querySelectorAll('.st-tab').forEach(b => b.addEventListener('click', () => { stSection = b.dataset.sec; stRefresh(); }));
     panel.querySelector('#st-add').addEventListener('click', stAdd);
     panel.querySelector('#st-body').addEventListener('click', (e) => {
@@ -4023,6 +4026,7 @@ function showXPathFinderPanel(el, mode) {
     const body = panel.querySelector('#ffx-body');
 
     panel.querySelector('#ffx-close').addEventListener('click', closeXPathFinderPanel);
+    qaAddMinimize(panel, panel.querySelector('.ffx-head'), panel.querySelector('#ffx-close'));
     panel.querySelector('#ffx-repick').addEventListener('click', () => {
         closeXPathFinderPanel();
         startInspectMode((picked) => showXPathFinderPanel(picked, mode));
@@ -5799,25 +5803,31 @@ function liToast(msg) {
     setTimeout(() => t.remove(), 1500);
 }
 // ============================================================================
-// Text Match — paste a reference text; it is compared WORD-BY-WORD against the
-// page (exact, case- & symbol-sensitive; order preserved via LCS). On the page,
-// words that match the reference are highlighted GREEN and words that DIFFER
-// are highlighted RED — so only the actual differences stand out, not the whole
-// block. Counter shows matched / different words. Works for Arabic & English.
-// No AI.
+// Text Match — paste a reference text (one item per line). Each line is first
+// LOCATED on the page (anchor search via word n-grams, so common repeated
+// words elsewhere on the page don't confuse it), then compared WORD-BY-WORD
+// against that exact spot. Fully sensitive to case, punctuation, symbols and
+// digits - the only thing ignored is characters invisible to a human reader
+// (zero-width/bidi marks, Arabic tatweel used for text-justification
+// stretching). Matching words turn GREEN, differing words turn RED, both
+// highlighted directly on the page. Works for Arabic & English. No AI.
 // ============================================================================
 const TM_IC = (() => {
     const w = (p) => `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
     return {
         x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
-        check: w('<path d="M20 6 9 17l-5-5"/>')
+        check: w('<path d="M20 6 9 17l-5-5"/>'),
+        min: w('<path d="M5 12h14"/>'),
+        max: w('<rect x="5" y="5" width="14" height="14" rx="2"/>')
     };
 })();
 
-const TM_GAP = 12;   // max run of consecutive differing words to mark red between matches
+const TM_GAP = 15;     // max run of consecutive differing words to mark red
+const TM_MARGIN = 10;  // page-word slack around an anchor's estimated window
 
 // Concatenate all VISIBLE text nodes into one string + a per-char node map,
-// so any span can be turned back into a DOM Range. A '\n' separates nodes.
+// so any span can be turned back into a DOM Range. A '\n' separates nodes so
+// two adjacent elements' text never runs together with no space.
 function tmCollect() {
     const rawArr = [], nodeMap = [];
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
@@ -5825,8 +5835,15 @@ function tmCollect() {
             if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
             const p = n.parentElement;
             if (!p || p.closest('#qa-tm, script, style, noscript')) return NodeFilter.FILTER_REJECT;
-            const st = getComputedStyle(p);
-            if (st.display === 'none' || st.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+            // checkVisibility also catches hidden ANCESTORS (e.g. a duplicate
+            // mobile menu inside display:none) whose descendants still report
+            // visible computed styles - matching there paints nothing visible
+            if (typeof p.checkVisibility === 'function') {
+                if (!p.checkVisibility()) return NodeFilter.FILTER_REJECT;
+            } else {
+                const st = getComputedStyle(p);
+                if (st.display === 'none' || st.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+            }
             return NodeFilter.FILTER_ACCEPT;
         }
     });
@@ -5834,33 +5851,124 @@ function tmCollect() {
     while ((n = walker.nextNode())) {
         const v = n.nodeValue;
         for (let k = 0; k < v.length; k++) { rawArr.push(v[k]); nodeMap.push({ node: n, offset: k }); }
-        rawArr.push('\n'); nodeMap.push(null);
+        // node-boundary marker: '\x00' (never appears in real text) so the
+        // tokenizer can tell "two nodes glued with no space" (<b>word</b>:)
+        // apart from real whitespace between words
+        rawArr.push('\x00'); nodeMap.push(null);
         total += v.length;
         if (total > 400000) break;
     }
     return { raw: rawArr.join(''), nodeMap };
 }
 
+// Characters invisible to a human reader: zero-width/bidi marks + Arabic
+// tatweel (used for text-justification stretching). These are stripped before
+// comparison since they're rendering artifacts, not real content.
+function tmIsInvisible(code) {
+    return code === 0x0640 || (code >= 0x200B && code <= 0x200F) || (code >= 0x202A && code <= 0x202E) || (code >= 0x2060 && code <= 0x2064) || code === 0xFEFF;
+}
+// Normalize a word for comparison (case-folded either way):
+//   strict=false : keep ONLY letters & digits - punctuation/symbols dropped,
+//                  so "data." == "data"
+//   strict=true  : keep visible punctuation & symbols too (only invisible
+//                  marks and tatweel dropped), so "data." != "data"
+function tmClean(word, strict) {
+    const n = word.normalize('NFKC');
+    let out = '';
+    for (const ch of n) {
+        const c = ch.codePointAt(0);
+        if (c === 0x0640 || tmIsInvisible(c)) continue;  // tatweel + invisible marks
+        if (strict || /[\p{L}\p{N}]/u.test(ch)) out += ch;
+    }
+    return out.toLowerCase();
+}
+
 // Split visible page text into whitespace-delimited word tokens, each with its
-// exact DOM Range. Node boundaries are whitespace, so a token never spans nodes.
-function tmPageTokens(cap) {
+// exact DOM Range. A pure-symbol fragment glued to the previous token with no
+// real whitespace (only a node boundary) is MERGED into it, so markup like
+// "<b>WORD</b>:" compares as "WORD:" and not as a word plus an orphan ":".
+function tmPageTokens(cap, strict) {
     const { raw, nodeMap } = tmCollect();
+    const isSep = (c) => c === '\x00' || /\s/.test(c);
     const toks = [];
     let i = 0;
     while (i < raw.length) {
-        if (/\s/.test(raw[i])) { i++; continue; }
+        if (isSep(raw[i])) { i++; continue; }
         let j = i;
-        while (j < raw.length && !/\s/.test(raw[j])) j++;
+        while (j < raw.length && !isSep(raw[j])) j++;
         const s = nodeMap[i], e = nodeMap[j - 1];
-        if (s && e) toks.push({ word: raw.slice(i, j), s, e });
+        const rawWord = raw.slice(i, j);
+        const word = tmClean(rawWord, strict);
+        if (s && e && word) {
+            const prev = toks[toks.length - 1];
+            // gap between previous token and this one is "soft" when it holds
+            // only node-boundary markers (no real spaces) -> same visual word
+            let soft = false;
+            if (prev && prev.rawEnd !== undefined) {
+                soft = true;
+                for (let g = prev.rawEnd; g < i; g++) { if (raw[g] !== '\x00') { soft = false; break; } }
+            }
+            const pureSym = !/[\p{L}\p{N}]/u.test(rawWord);
+            const prevPureSym = prev && !/[\p{L}\p{N}]/u.test(prev.rawWord);
+            if (soft && (pureSym || prevPureSym)) {
+                prev.rawWord += rawWord;
+                prev.word = tmClean(prev.rawWord, strict);
+                prev.e = e; prev.rawEnd = j;
+            } else {
+                toks.push({ word, s, e, rawWord, rawEnd: j });
+            }
+        }
         i = j;
         if (toks.length >= cap) break;
     }
     return toks;
 }
 
-// Longest Common Subsequence between two word arrays → matched [refIdx, pageIdx]
-// pairs (exact string equality). Diagonal DP with Uint16 table.
+// Build word n-gram -> [page start indices] maps for n = 2, 3, 4 (skips n = 1;
+// single common words like "in"/"of" would vote for too many wrong offsets).
+function tmBuildNgramMaps(pageWords) {
+    const maps = {};
+    for (const n of [2, 3, 4]) {
+        const m = new Map();
+        for (let i = 0; i + n <= pageWords.length; i++) {
+            const key = n + '' + pageWords.slice(i, i + n).join('');
+            let arr = m.get(key);
+            if (!arr) { arr = []; m.set(key, arr); }
+            arr.push(i);
+        }
+        maps[n] = m;
+    }
+    return maps;
+}
+
+// Estimate WHERE in the page a line's word[0] would sit, via n-gram voting:
+// every n-gram of the line that also occurs in the page casts a vote for
+// offset = pagePos - lineIdx. The offset with the most (weighted) votes wins -
+// the true location gets many consistent votes; coincidental repeats elsewhere
+// only ever cast a handful of scattered ones.
+function tmBestOffset(lineWords, ngramMaps) {
+    const votes = new Map();
+    for (const n of [4, 3, 2]) {
+        if (lineWords.length < n) continue;
+        const map = ngramMaps[n];
+        const weight = n * n;
+        for (let i = 0; i + n <= lineWords.length; i++) {
+            const key = n + '' + lineWords.slice(i, i + n).join('');
+            const positions = map.get(key);
+            if (!positions) continue;
+            for (const p of positions) {
+                const offset = p - i;
+                votes.set(offset, (votes.get(offset) || 0) + weight);
+            }
+        }
+    }
+    let bestOffset = null, bestVotes = 0;
+    for (const [off, v] of votes) { if (v > bestVotes) { bestVotes = v; bestOffset = off; } }
+    return bestVotes > 0 ? bestOffset : null;
+}
+
+// Word-level LCS (exact equality) between two word arrays -> matched
+// [aIdx, bIdx] pairs, in order. O(n*m) DP with a rolling Uint16 table.
 function tmLCS(a, b) {
     const n = a.length, m = b.length;
     if (!n || !m) return [];
@@ -5913,10 +6021,15 @@ function openTextMatchPanel() {
 #qa-tm .hd .ttl svg{width:15px;height:15px;color:#34d399;}
 #qa-tm .iconbtn{all:unset;cursor:pointer;color:#8b8898;padding:5px;border-radius:7px;display:flex;}
 #qa-tm .iconbtn:hover{background:#3a1d24;color:#f87171;}
+#qa-tm #qa-tm-min:hover{background:#262335;color:#fff;}
+#qa-tm.min{width:auto;}
+#qa-tm.min .bd{display:none;}
 #qa-tm .bd{padding:13px;overflow-y:auto;}
 #qa-tm textarea{width:100%;min-height:120px;max-height:260px;resize:vertical;background:#13111c;border:1px solid #2a2738;color:#fff;border-radius:8px;padding:9px 10px;font:13px/1.6 -apple-system,Segoe UI,sans-serif;}
 #qa-tm textarea:focus{outline:none;border-color:#7c3aed;}
 #qa-tm .hint{font-size:11px;color:#6b6878;margin:6px 2px 10px;}
+#qa-tm .opt{display:flex;align-items:flex-start;gap:7px;font-size:11px;color:#b9b6c8;margin:8px 2px 2px;cursor:pointer;line-height:1.45;}
+#qa-tm .opt input{width:13px;height:13px;margin-top:1px;accent-color:#7c3aed;cursor:pointer;flex:0 0 auto;}
 #qa-tm .go{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;width:100%;background:#7c3aed;color:#fff;font-weight:600;font-size:13px;padding:10px 0;border-radius:9px;}
 #qa-tm .go:hover{background:#6d28d9;}
 #qa-tm .result{margin-top:14px;display:none;}
@@ -5928,25 +6041,37 @@ function openTextMatchPanel() {
 #qa-tm .count.ok{background:rgba(16,185,129,.14);color:#34d399;border:1px solid rgba(16,185,129,.35);}
 #qa-tm .count.no{background:rgba(244,63,94,.14);color:#f87171;border:1px solid rgba(244,63,94,.35);}
 #qa-tm .note{font-size:11px;color:#6b6878;margin-top:9px;text-align:center;}
-#qa-tm .err{color:#f87171;font-size:12px;margin-top:10px;}`;
+#qa-tm .err{color:#f87171;font-size:12px;margin-top:10px;}
+#qa-tm .difflist{display:none;margin-top:10px;max-height:190px;overflow-y:auto;}
+#qa-tm .difflist.show{display:block;}
+#qa-tm .drow{padding:6px 9px;border-radius:8px;background:#13111c;border:1px solid #2a2738;margin-bottom:6px;font-size:12px;line-height:1.5;cursor:pointer;word-break:break-word;}
+#qa-tm .drow:hover{border-color:#7c3aed;}
+#qa-tm .drow .bad{color:#f87171;font-weight:700;}
+#qa-tm .drow .ctx{color:#8b8898;}
+#qa-tm .drow .miss{color:#f59e0b;font-size:10px;margin:0 4px;}`;
     (document.head || document.documentElement).appendChild(style);
 
     const panel = document.createElement('div');
     panel.id = 'qa-tm';
     panel.innerHTML = `
 <div class="hd">
-  <span class="ttl">${TM_IC.check} Text Match</span>
-  <button class="iconbtn" id="qa-tm-close" title="Close">${TM_IC.x}</button>
+  <span class="ttl">${TM_IC.check} Text Match <span style="color:#6b6878;font-size:10px;font-weight:400;">v8</span></span>
+  <span style="display:flex;gap:2px;">
+    <button class="iconbtn" id="qa-tm-min" title="Hide / show the panel">${TM_IC.min}</button>
+    <button class="iconbtn" id="qa-tm-close" title="Close">${TM_IC.x}</button>
+  </span>
 </div>
 <div class="bd">
-  <textarea id="qa-tm-input" placeholder="Paste the reference text (Arabic or English)" spellcheck="false" dir="auto"></textarea>
-  <div class="hint">Compared word-by-word against the page · matching words = green, different = red (exact, case &amp; symbol sensitive)</div>
-  <button class="go" id="qa-tm-run">Compare</button>
+  <textarea id="qa-tm-input" placeholder="Paste the reference text — one item per line (Arabic or English)" spellcheck="false" dir="auto"></textarea>
+  <label class="opt"><input type="checkbox" id="qa-tm-strict" checked> Strict symbols — a dot or comma counts as a difference (data &ne; data.)</label>
+  <div class="hint">Matches green, differences red, both on the page (case is always ignored)</div>
+  <button class="go" id="qa-tm-run">Check</button>
   <div class="result" id="qa-tm-result">
     <div class="counts">
       <div class="count ok"><span class="n" id="qa-tm-match">0</span><span class="l">Matched</span></div>
       <div class="count no"><span class="n" id="qa-tm-diff">0</span><span class="l">Different</span></div>
     </div>
+    <div class="difflist" id="qa-tm-difflist"></div>
     <div class="note" id="qa-tm-note"></div>
   </div>
   <div class="err" id="qa-tm-err"></div>
@@ -5956,72 +6081,420 @@ function openTextMatchPanel() {
     const ta = panel.querySelector('#qa-tm-input');
     const result = panel.querySelector('#qa-tm-result');
     const errEl = panel.querySelector('#qa-tm-err');
+    let lastDiffItems = [];   // diff rows of the last run (for click-to-scroll)
 
     const runCheck = () => {
         errEl.textContent = '';
         tmClearHighlight();
-        const refWords = ta.value.split(/\s+/).filter(Boolean).slice(0, 2500);
-        if (!refWords.length) { result.classList.remove('show'); errEl.textContent = 'Paste some text first.'; return; }
+        const rawLines = ta.value.split('\n').map(l => l.trim()).filter(Boolean).slice(0, 1000);
+        if (!rawLines.length) { result.classList.remove('show'); errEl.textContent = 'Paste some text first.'; return; }
 
-        // page word tokens (without our own panel)
+        // page word tokens (without our own panel), + n-gram index for anchoring
+        const strict = panel.querySelector('#qa-tm-strict').checked;
         panel.style.display = 'none';
-        const pageToks = tmPageTokens(8000);
+        const pageToks = tmPageTokens(20000, strict);
         panel.style.display = '';
         const pageWords = pageToks.map(t => t.word);
-
-        const pairs = tmLCS(refWords, pageWords);          // matched [refIdx, pageIdx]
-        const matchedPage = pairs.map(p => p[1]);          // increasing page indices
-        const matchedSet = new Set(matchedPage);
+        const ngramMaps = tmBuildNgramMaps(pageWords);
+        // word -> first index & occurrence count, for the short-line fallback anchor
+        const pageFirst = new Map(), pageCount = new Map();
+        for (let i = 0; i < pageWords.length; i++) {
+            const w = pageWords[i];
+            pageCount.set(w, (pageCount.get(w) || 0) + 1);
+            if (!pageFirst.has(w)) pageFirst.set(w, i);
+        }
 
         const canHL = window.CSS && CSS.highlights && typeof Highlight !== 'undefined';
-        const green = canHL ? new Highlight() : null;
-        const red = canHL ? new Highlight() : null;
-        let first = null, diffCount = 0;
+        let matchCount = 0, unlocated = 0, missingCount = 0;
+        // indices are collected in sets and painted at the END: a page word
+        // matched by ANY line is green, and is NEVER also painted red - the two
+        // translucent colours would composite into a misleading third colour
+        const greenIdx = new Set(), redIdx = new Set();
+        // token index -> the reference word it was compared against; lets the
+        // painter colour ONLY the differing characters (e.g. just the "." of
+        // "data.") red and keep the matching part green
+        const redRef = new Map();
+        // lenient form -> raw reference word, across ALL lines; lets later
+        // passes recover the ref counterpart of an unclaimed page word
+        const refLenMap = new Map();
+        const diffItems = [];   // { start, end, sTok, eTok, before, words, after, missing? }
 
         const addRange = (hl, tok) => {
-            try { const r = document.createRange(); r.setStart(tok.s.node, tok.s.offset); r.setEnd(tok.e.node, tok.e.offset + 1); hl.add(r); return r; }
-            catch (e) { return null; }
+            try { const r = document.createRange(); r.setStart(tok.s.node, tok.s.offset); r.setEnd(tok.e.node, tok.e.offset + 1); hl.add(r); return true; }
+            catch (e) { return false; }
         };
 
-        if (canHL) {
-            for (const pi of matchedPage) { const r = addRange(green, pageToks[pi]); if (r && !first) first = pageToks[pi].s.node; }
-            // mark small runs of differing page words (insertions) BETWEEN matched words red
-            for (let k = 0; k < matchedPage.length - 1; k++) {
-                const a = matchedPage[k], b = matchedPage[k + 1];
-                const gap = b - a - 1;
-                if (gap > 0 && gap <= TM_GAP) {
-                    for (let pi = a + 1; pi < b; pi++) { if (!matchedSet.has(pi)) { addRange(red, pageToks[pi]); diffCount++; } }
+        // a whole line that isn't on the page at all: count it and list it as
+        // "(not on page)" - but paint NOTHING (no location to point at)
+        const notFoundRow = (lineWords) => {
+            unlocated += lineWords.length;
+            diffItems.push({
+                start: 0, end: 0, sTok: null, eTok: null, before: '', after: '',
+                words: lineWords.slice(0, 8).join(' ') + (lineWords.length > 8 ? ' …' : ''),
+                missing: true
+            });
+        };
+
+        // lenient (symbols-ignored) view of the page tokens, built on demand -
+        // used in strict mode to find lines whose only differences are symbols
+        let lenPage = null;
+        const getLenPage = () => {
+            if (!lenPage) {
+                const words = [], idx = [];
+                for (let i = 0; i < pageToks.length; i++) {
+                    const w = tmClean(pageToks[i].word, false);
+                    if (w) { words.push(w); idx.push(i); }
                 }
+                lenPage = { words, idx };
+            }
+            return lenPage;
+        };
+
+        for (const line of rawLines) {
+            const rawWords = line.split(/\s+/).filter(Boolean).slice(0, 2000);
+            const lineEntries = rawWords.map(w => ({ raw: w, w: tmClean(w, strict) })).filter(e => e.w);
+            const lineWords = lineEntries.map(e => e.w);
+            if (!lineWords.length) continue;
+            for (const e of lineEntries) {
+                const len = tmClean(e.raw, false);
+                if (len && !refLenMap.has(len)) refLenMap.set(len, e.raw);
+            }
+
+            // FIRST: exact full-sequence occurrences anywhere on the page -
+            // highlight EVERY one of them green (the same text can legitimately
+            // appear in several places: breadcrumb, heading, body...)
+            let exactHit = false;
+            for (let i = 0; i + lineWords.length <= pageWords.length; i++) {
+                let k = 0;
+                while (k < lineWords.length && pageWords[i + k] === lineWords[k]) k++;
+                if (k === lineWords.length) {
+                    exactHit = true;
+                    for (let j = 0; j < lineWords.length; j++) greenIdx.add(i + j);
+                    i += lineWords.length - 1;
+                }
+            }
+            if (exactHit) { matchCount += lineWords.length; continue; }
+
+            // STRICT MODE FALLBACK: the line isn't on the page character-for-
+            // character - look for it IGNORING symbols. If found, the words
+            // whose symbols differ are the real differences: paint them RED in
+            // place (e.g. page "الرؤية" vs reference "الرؤية:").
+            if (strict) {
+                const refPairs = rawWords.map(w => ({ raw: w, strict: tmClean(w, true), len: tmClean(w, false) })).filter(p => p.len);
+                const refLen = refPairs.map(p => p.len);
+                // pure-symbol reference words ("&", "-", "/") vanish from the
+                // lenient view - keep their strict forms to judge the page's
+                // own standalone symbols inside the matched span
+                const refSymSet = new Set(rawWords.map(w => tmClean(w, true)).filter(w => w && !/[\p{L}\p{N}]/u.test(w)));
+                if (refLen.length) {
+                    const lp = getLenPage();
+                    let lenHit = false;
+                    for (let i = 0; i + refLen.length <= lp.words.length; i++) {
+                        let k = 0;
+                        while (k < refLen.length && lp.words[i + k] === refLen[k]) k++;
+                        if (k !== refLen.length) continue;
+                        for (let j = 0; j < refLen.length; j++) {
+                            const tokI = lp.idx[i + j];
+                            if (pageToks[tokI].word === refPairs[j].strict) {
+                                greenIdx.add(tokI);
+                                if (!lenHit) matchCount++;
+                            } else {
+                                redIdx.add(tokI);
+                                redRef.set(tokI, refPairs[j].raw);
+                                if (!lenHit) diffItems.push({
+                                    start: tokI, end: tokI + 1,
+                                    sTok: pageToks[tokI], eTok: pageToks[tokI],
+                                    before: tokI > 0 ? pageToks[tokI - 1].word : '',
+                                    words: pageToks[tokI].word,
+                                    after: tokI + 1 < pageToks.length ? pageToks[tokI + 1].word : ''
+                                });
+                            }
+                        }
+                        // standalone page symbols inside the span ("&" between
+                        // "Zakat" and "Tax") are invisible to the lenient view:
+                        // green them when the reference has that symbol too,
+                        // red them otherwise
+                        for (let t = lp.idx[i]; t <= lp.idx[i + refLen.length - 1]; t++) {
+                            if (greenIdx.has(t) || redIdx.has(t)) continue;
+                            if (refSymSet.has(pageToks[t].word)) greenIdx.add(t);
+                            else redIdx.add(t);
+                        }
+                        lenHit = true;
+                        i += refLen.length - 1;
+                    }
+                    if (lenHit) continue;
+                }
+            }
+
+            // single word not found anywhere - nothing to anchor a diff on
+            if (lineWords.length === 1) { notFoundRow(lineWords); continue; }
+
+            let offset = tmBestOffset(lineWords, ngramMaps);
+            if (offset === null) {
+                // n-gram anchoring failed (e.g. a short line where every word
+                // differs slightly by case/punctuation). Fall back to the RAREST
+                // reference word that does appear on the page - the fewer times
+                // it occurs, the more reliable it is as an anchor.
+                let bc = Infinity;
+                for (let i = 0; i < lineWords.length; i++) {
+                    const c = pageCount.get(lineWords[i]);
+                    // only a RARE word is a trustworthy anchor - a common word
+                    // ("in"/"of"...) would drag the diff to a random spot
+                    if (c && c < bc && c <= 5) { bc = c; offset = pageFirst.get(lineWords[i]) - i; }
+                }
+            }
+            if (offset === null) { notFoundRow(lineWords); continue; } // line not found anywhere on the page
+
+            // The window starts EXACTLY at the estimated location: any leading
+            // slack lets LCS grab an identical word from NEIGHBOURING content
+            // (menus, breadcrumbs) before the real match and mispaint the area
+            // between them. Trailing slack stays generous for extra words
+            // inserted inside the paragraph.
+            const winStart = Math.max(0, offset);
+            const winEnd = Math.min(pageWords.length, offset + lineWords.length + TM_MARGIN);
+            const windowWords = pageWords.slice(winStart, winEnd);
+
+            const pairs = tmLCS(lineWords, windowWords);
+            // GUARD: if fewer than half the line's words matched at this spot,
+            // the line isn't really here (the anchor latched onto a few common
+            // words somewhere random) - report it as not-found, paint nothing.
+            if (!pairs.length || pairs.length < Math.ceil(lineWords.length * 0.5)) {
+                notFoundRow(lineWords);
+                continue;
+            }
+            matchCount += pairs.length;
+
+            // GREEN: every matched page word
+            for (const [, wIdx] of pairs) greenIdx.add(winStart + wIdx);
+
+            // mark page window words [a, b) as differing (painted at the end)
+            // and record it (with one context word each side) for the panel list
+            const redRange = (a, b) => {
+                a = Math.max(0, a); b = Math.min(windowWords.length, b);
+                if (b <= a) return;
+                for (let wi = a; wi < b; wi++) redIdx.add(winStart + wi);
+                diffItems.push({
+                    start: winStart + a, end: winStart + b,
+                    sTok: pageToks[winStart + a], eTok: pageToks[winStart + b - 1],
+                    before: windowWords[a - 1] || '',
+                    words: windowWords.slice(a, b).join(' '),
+                    after: windowWords[b] || ''
+                });
+            };
+
+            // LEADING difference: if the pasted line has words BEFORE its first
+            // match, the same count of page words right before the match are the
+            // differing versions (e.g. a changed first word). Anything earlier is
+            // just margin / neighbouring page content, so it is NOT coloured.
+            const leadRef = pairs[0][0];
+            if (leadRef > 0) {
+                redRange(pairs[0][1] - leadRef, pairs[0][1]);
+                // 1:1 substitution -> remember each ref word for char-level paint
+                if (pairs[0][1] - leadRef >= 0) for (let t = 0; t < leadRef; t++) redRef.set(winStart + pairs[0][1] - leadRef + t, lineEntries[t].raw);
+            }
+
+            // INTERIOR differences: page words between two matched words
+            for (let k = 0; k < pairs.length - 1; k++) {
+                const pageA = pairs[k][1], pageB = pairs[k + 1][1];
+                const refA = pairs[k][0], refB = pairs[k + 1][0];
+                const refGap = refB - refA - 1;
+                const pageGap = pageB - pageA - 1;
+                if (pageGap > 0 && pageGap <= TM_GAP) {
+                    redRange(pageA + 1, pageB); // substitution / interior insert
+                    // 1:1 substitution -> remember each ref word for char-level paint
+                    if (refGap === pageGap) for (let t = 1; t <= refGap; t++) redRef.set(winStart + pageA + t, lineEntries[refA + t].raw);
+                }
+                else if (refGap > 0 && pageGap === 0) {
+                    // reference words missing from the page entirely
+                    missingCount += refGap;
+                    diffItems.push({
+                        start: winStart + pageA, end: winStart + pageA + 1,
+                        sTok: pageToks[winStart + pageA], eTok: pageToks[winStart + pageA],
+                        before: windowWords[pageA] || '',
+                        words: lineWords.slice(refA + 1, refB).join(' '),
+                        after: windowWords[pageB] || '',
+                        missing: true
+                    });
+                }
+            }
+
+            // TRAILING difference: words in the pasted line AFTER its last match
+            // (e.g. "data" vs "data." at the end) -> the page words right after
+            // the last match are the differing versions.
+            const tailRef = (lineWords.length - 1) - pairs[pairs.length - 1][0];
+            if (tailRef > 0) {
+                const lastP = pairs[pairs.length - 1][1], lastR = pairs[pairs.length - 1][0];
+                redRange(lastP + 1, lastP + 1 + tailRef);
+                for (let t = 1; t <= tailRef; t++) { if (lastP + t < windowWords.length) redRef.set(winStart + lastP + t, lineEntries[lastR + t].raw); }
+            }
+        }
+
+        // EXTRA-ON-PAGE pass: a short run of page words wedged BETWEEN two
+        // matched (green) words that no line accounted for - e.g. the page
+        // still has "الإنجاز:" but the reference doesn't - is a real difference.
+        // Pure-symbol tokens (bullets, dashes) are skipped as styling noise.
+        {
+            const g = [...greenIdx].sort((a, b) => a - b);
+            for (let k = 0; k < g.length - 1; k++) {
+                const a = g[k], b = g[k + 1];
+                const gap = b - a - 1;
+                if (gap < 1 || gap > 3) continue;
+                let ok = true;
+                for (let i = a + 1; i < b; i++) {
+                    if (greenIdx.has(i) || redIdx.has(i) || !/[\p{L}\p{N}]/u.test(pageToks[i].word)) { ok = false; break; }
+                }
+                if (!ok) continue;
+                for (let i = a + 1; i < b; i++) {
+                    redIdx.add(i);
+                    // recover the ref counterpart (if any) for char-level paint
+                    const rr = refLenMap.get(tmClean(pageToks[i].rawWord, false));
+                    if (rr) redRef.set(i, rr);
+                }
+                diffItems.push({
+                    start: a + 1, end: b,
+                    sTok: pageToks[a + 1], eTok: pageToks[b - 1],
+                    before: pageToks[a].word,
+                    words: pageToks.slice(a + 1, b).map(t => t.word).join(' '),
+                    after: pageToks[b].word
+                });
+            }
+        }
+
+        // PAINT: green wins over red (no colour compositing), red = never matched.
+        // When the differing word has a known reference counterpart, only the
+        // characters that actually differ go red (e.g. just the "." of "data.")
+        // and the matching part stays green.
+        let diffCount = missingCount;
+        if (canHL) {
+            const green = new Highlight(), red = new Highlight();
+            for (const i of greenIdx) addRange(green, pageToks[i]);
+            for (const i of redIdx) {
+                if (greenIdx.has(i)) continue;
+                const tok = pageToks[i], refRaw = redRef.get(i);
+                // char-level split needs the token to live in a single text node
+                if (refRaw && tok.s.node === tok.e.node) {
+                    const a = tok.rawWord, b = refRaw;
+                    let p = 0;
+                    while (p < a.length && p < b.length && a[p].toLowerCase() === b[p].toLowerCase()) p++;
+                    let sfx = 0;
+                    while (sfx < a.length - p && sfx < b.length - p && a[a.length - 1 - sfx].toLowerCase() === b[b.length - 1 - sfx].toLowerCase()) sfx++;
+                    const dS = p, dE = a.length - sfx;
+                    if (dE <= dS) {
+                        // the page word has NO differing characters - the ref just
+                        // carries extra symbols the page lacks (e.g. ref "الرؤية:"
+                        // vs page "الرؤية") -> treat as a normal match
+                        greenIdx.add(i);
+                        addRange(green, tok);
+                        continue;
+                    }
+                    if (dS > 0 || dE < a.length) {
+                        // only part of the word differs -> red just those chars
+                        diffCount++;
+                        const base = tok.s.offset;
+                        const sub = (hl, from, to) => {
+                            if (to <= from) return;
+                            try { const r = document.createRange(); r.setStart(tok.s.node, base + from); r.setEnd(tok.s.node, base + to); hl.add(r); } catch (e) { }
+                        };
+                        sub(green, 0, dS); sub(red, dS, dE); sub(green, dE, a.length);
+                        continue;
+                    }
+                }
+                diffCount++;
+                addRange(red, tok);
             }
             CSS.highlights.set('qa-tm-found', green);
             CSS.highlights.set('qa-tm-diff', red);
         } else {
-            // count differences even without highlighting
-            for (let k = 0; k < matchedPage.length - 1; k++) {
-                const gap = matchedPage[k + 1] - matchedPage[k] - 1;
-                if (gap > 0 && gap <= TM_GAP) diffCount += gap;
-            }
+            for (const i of redIdx) if (!greenIdx.has(i)) diffCount++;
         }
 
-        const matchCount = matchedPage.length;
-        const missingRef = refWords.length - matchCount; // reference words not found on the page
+        // drop diff rows whose words all turned out green via another line
+        const finalItems = diffItems.filter(d => {
+            if (d.missing) return true;
+            for (let i = d.start; i < d.end; i++) if (!greenIdx.has(i)) return true;
+            return false;
+        });
+
         panel.querySelector('#qa-tm-match').textContent = matchCount;
         panel.querySelector('#qa-tm-diff').textContent = diffCount;
+        // list every difference with one context word each side; click scrolls to it.
+        // Words with a known ref counterpart show ONLY the differing chars red.
+        const rowWordsHtml = (d) => {
+            if (d.missing || !d.end || d.end <= d.start) return `<span class="bad">${escapeHtml(d.words)}</span>`;
+            const grey = (t) => t ? `<span class="ctx">${escapeHtml(t)}</span>` : '';
+            const parts = [];
+            for (let i = d.start; i < d.end; i++) {
+                const a = pageToks[i].rawWord;
+                if (greenIdx.has(i)) { parts.push(grey(a)); continue; }
+                const b = redRef.get(i);
+                if (b) {
+                    let p = 0; while (p < a.length && p < b.length && a[p].toLowerCase() === b[p].toLowerCase()) p++;
+                    let s = 0; while (s < a.length - p && s < b.length - p && a[a.length - 1 - s].toLowerCase() === b[b.length - 1 - s].toLowerCase()) s++;
+                    const dS = p, dE = a.length - s;
+                    if (dE <= dS) { parts.push(grey(a)); continue; }                 // subset -> matched
+                    if (dS > 0 || dE < a.length) {                                   // partial -> red only the diff chars
+                        parts.push(grey(a.slice(0, dS)) + `<span class="bad">${escapeHtml(a.slice(dS, dE))}</span>` + grey(a.slice(dE)));
+                        continue;
+                    }
+                }
+                parts.push(`<span class="bad">${escapeHtml(a)}</span>`);
+            }
+            return parts.join(' ');
+        };
+        lastDiffItems = finalItems;
+        const dl = panel.querySelector('#qa-tm-difflist');
+        if (finalItems.length) {
+            dl.innerHTML = finalItems.slice(0, 100).map((d, i) =>
+                `<div class="drow" data-i="${i}" dir="auto"><span class="ctx">… ${escapeHtml(d.before)} </span>${rowWordsHtml(d)}${d.missing ? '<span class="miss">(not on page)</span>' : ''}<span class="ctx"> ${escapeHtml(d.after)} …</span></div>`).join('');
+            dl.classList.add('show');
+        } else { dl.innerHTML = ''; dl.classList.remove('show'); }
         result.classList.add('show');
 
         const note = panel.querySelector('#qa-tm-note');
-        if (!matchCount) note.textContent = 'No matching text found on the page.';
+        if (!matchCount && !diffCount) note.textContent = 'No matching text found on the page.';
         else {
             let msg = canHL ? 'Green = matches · red = differs on the page.' : 'Highlighting not supported in this browser.';
-            if (missingRef > 0) msg += ` ${missingRef} reference word${missingRef > 1 ? 's' : ''} not on the page.`;
+            if (unlocated > 0) msg += ` ${unlocated} word${unlocated > 1 ? 's' : ''} not found anywhere on the page.`;
             note.textContent = msg;
         }
-        if (first && first.parentElement) { try { first.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { } }
+        let firstIdx = null;
+        for (const i of greenIdx) if (firstIdx === null || i < firstIdx) firstIdx = i;
+        const firstNode = firstIdx !== null ? pageToks[firstIdx].s.node : null;
+        if (firstNode && firstNode.parentElement) { try { firstNode.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { } }
     };
 
     panel.querySelector('#qa-tm-run').addEventListener('click', runCheck);
+    // toggling strict mode re-runs the check immediately if there's input
+    panel.querySelector('#qa-tm-strict').addEventListener('change', () => { if (ta.value.trim()) runCheck(); });
     panel.querySelector('#qa-tm-close').addEventListener('click', closeTextMatchPanel);
+    // minimize: collapse to just the header strip (highlights stay on the page)
+    panel.querySelector('#qa-tm-min').addEventListener('click', (e) => {
+        const min = panel.classList.toggle('min');
+        e.currentTarget.innerHTML = min ? TM_IC.max : TM_IC.min;
+    });
     ta.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runCheck(); } });
+    // clicking a difference row scrolls to that spot and flashes a black
+    // outline around the exact words so the user sees precisely where it is
+    panel.querySelector('#qa-tm-difflist').addEventListener('click', (e) => {
+        const row = e.target.closest('.drow');
+        if (!row) return;
+        const d = lastDiffItems[+row.dataset.i];
+        if (!d || !d.sTok || !d.sTok.s.node.parentElement) return;
+        try { d.sTok.s.node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (err) { }
+        setTimeout(() => {   // after the smooth scroll settles
+            try {
+                const r = document.createRange();
+                r.setStart(d.sTok.s.node, d.sTok.s.offset);
+                r.setEnd(d.eTok.e.node, d.eTok.e.offset + 1);
+                const rect = r.getBoundingClientRect();
+                if (!rect.width && !rect.height) return;
+                const box = document.createElement('div');
+                box.style.cssText = `position:fixed;left:${rect.left - 3}px;top:${rect.top - 3}px;width:${rect.width + 6}px;height:${rect.height + 6}px;border:2px solid #000;border-radius:4px;z-index:2147483646;pointer-events:none;`;
+                document.body.appendChild(box);
+                setTimeout(() => box.remove(), 2400);
+            } catch (err) { }
+        }, 550);
+    });
 
     // drag by header
     let off = null;
@@ -6034,4 +6507,30 @@ function openTextMatchPanel() {
     document.addEventListener('mouseup', up);
 
     ta.focus();
+}
+// ============================================================================
+// Shared: add a minimize button to an on-page panel - collapses everything
+// except the header strip (highlights/state stay); click again to restore.
+// ============================================================================
+function qaAddMinimize(panel, headerEl, beforeBtn) {
+    if (!panel || !headerEl || panel.querySelector('.qa-minbtn')) return;
+    const MIN = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h14"/></svg>';
+    const MAX = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>';
+    const btn = document.createElement('button');
+    btn.className = 'qa-minbtn';
+    btn.title = 'Hide / show the panel';
+    btn.innerHTML = MIN;
+    btn.style.cssText = 'background:rgba(255,255,255,0.1);border:none;color:#fff;cursor:pointer;width:26px;height:26px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;margin-right:6px;flex:0 0 auto;';
+    let min = false;
+    btn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        min = !min;
+        for (const ch of panel.children) {
+            if (ch === headerEl || ch.tagName === 'STYLE') continue;
+            ch.style.display = min ? 'none' : '';
+        }
+        btn.innerHTML = min ? MAX : MIN;
+    });
+    if (beforeBtn && beforeBtn.parentElement) beforeBtn.parentElement.insertBefore(btn, beforeBtn);
+    else headerEl.appendChild(btn);
 }
