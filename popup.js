@@ -910,22 +910,6 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         });
     }
 
-    // ── Security card → runs in the page (content.js shows the panel) ──
-    const secCard = document.getElementById('securityToolBtn');
-    secCard.addEventListener('click', async () => {
-        if (secCard.classList.contains('scanning')) return;
-        const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!t || !t.url || /^(chrome|chrome-extension|about|edge|file):/i.test(t.url)) {
-            showToastMessage('Open a website first', 'error'); return;
-        }
-        secCard.classList.add('scanning');
-        await ensureContentScript(t.id);
-        chrome.tabs.sendMessage(t.id, { action: 'runSecurityScan' }, () => {
-            if (chrome.runtime.lastError) { secCard.classList.remove('scanning'); showToastMessage('Could not run on this page (reload it)', 'error'); }
-            // otherwise keep "scanning" until content.js reports it finished (toolScanDone)
-        });
-    });
-
     // ── Performance card → runs in the page (content.js shows the panel) ──
     const perfCard = document.getElementById('perfToolBtn');
     perfCard.addEventListener('click', async () => {
@@ -1525,11 +1509,11 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// content.js reports when an on-page tool (Link Health / Security) finishes,
+// content.js reports when an on-page tool (Link Health / Performance) finishes,
 // so the card stays in its "scanning" state (and unclickable) until then.
 chrome.runtime.onMessage.addListener((req) => {
     if (req && req.action === 'toolScanDone') {
-        const id = { security: 'securityToolBtn', links: 'linksToolBtn', perf: 'perfToolBtn' }[req.tool] || 'linksToolBtn';
+        const id = { links: 'linksToolBtn', perf: 'perfToolBtn' }[req.tool] || 'linksToolBtn';
         const c = document.getElementById(id);
         if (c) c.classList.remove('scanning');
     }

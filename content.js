@@ -71,10 +71,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         runLinkHealth();
         sendResponse({ success: true });
     }
-    if (request.action === 'runSecurityScan') {
-        runSecurityScan();
-        sendResponse({ success: true });
-    }
     if (request.action === 'runPerformance') {
         runPerformance();
         sendResponse({ success: true });
@@ -2847,52 +2843,6 @@ function lhRenderResults(body, links) {
             body.querySelector('#lh-back').addEventListener('click', () => lhRenderResults(body, links));
         });
     });
-}
-
-// ---- Security scan (panel on the page; scan runs in the background) ----
-function runSecurityScan() {
-    const body = qaOpenPanel('&#128737; Security Scan', 'security');
-    const myCtrl = qaScanCtrl;
-    body.innerHTML = '<div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Scanning &amp; analyzing with AI…</div>';
-    chrome.runtime.sendMessage({ action: 'aiSecurityScan', url: location.href }, (resp) => {
-        if (!myCtrl || myCtrl.signal.aborted || myCtrl !== qaScanCtrl) return; // closed or superseded
-        qaToolDone('security'); qaActiveTool = null;
-        if (chrome.runtime.lastError || !resp || resp.error) {
-            body.innerHTML = `<div class="qa-empty">${(resp && resp.error === 'no_api_key') ? 'AI key not configured in the extension settings.' : 'Scan failed: ' + qaEsc((chrome.runtime.lastError && chrome.runtime.lastError.message) || (resp && resp.error) || 'error')}</div>`;
-            return;
-        }
-        secRenderPanel(body, resp.ai || {}, resp.data || { ssl: {}, checks: [], cookies: { total: 0, details: [] } });
-    });
-}
-
-function secRenderPanel(body, ai, data) {
-    const grade = ai.grade === 'good' ? 'good' : ai.grade === 'medium' ? 'mid' : 'bad';
-    const score = Math.max(0, Math.min(100, ai.score || 0));
-    let html = `<div class="qa-score-wrap">
-        <div class="qa-score ${grade}" style="--p:${Math.round(score * 3.6)}deg"><span>${score}</span></div>
-        <div class="qa-score-info"><h4>Security score: ${score}/100</h4><p>${qaEsc(ai.summary || '')}</p></div>
-    </div>`;
-    const findings = ai.findings || [];
-    if (findings.length) {
-        html += `<div class="qa-grp">AI findings</div>`;
-        html += findings.map(f => `<div class="qa-find">
-            <h5>${qaEsc(f.title)} <span class="sev ${qaEsc(f.severity)}">${qaEsc(f.severity)}</span></h5>
-            <p>${qaEsc(f.cause)}</p><p class="fix"><i class="fas fa-lightbulb"></i> ${qaEsc(f.fix)}</p></div>`).join('');
-    } else {
-        html += `<div class="qa-empty">No issues found — the page looks solid. ✅</div>`;
-    }
-    // Scanned facts
-    const secrow = (cls, nm, ds) => `<div class="qa-secrow ${cls}"><div><div class="nm">${qaEsc(nm)}</div>${ds ? `<div class="ds">${qaEsc(ds)}</div>` : ''}</div></div>`;
-    html += `<div class="qa-grp">Connection</div>`;
-    const sslPass = data.ssl.protocol === 'HTTPS' || data.ssl.protocol === 'Local';
-    html += secrow(sslPass ? 'pass' : 'fail', 'SSL / HTTPS', `${data.ssl.status} (${data.ssl.protocol})`);
-    html += `<div class="qa-grp">Security headers</div>`;
-    if (data.headersError) html += `<div class="qa-empty">${qaEsc(data.headersError)}</div>`;
-    (data.checks || []).forEach(c => html += secrow(c.impact === 'positive' ? (c.warning ? 'warn' : 'pass') : 'fail', c.name, c.warning || (c.status === 'Passed' ? c.value : c.status)));
-    html += `<div class="qa-grp">Cookies (${data.cookies.total})</div>`;
-    if (!data.cookies.total) html += secrow('pass', 'No cookies', 'This page set no cookies');
-    else (data.cookies.details || []).forEach(c => html += secrow(c.risky ? 'fail' : 'pass', c.name, `HttpOnly:${c.httpOnly ? '✓' : '✗'} Secure:${c.secure ? '✓' : '✗'} SameSite:${c.sameSite}${c.risks && c.risks.length ? ' — ' + c.risks.join(' · ') : ''}`));
-    body.innerHTML = html;
 }
 
 // ---- Performance Monitor (collected in the page; AI explains the result) ----

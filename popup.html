@@ -549,7 +549,7 @@
         .dbg-finding .fix { color: #7dd3fc; }
 
         /* Debug: Console/Network switcher */
-        #dbg-console-panel.hidden, #dbg-network-panel.hidden, #dbg-security-panel.hidden, .net-detail.hidden { display: none; }
+        #dbg-console-panel.hidden, #dbg-network-panel.hidden, .net-detail.hidden { display: none; }
 
         /* Security panel */
         .sec-score-wrap { display: flex; align-items: center; gap: 14px; background: rgba(255,255,255,0.04); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
@@ -1572,18 +1572,6 @@
                         </div>
                     </button>
                 </div>
-
-                <button class="tool-card" id="securityToolBtn" title="Run AI security scan">
-                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #10b981, #059669);">
-                        <i class="fas fa-shield-halved"></i>
-                    </div>
-                    <div class="tool-card-info">
-                        <h4>Security Scan</h4>
-                        <p>AI audit of this page &mdash; SSL, security headers &amp; cookie flags, with a score and fixes</p>
-                        <div class="tool-scan"><i class="fas fa-spinner fa-spin"></i> AI is scanning the page…</div>
-                    </div>
-                    <i class="fas fa-play tool-card-go"></i>
-                </button>
 
                 <button class="tool-card" id="linksToolBtn" title="Scan links on this page">
                     <div class="tool-card-icon" style="background: linear-gradient(135deg, #f59e0b, #f97316);">
