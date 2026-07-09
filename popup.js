@@ -495,6 +495,17 @@ document.getElementById('apiExportToolBtn').addEventListener('click', async () =
     });
 });
 
+document.getElementById('timeMachineToolBtn').addEventListener('click', async () => {
+    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!t || !t.url || /^(chrome|chrome-extension|about|edge|file):/i.test(t.url)) {
+        showToastMessage('Open a website first', 'error'); return;
+    }
+    await ensureContentScript(t.id);
+    chrome.tabs.sendMessage(t.id, { action: 'openTimeMachine' }, () => {
+        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    });
+});
+
 // ── Link Health card → runs in the page (content.js checks, colours links & shows the panel) ──
 document.getElementById('linksToolBtn').addEventListener('click', async () => {
     const card = document.getElementById('linksToolBtn');

@@ -96,6 +96,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         openApiExportPanel();
         sendResponse({ success: true });
     }
+    if (request.action === 'openTimeMachine') {
+        openTimeMachinePanel();
+        sendResponse({ success: true });
+    }
     if (request.action === 'arStart') { arArm(request.seconds); sendResponse({ success: true }); }
     if (request.action === 'arStop') { arArm(0); sendResponse({ success: true }); }
     if (request.action === 'highlightBySelector') { sendResponse(highlightSelector(request.query)); }
@@ -7244,6 +7248,27 @@ function axBgFetch(url, method, headers, body) {
     });
 }
 
+function axSameOrigin(url) {
+    try { return new URL(url, location.href).origin === location.origin; } catch (e) { return false; }
+}
+
+// Same-origin requests run in the PAGE context (this content script): that
+// reuses the page's cert trust + cookies and dodges CORS — essential for
+// internal HTTPS sites with self-signed certs, where a background fetch fails
+// with "Failed to fetch" (HTTP 0). Cross-origin requests still go via bg.
+async function axFetch(url, method, headers, body) {
+    if (!axSameOrigin(url)) return axBgFetch(url, method, headers, body);
+    try {
+        const opts = { method: method || 'GET', headers: headers || {}, credentials: 'include', redirect: 'follow' };
+        if (body != null && !/^(GET|HEAD)$/i.test(opts.method)) opts.body = body;
+        const resp = await fetch(url, opts);
+        const text = await resp.text();
+        return { ok: resp.ok, status: resp.status, text };
+    } catch (e) {
+        return { ok: false, status: 0, error: String((e && e.message) || e) };
+    }
+}
+
 function axToCsv(items) {
     const cols = [...new Set(items.flatMap(i => (i && typeof i === 'object') ? Object.keys(i) : []))];
     const esc = (v) => {
@@ -7348,8 +7373,8 @@ function openApiExportPanel() {
                     else { u.searchParams.set(pag.pageParam, String(cur)); if (pag.sizeParam) u.searchParams.set(pag.sizeParam, String(pag.size)); }
                     pageUrl = u.toString();
                 }
-                const r = await axBgFetch(pageUrl, parsed.method, parsed.headers, parsed.body);
-                if (!r.ok) throw new Error(r.status === 401 ? 'Unauthorized (401) — the token expired. Reload the page, re-copy the request, and paste again.' : `Request failed (HTTP ${r.status || 0}${r.error ? ': ' + r.error : ''})`);
+                const r = await axFetch(pageUrl, parsed.method, parsed.headers, parsed.body);
+                if (!r.ok) throw new Error(r.status === 401 ? 'Unauthorized (401) — the token expired. Reload the page, re-copy the request, and paste again.' : r.status === 0 ? `Could not reach the server (${r.error || 'Failed to fetch'}). Open the site in a tab first and accept any certificate warning, then retry.` : `Request failed (HTTP ${r.status})`);
                 let json; try { json = JSON.parse(r.text); } catch (e) { throw new Error('Response is not JSON — this endpoint may not return data rows.'); }
                 const items = axExtractItems(json);
                 const t = axExtractTotal(json); if (t != null) total = t;
@@ -7393,4 +7418,144 @@ function openApiExportPanel() {
     document.addEventListener('mouseup', () => { off = null; });
 
     panel.querySelector('#qa-ax-in').focus();
+}
+
+// ============================================================================
+// Time Machine — override the page's clock (window.Date) to any date/time
+// ============================================================================
+const TMX_IC = {
+    clock: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    x: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>'
+};
+
+function tmxToInput(ms) {
+    const d = new Date(ms), p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function tmxFmt(ms) {
+    try { return new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' }); } catch (e) { return String(ms); }
+}
+function closeTimeMachinePanel() { const p = document.getElementById('qa-tmx'); if (p) p.remove(); const s = document.getElementById('qa-tmx-style'); if (s) s.remove(); if (window.__qaTmxTick) { clearInterval(window.__qaTmxTick); window.__qaTmxTick = null; } }
+
+function openTimeMachinePanel() {
+    if (document.getElementById('qa-tmx')) { closeTimeMachinePanel(); return; }
+    const style = document.createElement('style');
+    style.id = 'qa-tmx-style';
+    style.textContent = `
+#qa-tmx{position:fixed;top:16px;right:16px;width:340px;z-index:2147483647;display:flex;flex-direction:column;direction:ltr;
+  background:#17151f;color:#e5e7eb;border:1px solid #2a2738;border-radius:14px;box-shadow:0 14px 44px rgba(0,0,0,.6);font:13px/1.45 -apple-system,Segoe UI,sans-serif;overflow:hidden;}
+#qa-tmx *{box-sizing:border-box;}
+#qa-tmx .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px;background:#1c1a26;border-bottom:1px solid #2a2738;cursor:move;user-select:none;}
+#qa-tmx .ttl{font-weight:600;display:flex;align-items:center;gap:7px;}
+#qa-tmx .ttl svg{color:#38bdf8;}
+#qa-tmx .iconbtn{all:unset;cursor:pointer;color:#8b8898;padding:5px;border-radius:7px;display:flex;}
+#qa-tmx .iconbtn:hover{background:#3a1d24;color:#f87171;}
+#qa-tmx .bd{padding:13px;}
+#qa-tmx label.lbl{display:block;font-size:11.5px;color:#a9a6b8;margin:0 2px 5px;}
+#qa-tmx input[type=datetime-local]{width:100%;background:#0f0e16;border:1px solid #2a2738;color:#fff;border-radius:8px;padding:8px 10px;font-size:13px;outline:none;color-scheme:dark;}
+#qa-tmx input[type=datetime-local]:focus{border-color:#38bdf8;}
+#qa-tmx .presets{display:flex;flex-wrap:wrap;gap:5px;margin:9px 0 12px;}
+#qa-tmx .presets button{all:unset;cursor:pointer;font-size:11px;color:#cbd5e1;background:#0f0e16;border:1px solid #2a2738;border-radius:7px;padding:5px 8px;flex:0 0 auto;}
+#qa-tmx .presets button:hover{border-color:#38bdf8;color:#fff;}
+#qa-tmx .seg{display:flex;background:#0f0e16;border:1px solid #2a2738;border-radius:9px;padding:3px;margin-bottom:12px;}
+#qa-tmx .seg button{all:unset;cursor:pointer;flex:1;text-align:center;font-size:12px;padding:7px 0;border-radius:6px;color:#a9a6b8;}
+#qa-tmx .seg button.on{background:#38bdf8;color:#0b1220;font-weight:700;}
+#qa-tmx .seg small{display:block;font-size:9.5px;opacity:.75;font-weight:400;}
+#qa-tmx .acts{display:flex;gap:8px;}
+#qa-tmx .go{all:unset;cursor:pointer;flex:1;text-align:center;background:#38bdf8;color:#0b1220;font-weight:700;font-size:13px;padding:10px 0;border-radius:9px;}
+#qa-tmx .go:hover{background:#0ea5e9;}
+#qa-tmx .reset{all:unset;cursor:pointer;text-align:center;background:#1d1a28;border:1px solid #2a2738;color:#e5e7eb;font-weight:600;font-size:12.5px;padding:10px 16px;border-radius:9px;}
+#qa-tmx .reset:hover{background:#262335;}
+#qa-tmx .status{display:none;margin-top:12px;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.32);border-radius:10px;padding:11px 12px;}
+#qa-tmx .status.on{display:block;}
+#qa-tmx .status .now{font-size:16px;font-weight:800;color:#7dd3fc;font-variant-numeric:tabular-nums;}
+#qa-tmx .status .sub{font-size:11px;color:#94a3b8;margin-top:3px;}
+#qa-tmx .status .real{font-size:10.5px;color:#6b6878;margin-top:6px;}
+#qa-tmx .hint{font-size:11px;color:#6b6878;margin-top:11px;line-height:1.5;}
+#qa-tmx .hint a{color:#7dd3fc;cursor:pointer;text-decoration:underline;}`;
+    (document.head || document.documentElement).appendChild(style);
+
+    const panel = document.createElement('div');
+    panel.id = 'qa-tmx';
+    panel.innerHTML = `
+<div class="hd">
+  <span class="ttl">${TMX_IC.clock} Time Machine</span>
+  <button class="iconbtn" id="qa-tmx-close" title="Close">${TMX_IC.x}</button>
+</div>
+<div class="bd">
+  <label class="lbl">Set the page's clock to</label>
+  <input type="datetime-local" id="qa-tmx-dt" step="1">
+  <div class="presets">
+    <button data-d="-365">−1y</button><button data-d="-30">−1mo</button><button data-d="-7">−1w</button><button data-d="-1">−1d</button>
+    <button data-d="1">+1d</button><button data-d="7">+1w</button><button data-d="30">+1mo</button><button data-d="365">+1y</button>
+  </div>
+  <div class="seg" id="qa-tmx-seg">
+    <button data-m="advance" class="on">Advance<small>clock keeps ticking</small></button>
+    <button data-m="freeze">Freeze<small>time stands still</small></button>
+  </div>
+  <div class="acts">
+    <button class="go" id="qa-tmx-apply">Apply</button>
+    <button class="reset" id="qa-tmx-reset">Reset</button>
+  </div>
+  <div class="status" id="qa-tmx-status">
+    <div class="now" id="qa-tmx-now">—</div>
+    <div class="sub" id="qa-tmx-sub"></div>
+    <div class="real" id="qa-tmx-real"></div>
+  </div>
+  <div class="hint">The page sees this time via <b>Date</b> / <b>Date.now()</b>. Scripts that read the clock only on load? <a id="qa-tmx-reload">Reload the page</a> — the override re-applies automatically.</div>
+</div>`;
+    document.body.appendChild(panel);
+
+    const $ = (s) => panel.querySelector(s);
+    const dt = $('#qa-tmx-dt'), statusEl = $('#qa-tmx-status');
+    let mode = 'advance', active = null;   // active = {mode, targetMs, anchorMs}
+    dt.value = tmxToInput(Date.now());
+
+    $('#qa-tmx-seg').addEventListener('click', (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        mode = b.dataset.m;
+        for (const x of $('#qa-tmx-seg').children) x.classList.toggle('on', x === b);
+    });
+    panel.querySelectorAll('.presets button').forEach(b => b.addEventListener('click', () => {
+        const base = dt.value ? new Date(dt.value).getTime() : Date.now();
+        dt.value = tmxToInput(base + parseInt(b.dataset.d) * 86400000);
+    }));
+
+    const stopTick = () => { if (window.__qaTmxTick) { clearInterval(window.__qaTmxTick); window.__qaTmxTick = null; } };
+    const paint = () => {
+        if (!active) { statusEl.classList.remove('on'); stopTick(); return; }
+        statusEl.classList.add('on');
+        const compute = () => active.mode === 'freeze' ? active.targetMs : active.targetMs + (Date.now() - active.anchorMs);
+        const tick = () => {
+            $('#qa-tmx-now').textContent = tmxFmt(compute());
+            $('#qa-tmx-sub').textContent = active.mode === 'freeze' ? 'Frozen' : 'Advancing in real time';
+            $('#qa-tmx-real').textContent = 'Real time: ' + tmxFmt(Date.now());
+        };
+        tick(); stopTick(); if (active.mode !== 'freeze') window.__qaTmxTick = setInterval(tick, 1000);
+    };
+
+    $('#qa-tmx-apply').addEventListener('click', () => {
+        const targetMs = dt.value ? new Date(dt.value).getTime() : Date.now();
+        if (isNaN(targetMs)) return;
+        chrome.runtime.sendMessage({ action: 'timeMachineApply', mode, targetMs }, (r) => {
+            if (r && r.ok && r.cfg) { active = r.cfg; paint(); }
+        });
+    });
+    $('#qa-tmx-reset').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'timeMachineReset' }, () => { active = null; paint(); });
+    });
+    $('#qa-tmx-reload').addEventListener('click', () => location.reload());
+    $('#qa-tmx-close').addEventListener('click', closeTimeMachinePanel);
+    qaAddMinimize(panel, panel.querySelector('.hd'), $('#qa-tmx-close'));
+
+    // restore existing state for this tab
+    chrome.runtime.sendMessage({ action: 'timeMachineStatus' }, (r) => {
+        if (r && r.cfg) { active = r.cfg; mode = active.mode; dt.value = tmxToInput(active.mode === 'freeze' ? active.targetMs : active.targetMs + (Date.now() - active.anchorMs)); for (const x of $('#qa-tmx-seg').children) x.classList.toggle('on', x.dataset.m === mode); paint(); }
+    });
+
+    // drag by header
+    let off = null; const head = panel.querySelector('.hd');
+    head.addEventListener('mousedown', (e) => { if (e.target.closest('button')) return; const rc = panel.getBoundingClientRect(); off = { dx: e.clientX - rc.left, dy: e.clientY - rc.top }; e.preventDefault(); });
+    document.addEventListener('mousemove', (e) => { if (!off) return; panel.style.right = 'auto'; panel.style.left = Math.max(4, Math.min(innerWidth - 80, e.clientX - off.dx)) + 'px'; panel.style.top = Math.max(4, Math.min(innerHeight - 50, e.clientY - off.dy)) + 'px'; });
+    document.addEventListener('mouseup', () => { off = null; });
 }

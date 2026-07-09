@@ -83,6 +83,42 @@ const tabUrlCache = {};
 chrome.tabs.onUpdated.addListener((id, info, tab) => { if (tab && tab.url) tabUrlCache[id] = tab.url; });
 chrome.tabs.onRemoved.addListener((id) => { const url = tabUrlCache[id]; delete tabUrlCache[id]; autoClearOnTabClosed(url); });
 
+// ── Time Machine ────────────────────────────────────────────────────────────
+// These two run in the page's MAIN world (serialized by executeScript, so they
+// must be fully self-contained). qaTMInstall overrides window.Date so the page
+// sees a chosen time; qaTMUninstall restores the real one.
+function qaTMInstall(cfg) {
+    try {
+        const W = window;
+        if (!W.__qaRealDate) W.__qaRealDate = W.Date;
+        W.__qaTMcfg = cfg;                       // {mode:'freeze'|'advance', targetMs, anchorMs}
+        if (W.__qaTMInstalled) return;           // already wrapped — just updated cfg
+        const RealDate = W.__qaRealDate;
+        const shift = () => { const c = W.__qaTMcfg; return c.mode === 'freeze' ? c.targetMs : c.targetMs + (RealDate.now() - c.anchorMs); };
+        class FakeDate extends RealDate {
+            constructor(...a) { if (a.length === 0) super(shift()); else super(...a); }
+            static now() { return Math.floor(shift()); }
+        }
+        try { Object.defineProperty(FakeDate, 'name', { value: 'Date' }); } catch (e) { }
+        W.Date = FakeDate;
+        W.__qaTMInstalled = true;
+    } catch (e) { }
+}
+function qaTMUninstall() {
+    try { const W = window; if (W.__qaRealDate) W.Date = W.__qaRealDate; W.__qaTMInstalled = false; W.__qaTMcfg = null; } catch (e) { }
+}
+// Re-apply the override as early as possible on every reload/navigation of a
+// tab that has Time Machine active, so scripts reading the clock on load see it.
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+    if (info.status !== 'loading') return;
+    chrome.storage.local.get(['qaTM'], (r) => {
+        const cfg = r.qaTM && r.qaTM[tabId];
+        if (!cfg) return;
+        chrome.scripting.executeScript({ target: { tabId, allFrames: true }, world: 'MAIN', func: qaTMInstall, args: [cfg] }).catch(() => { });
+    });
+});
+chrome.tabs.onRemoved.addListener((id) => { chrome.storage.local.get(['qaTM'], (r) => { const m = r.qaTM || {}; if (m[id] !== undefined) { delete m[id]; chrome.storage.local.set({ qaTM: m }); } }); });
+
 async function getClearCfg() { const r = await chrome.storage.local.get('qaClearData'); return Object.assign({ types: {}, auto: {} }, (r && r.qaClearData) || {}); }
 
 function domainsToOrigins(hosts) {
@@ -1182,6 +1218,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ ok: false, status: 0, error: String((e && e.message) || e) });
             }
         })();
+        return true;
+    }
+
+    // Time Machine: install / update / remove the fake Date override in the page
+    if (request.action === 'timeMachineApply') {
+        const tabId = sender.tab && sender.tab.id;
+        if (tabId == null) { sendResponse({ ok: false, error: 'no tab' }); return true; }
+        const cfg = { mode: request.mode === 'freeze' ? 'freeze' : 'advance', targetMs: request.targetMs, anchorMs: Date.now() };
+        chrome.storage.local.get(['qaTM'], (r) => {
+            const m = r.qaTM || {}; m[tabId] = cfg; chrome.storage.local.set({ qaTM: m });
+        });
+        chrome.scripting.executeScript({ target: { tabId, allFrames: true }, world: 'MAIN', func: qaTMInstall, args: [cfg] })
+            .then(() => sendResponse({ ok: true, cfg }))
+            .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+        return true;
+    }
+    if (request.action === 'timeMachineReset') {
+        const tabId = sender.tab && sender.tab.id;
+        if (tabId == null) { sendResponse({ ok: false }); return true; }
+        chrome.storage.local.get(['qaTM'], (r) => { const m = r.qaTM || {}; delete m[tabId]; chrome.storage.local.set({ qaTM: m }); });
+        chrome.scripting.executeScript({ target: { tabId, allFrames: true }, world: 'MAIN', func: qaTMUninstall })
+            .then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: true }));
+        return true;
+    }
+    if (request.action === 'timeMachineStatus') {
+        const tabId = sender.tab && sender.tab.id;
+        chrome.storage.local.get(['qaTM'], (r) => sendResponse({ cfg: (r.qaTM || {})[tabId] || null }));
         return true;
     }
 
