@@ -286,6 +286,20 @@
         .clr-chk.dim { opacity: 0.45; cursor: not-allowed; }
         .clr-sel { color: #667eea; cursor: pointer; text-decoration: none; font-weight: 600; }
         .clr-sel:hover { text-decoration: underline; }
+
+        .page-footer {
+            text-align: center;
+            padding: 22px 0 30px;
+            font-size: 12px;
+        }
+        .page-footer a {
+            color: #8b8898;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .page-footer a:hover { color: #667eea; text-decoration: underline; }
     </style>
 </head>
 
@@ -498,6 +512,13 @@
             </div>
             <input type="file" id="importInput" style="display: none;" accept=".json">
         </div>
+    </div>
+
+    <div class="page-footer">
+        <a href="https://github.com/MahmoudKhalid0/QA-Toolbox-Extension/blob/main/PRIVACY.md" target="_blank"
+            rel="noopener">
+            <i class="fas fa-shield-halved"></i> Privacy Policy
+        </a>
     </div>
 
     <div id="toast" class="toast">Action completed!</div>
