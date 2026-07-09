@@ -3300,7 +3300,7 @@ const RV_ICON = {
 };
 
 function rvDefaultState() {
-    const s = { tabs: [], active: 1, nextTab: 1, nextScreen: 1, custom: [], zoom: 0.5, ua: 'desktop', mockup: false, layout: 'row', sync: true, touch: true, outline: false, grid: false, ruler: false, hideScroll: false };
+    const s = { tabs: [], active: 1, nextTab: 1, nextScreen: 1, custom: [], zoom: 0.5, ua: 'desktop', mockup: false, layout: 'row', sync: true, touch: true, outline: false, grid: false, ruler: false, hideScroll: true };
     const mk = (name) => { const d = RV_BUILTIN.find(x => x.name === name); return { id: s.nextScreen++, name: d.name, w: d.w, h: d.h, rotated: false }; };
     s.tabs = [
         { id: s.nextTab++, name: 'Mobile', screens: [mk('iPhone 14 Pro'), mk('Pixel 7')] },
@@ -3323,6 +3323,11 @@ function openResponsiveOverlay() {
     chrome.storage.local.get(RV_STORE, (res) => {
         const saved = res && res[RV_STORE];
         rvState = saved && saved.tabs && saved.tabs.length ? Object.assign(rvDefaultState(), saved) : rvDefaultState();
+        // migrate: guarantee UNIQUE screen ids (old saves could collide)
+        let nid = 1;
+        rvState.tabs.forEach(t => (t.screens || []).forEach(s => { s.id = nid++; }));
+        rvState.nextScreen = nid;
+        rvState.isolated = null;
         rvState.url = location.href;
         rvState.isolated = null;
         rvState.outline = rvState.grid = rvState.ruler = false; // hidden for now
@@ -3340,49 +3345,66 @@ function rvBuildOverlay() {
     o.id = 'qa-rv';
     o.innerHTML = `
         <style>
-            #qa-rv { position: fixed; inset: 0; z-index: 2147483647; background: #0f0f17; color: #e2e8f0; direction: ltr; text-align: left;
-                font-family: 'Segoe UI', Arial, sans-serif; display: flex; flex-direction: column; }
+            #qa-rv { position: fixed; inset: 0; z-index: 2147483647; background: #0d0d14; color: #d6d3e1; direction: ltr; text-align: left;
+                font-family: -apple-system, 'Segoe UI', Arial, sans-serif; display: flex; flex-direction: column; font-size: 12.5px; }
             #qa-rv * { box-sizing: border-box; }
-            #qa-rv .rv-bar { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: #16162a; border-bottom: 1px solid rgba(255,255,255,0.08); flex-wrap: wrap; flex-shrink: 0; }
-            #qa-rv .rv-brand { font-weight: 700; font-size: 13.5px; color: #fff; display: flex; align-items: center; gap: 7px; }
-            #qa-rv .rv-url { flex: 1; min-width: 200px; display: flex; gap: 6px; }
-            #qa-rv .rv-url input { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #fff; padding: 8px 11px; font-size: 12.5px; outline: none; }
-            #qa-rv .rv-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1); color: #e2e8f0; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; display: inline-flex; align-items: center; gap: 5px; }
-            #qa-rv .rv-btn:hover { background: rgba(255,255,255,0.16); color: #fff; }
-            #qa-rv .rv-btn.go { background: linear-gradient(135deg,#8b5cf6,#6366f1); border: none; color: #fff; font-weight: 600; }
-            #qa-rv .rv-btn.on { background: rgba(139,92,246,0.3); border-color: rgba(139,92,246,0.6); color: #fff; }
-            #qa-rv .rv-btn.close { background: rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.4); }
-            #qa-rv select.rv-sel { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #fff; border-radius: 8px; padding: 7px 8px; font-size: 12.5px; outline: none; cursor: pointer; }
-            #qa-rv select.rv-sel option { background: #16213e; color: #fff; }
-            #qa-rv .rv-zoomwrap { display: inline-flex; align-items: center; gap: 3px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 0 8px 0 4px; }
-            #qa-rv .rv-zoomwrap input { width: 44px; background: none; border: none; color: #fff; padding: 7px 2px; font-size: 12.5px; outline: none; text-align: right; }
-            #qa-rv .rv-zoomwrap b { color: #94a3b8; font-weight: 400; font-size: 12px; }
-            /* Tab bar */
-            #qa-rv .rv-tabs { display: flex; align-items: center; gap: 4px; padding: 6px 12px; background: #12121f; border-bottom: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; overflow-x: auto; }
-            #qa-rv .rv-tab { display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.05); border: 1px solid transparent; color: #cbd5e1; border-radius: 8px 8px 0 0; padding: 6px 10px; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
-            #qa-rv .rv-tab.active { background: #0f0f17; border-color: rgba(139,92,246,0.5); border-bottom-color: transparent; color: #fff; }
+            /* ---- top bar ---- */
+            #qa-rv .rv-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #15131d; border-bottom: 1px solid #262335; flex-wrap: wrap; flex-shrink: 0; }
+            #qa-rv .rv-brand { font-weight: 700; font-size: 13px; color: #fff; display: flex; align-items: center; gap: 7px; padding-right: 4px; }
+            #qa-rv .rv-brand svg { color: #a78bfa; }
+            #qa-rv .rv-sep { width: 1px; height: 22px; background: #262335; margin: 0 3px; flex-shrink: 0; }
+            #qa-rv .rv-url { flex: 1; min-width: 180px; display: flex; gap: 6px; }
+            #qa-rv .rv-url input { flex: 1; background: #0f0e16; border: 1px solid #262335; border-radius: 9px; color: #fff; padding: 0 12px; height: 32px; font-size: 12.5px; outline: none; }
+            #qa-rv .rv-url input:focus { border-color: #7c3aed; }
+            #qa-rv .rv-btn { background: #1d1a28; border: 1px solid #262335; color: #d6d3e1; border-radius: 9px; padding: 0 11px; height: 32px; font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; display: inline-flex; align-items: center; gap: 6px; }
+            #qa-rv .rv-btn:hover { background: #262335; color: #fff; }
+            #qa-rv .rv-btn.ic { width: 32px; padding: 0; justify-content: center; }
+            #qa-rv .rv-btn.go { background: #7c3aed; border-color: #7c3aed; color: #fff; font-weight: 600; }
+            #qa-rv .rv-btn.go:hover { background: #6d28d9; }
+            #qa-rv .rv-btn.on { background: rgba(124,58,237,0.25); border-color: #7c3aed; color: #fff; }
+            #qa-rv .rv-btn.close:hover { background: #3a1d24; border-color: #7f1d1d; color: #f87171; }
+            #qa-rv select.rv-sel { background: #1d1a28; border: 1px solid #262335; color: #d6d3e1; border-radius: 9px; padding: 0 8px; height: 32px; font-size: 12.5px; outline: none; cursor: pointer; font-family: inherit; }
+            #qa-rv select.rv-sel:hover { background: #262335; }
+            #qa-rv select.rv-sel option { background: #15131d; color: #fff; }
+            #qa-rv .rv-zoomwrap { display: inline-flex; align-items: center; background: #1d1a28; border: 1px solid #262335; border-radius: 9px; height: 32px; padding: 0 8px 0 4px; }
+            #qa-rv .rv-zoomwrap input { width: 40px; background: none; border: none; color: #fff; font-size: 12.5px; outline: none; text-align: right; font-family: inherit; }
+            #qa-rv .rv-zoomwrap b { color: #8b8898; font-weight: 400; font-size: 12px; }
+            /* ---- tabs ---- */
+            #qa-rv .rv-tabs { display: flex; align-items: center; gap: 5px; padding: 7px 12px; background: #110f18; border-bottom: 1px solid #262335; flex-shrink: 0; overflow-x: auto; }
+            #qa-rv .rv-tab { display: flex; align-items: center; gap: 6px; background: #1d1a28; border: 1px solid transparent; color: #a9a6b8; border-radius: 8px; padding: 5px 11px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+            #qa-rv .rv-tab:hover { color: #fff; }
+            #qa-rv .rv-tab.active { background: rgba(124,58,237,0.18); border-color: #7c3aed; color: #fff; }
             #qa-rv .rv-tabname { outline: none; }
-            #qa-rv .rv-tabx { background: none; border: none; color: #64748b; cursor: pointer; font-size: 13px; padding: 0 2px; }
-            #qa-rv .rv-tabx:hover { color: #f87171; }
-            #qa-rv .rv-tabedit { background: none; border: none; color: #64748b; cursor: pointer; font-size: 11px; padding: 0 2px; }
-            #qa-rv .rv-tabedit:hover { color: #a78bfa; }
             #qa-rv .rv-tabname[contenteditable="true"] { background: rgba(255,255,255,0.1); border-radius: 4px; padding: 0 4px; }
-            #qa-rv .rv-tabadd { background: rgba(255,255,255,0.06); border: none; color: #94a3b8; cursor: pointer; border-radius: 6px; width: 26px; height: 26px; font-size: 16px; }
-            #qa-rv .rv-tabadd:hover { background: rgba(255,255,255,0.16); color: #fff; }
-            #qa-rv .rv-iso { display: none; padding: 7px 12px; background: rgba(139,92,246,0.15); border-bottom: 1px solid rgba(139,92,246,0.3); font-size: 12px; color: #c4b5fd; flex-shrink: 0; }
-            #qa-rv .rv-stage { flex: 1; overflow: auto; padding: 18px; }
-            #qa-rv .rv-row { display: flex; gap: 20px; align-items: flex-start; min-width: min-content; }
+            #qa-rv .rv-tabx, #qa-rv .rv-tabedit { background: none; border: none; color: #6b6878; cursor: pointer; font-size: 12px; padding: 0 1px; }
+            #qa-rv .rv-tabx { font-size: 14px; }
+            #qa-rv .rv-tabx:hover { color: #f87171; }
+            #qa-rv .rv-tabedit:hover { color: #a78bfa; }
+            #qa-rv .rv-tabadd { background: #1d1a28; border: 1px solid #262335; color: #8b8898; cursor: pointer; border-radius: 8px; width: 27px; height: 27px; font-size: 15px; flex-shrink: 0; }
+            #qa-rv .rv-tabadd:hover { background: #262335; color: #fff; }
+            /* ---- breakpoints ---- */
+            #qa-rv .rv-bps { display: flex; align-items: center; gap: 5px; padding: 6px 12px; background: #110f18; border-bottom: 1px solid #262335; flex-shrink: 0; overflow-x: auto; }
+            #qa-rv .rv-bps-l { font-size: 10.5px; color: #8b8898; text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0; margin-right: 3px; }
+            #qa-rv .rv-bps-l.dim { margin-left: 8px; }
+            #qa-rv .rv-bp { background: #1d1a28; border: 1px solid #262335; color: #a9a6b8; border-radius: 20px; padding: 3px 10px; font-size: 11px; cursor: pointer; font-family: Consolas, monospace; flex-shrink: 0; }
+            #qa-rv .rv-bp:hover { background: #262335; color: #fff; }
+            #qa-rv .rv-bp.det { border-color: rgba(124,58,237,0.55); color: #c4b5fd; }
+            #qa-rv .rv-bp.det:hover { background: rgba(124,58,237,0.2); }
+            /* ---- stage ---- */
+            #qa-rv .rv-iso { display: none; padding: 7px 12px; background: rgba(124,58,237,0.14); border-bottom: 1px solid rgba(124,58,237,0.35); font-size: 12px; color: #c4b5fd; flex-shrink: 0; }
+            #qa-rv .rv-stage { flex: 1; overflow: auto; padding: 20px; }
+            #qa-rv .rv-row { display: flex; gap: 22px; align-items: flex-start; min-width: min-content; }
             #qa-rv .rv-row.stack { flex-direction: column; align-items: center; }
-            #qa-rv .rv-fhead { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: #cbd5e1; overflow: hidden; }
-            #qa-rv .rv-fname { font-weight: 600; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: grab; }
+            #qa-rv .rv-fhead { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; color: #cbd5e1; overflow: hidden; }
+            #qa-rv .rv-fname { font-weight: 600; font-size: 12.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: grab; }
             #qa-rv .rv-fname:active { cursor: grabbing; }
-            #qa-rv .rv-fdim { font-size: 11px; color: #64748b; font-family: Consolas, monospace; flex-shrink: 0; cursor: text; }
+            #qa-rv .rv-fdim { font-size: 11px; color: #6b6878; font-family: Consolas, monospace; flex-shrink: 0; cursor: text; }
             #qa-rv .rv-fdim:hover { color: #93c5fd; }
             #qa-rv .rv-fdim[contenteditable="true"] { background: rgba(255,255,255,0.1); border-radius: 4px; padding: 0 4px; color: #fff; }
             #qa-rv .rv-fact { display: flex; gap: 3px; flex-shrink: 0; }
-            #qa-rv .rv-fact button { background: rgba(255,255,255,0.07); border: none; color: #94a3b8; cursor: pointer; width: 24px; height: 22px; border-radius: 6px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
-            #qa-rv .rv-fact button:hover { background: rgba(255,255,255,0.18); color: #fff; }
-            #qa-rv .rv-screen { background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
+            #qa-rv .rv-fact button { background: #1d1a28; border: 1px solid #262335; color: #8b8898; cursor: pointer; width: 25px; height: 23px; border-radius: 6px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
+            #qa-rv .rv-fact button:hover { background: #262335; color: #fff; }
+            #qa-rv .rv-screen { background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 28px rgba(0,0,0,0.55); }
             #qa-rv .rv-inner { overflow: hidden; position: relative; }
             #qa-rv .rv-screen iframe { border: 0; display: block; background: #fff; }
             #qa-rv .rv-grid { position: absolute; inset: 0; pointer-events: none; z-index: 3;
@@ -3402,36 +3424,44 @@ function rvBuildOverlay() {
             #qa-rv .rv-screen.mock { background: #0b0b12; padding: 16px 9px; border-radius: 32px; box-shadow: 0 10px 34px rgba(0,0,0,0.6), inset 0 0 0 2px #2c2c3a; position: relative; }
             #qa-rv .rv-screen.mock .rv-inner { border-radius: 16px; }
             #qa-rv .rv-screen.mock::before { content:''; position:absolute; top:7px; left:50%; transform:translateX(-50%); width:46px; height:7px; background:#2c2c3a; border-radius:5px; }
-            #qa-rv .rv-empty { color: #64748b; text-align: center; padding: 60px 20px; width: 100%; }
-            /* Custom device dialog */
+            #qa-rv .rv-empty { color: #6b6878; text-align: center; padding: 60px 20px; width: 100%; }
+            /* ---- custom device dialog ---- */
             #qa-rv .rv-dlg { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 5; }
-            #qa-rv .rv-dlg-box { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 18px; width: 300px; }
-            #qa-rv .rv-dlg-box h4 { margin: 0 0 12px; font-size: 14px; }
-            #qa-rv .rv-dlg-box label { display: block; font-size: 11px; color: #94a3b8; margin: 8px 0 3px; }
-            #qa-rv .rv-dlg-box input { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 7px; color: #fff; padding: 8px; font-size: 13px; outline: none; }
+            #qa-rv .rv-dlg-box { background: #17151f; border: 1px solid #262335; border-radius: 14px; padding: 18px; width: 300px; box-shadow: 0 14px 44px rgba(0,0,0,0.6); }
+            #qa-rv .rv-dlg-box h4 { margin: 0 0 12px; font-size: 14px; color: #fff; }
+            #qa-rv .rv-dlg-box label { display: block; font-size: 11px; color: #8b8898; margin: 8px 0 3px; }
+            #qa-rv .rv-dlg-box input { width: 100%; background: #0f0e16; border: 1px solid #262335; border-radius: 8px; color: #fff; padding: 8px; font-size: 13px; outline: none; }
+            #qa-rv .rv-dlg-box input:focus { border-color: #7c3aed; }
             #qa-rv .rv-dlg-row { display: flex; gap: 8px; }
             #qa-rv .rv-dlg-btns { display: flex; gap: 8px; margin-top: 16px; }
             #qa-rv .rv-dlg-btns button { flex: 1; border: none; border-radius: 8px; padding: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
-            #qa-rv .rv-cd-item { display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.04); border-radius: 7px; padding: 7px 10px; margin-bottom: 5px; font-size: 12.5px; }
-            #qa-rv .rv-cd-item button { background: none; border: none; color: #64748b; cursor: pointer; font-size: 16px; }
+            #qa-rv .rv-cd-item { display: flex; align-items: center; justify-content: space-between; background: #0f0e16; border: 1px solid #262335; border-radius: 8px; padding: 7px 10px; margin-bottom: 5px; font-size: 12.5px; }
+            #qa-rv .rv-cd-item button { background: none; border: none; color: #6b6878; cursor: pointer; font-size: 16px; }
             #qa-rv .rv-cd-item button:hover { color: #f87171; }
         </style>
         <div class="rv-bar">
             <span class="rv-brand">${RV_ICON.mobile} Responsive</span>
             <div class="rv-url"><input type="text" id="rv-url" spellcheck="false"><button class="rv-btn go" id="rv-go">Go</button></div>
-            <button class="rv-btn" id="rv-reload" title="Reload all">${RV_ICON.reload}</button>
-            <button class="rv-btn" id="rv-rotate" title="Rotate all">${RV_ICON.rotate} Rotate</button>
+            <span class="rv-sep"></span>
+            <select class="rv-sel" id="rv-add" title="Add a device"><option value="">+ Add device</option></select>
+            <button class="rv-btn ic" id="rv-rotate" title="Rotate all devices">${RV_ICON.rotate}</button>
+            <button class="rv-btn ic" id="rv-reload" title="Reload all devices">${RV_ICON.reload}</button>
+            <span class="rv-sep"></span>
             <span class="rv-zoomwrap" title="Zoom %"><input type="number" id="rv-zoom" min="10" max="200" step="5"><b>%</b></span>
+            <button class="rv-btn" id="rv-fit" title="Auto-zoom so every device fits in view">Fit</button>
+            <span class="rv-sep"></span>
             <select class="rv-sel" id="rv-ua" title="User-Agent"><option value="desktop">UA: Desktop</option><option value="iphone">UA: iPhone</option><option value="android">UA: Android</option></select>
             <select class="rv-sel" id="rv-layout" title="Layout"><option value="row">Side by side</option><option value="stack">Stacked</option></select>
+            <span class="rv-sep"></span>
             <button class="rv-btn" id="rv-mockup" title="Device frame">Mockup</button>
-            <button class="rv-btn" id="rv-sync" title="Sync scroll & clicks">${RV_ICON.link} Sync</button>
-            <button class="rv-btn" id="rv-touch" title="Touch cursor">${RV_ICON.touch} Touch</button>
+            <button class="rv-btn" id="rv-sync" title="Sync scroll, clicks, typing & hover across devices">${RV_ICON.link} Sync</button>
+            <button class="rv-btn" id="rv-touch" title="Touch cursor">${RV_ICON.touch}</button>
             <button class="rv-btn" id="rv-scrollbar" title="Show/hide the scrollbar inside devices (on = shown)">Scrollbar</button>
-            <button class="rv-btn" id="rv-shot" title="Screenshot the whole view">${RV_ICON.camera}</button>
-            <select class="rv-sel" id="rv-add" title="Add a device"><option value="">+ Add device</option></select>
-            <button class="rv-btn close" id="rv-close" title="Close">${RV_ICON.close}</button>
+            <span class="rv-sep"></span>
+            <button class="rv-btn ic" id="rv-shot" title="Screenshot the whole view">${RV_ICON.camera}</button>
+            <button class="rv-btn ic close" id="rv-close" title="Close">${RV_ICON.close}</button>
         </div>
+        <div class="rv-bps" id="rv-bps" style="display:none;"></div>
         <div class="rv-tabs" id="rv-tabs"></div>
         <div class="rv-iso" id="rv-iso">Isolation — showing one screen. <button class="rv-btn" id="rv-isoexit" style="margin-left:8px;padding:3px 9px;">Show all</button></div>
         <div class="rv-stage"><div class="rv-row" id="rv-row"></div></div>`;
@@ -3446,7 +3476,9 @@ function rvBuildOverlay() {
     o.querySelector('#rv-touch').classList.toggle('on', rvState.touch);
     o.querySelector('#rv-scrollbar').classList.toggle('on', !rvState.hideScroll);
     rvFillAddMenu();
+    rvRenderBps();
     rvRender();
+    rvUaHint();
 
     const reloadAll = () => o.querySelectorAll('.rv-screen iframe').forEach(f => { f.src = f.src; });
     o.querySelector('#rv-go').addEventListener('click', () => {
@@ -3456,15 +3488,15 @@ function rvBuildOverlay() {
     });
     o.querySelector('#rv-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') o.querySelector('#rv-go').click(); });
     o.querySelector('#rv-reload').addEventListener('click', reloadAll);
-    o.querySelector('#rv-rotate').addEventListener('click', () => { rvActiveTab().screens.forEach(s => s.rotated = !s.rotated); rvSave(); rvRender(); });
+    o.querySelector('#rv-rotate').addEventListener('click', () => { rvActiveTab().screens.forEach(s => s.rotated = !s.rotated); rvSave(); rvApplyGeometry(); });
     o.querySelector('#rv-zoom').addEventListener('change', (e) => {
         let pct = parseInt(e.target.value, 10); if (!pct) pct = 50;
         pct = Math.max(10, Math.min(200, pct)); e.target.value = pct;
-        rvState.zoom = pct / 100; rvSave(); rvRender();
+        rvState.zoom = pct / 100; rvSave(); rvApplyGeometry();
     });
-    o.querySelector('#rv-ua').addEventListener('change', (e) => { rvState.ua = e.target.value; rvSave(); chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true, ua: rvState.ua }, () => setTimeout(reloadAll, 150)); });
-    o.querySelector('#rv-layout').addEventListener('change', (e) => { rvState.layout = e.target.value; rvSave(); rvRender(); });
-    o.querySelector('#rv-mockup').addEventListener('click', () => { rvState.mockup = !rvState.mockup; o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup); rvSave(); rvRender(); });
+    o.querySelector('#rv-ua').addEventListener('change', (e) => { rvState.ua = e.target.value; rvSave(); rvUaHint(); chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true, ua: rvState.ua }, () => setTimeout(reloadAll, 150)); });
+    o.querySelector('#rv-layout').addEventListener('change', (e) => { rvState.layout = e.target.value; rvSave(); rvApplyGeometry(); });
+    o.querySelector('#rv-mockup').addEventListener('click', () => { rvState.mockup = !rvState.mockup; o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup); rvSave(); rvApplyGeometry(); });
     o.querySelector('#rv-sync').addEventListener('click', () => { rvState.sync = !rvState.sync; o.querySelector('#rv-sync').classList.toggle('on', rvState.sync); rvSave(); });
     o.querySelector('#rv-touch').addEventListener('click', () => { rvState.touch = !rvState.touch; o.querySelector('#rv-touch').classList.toggle('on', rvState.touch); rvSave(); rvWireFrames(); });
     o.querySelector('#rv-scrollbar').addEventListener('click', () => { rvState.hideScroll = !rvState.hideScroll; o.querySelector('#rv-scrollbar').classList.toggle('on', !rvState.hideScroll); rvSave(); rvWireFrames(); });
@@ -3472,9 +3504,43 @@ function rvBuildOverlay() {
         const v = e.target.value; e.target.value = '';
         if (v === '__custom') { rvCustomDialog(); return; }
         const d = rvLibrary().find(x => x.name === v);
-        if (d) { rvActiveTab().screens.push({ id: rvState.nextScreen++, name: d.name, w: d.w, h: d.h, rotated: false }); rvSave(); rvRender(); }
+        if (d) rvAddScreenLive({ id: rvState.nextScreen++, name: d.name, w: d.w, h: d.h, rotated: false });
     });
-    o.querySelector('#rv-isoexit').addEventListener('click', () => { rvState.isolated = null; rvRender(); });
+    o.querySelector('#rv-isoexit').addEventListener('click', () => { rvState.isolated = null; rvApplyGeometry(); });
+    o.querySelector('#rv-fit').addEventListener('click', () => {
+        const stage = o.querySelector('.rv-stage');
+        const tab = rvActiveTab();
+        const screens = rvState.isolated ? tab.screens.filter(s => s.id === rvState.isolated) : tab.screens;
+        if (!screens.length) return;
+        // gaps, mockup padding and stage padding are fixed pixels - only the
+        // devices themselves scale, so solve z for: pad + n*mock + gaps + z*sumW = stageW
+        const mock = rvState.mockup ? 18 : 0, pad = 48, gaps = 22 * (screens.length - 1);
+        let z;
+        if (rvState.layout === 'stack') {
+            const maxW = Math.max(...screens.map(s => (s.rotated ? s.h : s.w)));
+            z = (stage.clientWidth - pad - mock) / maxW;
+        } else {
+            const sumW = screens.reduce((a, s) => a + (s.rotated ? s.h : s.w), 0);
+            z = (stage.clientWidth - pad - gaps - screens.length * mock) / sumW;
+        }
+        // also fit the TALLEST device into the stage height (row layout),
+        // otherwise a "fitting" width still leaves a big vertical scroll
+        if (rvState.layout !== 'stack') {
+            const headH = 32, mockV = rvState.mockup ? 34 : 0;
+            const maxH = Math.max(...screens.map(s => (s.rotated ? s.w : s.h)));
+            const zH = (stage.clientHeight - pad - headH - mockV) / maxH;
+            z = Math.min(z, zH);
+        }
+        z = Math.max(0.1, Math.min(2, Math.floor(z * 100) / 100));
+        rvState.zoom = z;
+        o.querySelector('#rv-zoom').value = Math.round(z * 100);
+        rvSave(); rvApplyGeometry();
+    });
+    o.querySelector('#rv-bps').addEventListener('click', (e) => {
+        const bp = e.target.closest('.rv-bp'); if (!bp) return;
+        const w = +bp.dataset.bp; if (!w) return;
+        rvAddScreenLive({ id: rvState.nextScreen++, name: `${w}px`, w, h: 900, rotated: false });
+    });
     o.querySelector('#rv-close').addEventListener('click', closeResponsiveOverlay);
 
     o.querySelector('#rv-tabs').addEventListener('click', (e) => {
@@ -3517,15 +3583,21 @@ function rvBuildOverlay() {
         const tab = rvActiveTab();
         const s = tab.screens.find(x => x.id === id); if (!s) return;
         const act = btn.dataset.act;
-        if (act === 'rotate') s.rotated = !s.rotated;
-        else if (act === 'remove') { tab.screens = tab.screens.filter(x => x.id !== id); if (rvState.isolated === id) rvState.isolated = null; }
-        else if (act === 'isolate') rvState.isolated = (rvState.isolated === id) ? null : id;
-        else if (act === 'reload') { const f = frame.querySelector('iframe'); if (f) { f.src = f.src; return; } }
+        if (act === 'rotate') { s.rotated = !s.rotated; rvSave(); rvApplyGeometry(); }
+        else if (act === 'remove') {
+            tab.screens = tab.screens.filter(x => x.id !== id);
+            if (rvState.isolated === id) rvState.isolated = null;
+            rvSave(); frame.remove();
+            if (!tab.screens.length) rvRow.innerHTML = '<div class="rv-empty">No devices in this tab — add one with "+ Add device".</div>';
+            rvApplyGeometry();
+        }
+        else if (act === 'isolate') { rvState.isolated = (rvState.isolated === id) ? null : id; rvApplyGeometry(); }
+        else if (act === 'reload') { const f = frame.querySelector('iframe'); if (f) f.src = f.src; }
         else if (act === 'shot') {
             const w = s.rotated ? s.h : s.w, h = s.rotated ? s.w : s.h;
-            rvScreenshot(frame.querySelector('.rv-inner').getBoundingClientRect(), `${s.name}-${w}x${h}.png`); return;
+            rvScreenshot(frame.querySelector('.rv-inner').getBoundingClientRect(), `${s.name}-${w}x${h}.png`);
         }
-        rvSave(); rvRender();
+        else if (act === 'full') { rvFullShot(frame, s); }
     });
     // Edit dimensions inline (type "WxH")
     rvRow.addEventListener('keydown', (e) => { if (e.target.closest('.rv-fdim') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
@@ -3535,7 +3607,7 @@ function rvBuildOverlay() {
         const s = rvActiveTab().screens.find(x => x.id === +dim.closest('[data-id]').dataset.id);
         const m = (dim.textContent || '').match(/(\d{2,4})\s*[x×*,]\s*(\d{2,4})/i);
         if (s && m) { s.w = +m[1]; s.h = +m[2]; s.rotated = false; rvSave(); }
-        rvRender();
+        rvApplyGeometry();
     }, true);
     // Drag to reorder devices
     let rvDragId = null;
@@ -3552,7 +3624,11 @@ function rvBuildOverlay() {
         const screens = rvActiveTab().screens;
         const from = screens.findIndex(s => s.id === rvDragId);
         let to = target ? screens.findIndex(s => s.id === +target.dataset.id) : screens.length - 1;
-        if (from >= 0 && to >= 0 && from !== to) { const [m] = screens.splice(from, 1); screens.splice(to, 0, m); rvSave(); rvRender(); }
+        if (from >= 0 && to >= 0 && from !== to) {
+            const [m] = screens.splice(from, 1); screens.splice(to, 0, m); rvSave();
+            const dragNode = rvRow.querySelector(`[data-id="${rvDragId}"]`);
+            if (dragNode && target && dragNode !== target) { if (from < to) target.after(dragNode); else target.before(dragNode); }
+        }
     });
     rvRow.addEventListener('dragend', () => { rvDragId = null; o.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = ''); });
     o.querySelector('#rv-shot').addEventListener('click', () => rvScreenshot(null, 'responsive-view.png'));
@@ -3643,6 +3719,156 @@ function rvScreenshot(rect, name) {
     });
 }
 
+// Read the page's own CSS @media rules and extract its real breakpoints, so
+// the user can test at the exact widths the site was designed around.
+function rvDetectBreakpoints() {
+    const found = new Set();
+    for (const sheet of document.styleSheets) {
+        let rules; try { rules = sheet.cssRules; } catch (e) { continue; }   // cross-origin sheets
+        if (!rules) continue;
+        const walk = (rs) => {
+            for (const r of rs) {
+                try {
+                    if (r.media && r.media.mediaText) {
+                        for (const m of r.media.mediaText.matchAll(/(?:min|max)-width:\s*([\d.]+)px/g)) {
+                            const v = Math.round(parseFloat(m[1]));
+                            if (v >= 240 && v <= 2600) found.add(v);
+                        }
+                    }
+                    if (r.cssRules) walk(r.cssRules);
+                } catch (e) { }
+            }
+        };
+        try { walk(rules); } catch (e) { }
+    }
+    return [...found].sort((a, b) => a - b).slice(0, 14);
+}
+
+function rvRenderBps() {
+    const el = document.querySelector('#qa-rv #rv-bps'); if (!el) return;
+    const det = rvDetectBreakpoints();
+    const common = [320, 480, 768, 1024, 1280, 1440].filter(v => !det.includes(v));
+    const chip = (v, cls) => `<button class="rv-bp ${cls}" data-bp="${v}" title="Add a ${v}px-wide screen">${v}</button>`;
+    el.style.display = 'flex';
+    el.innerHTML = (det.length ? `<span class="rv-bps-l">Page breakpoints</span>` + det.map(v => chip(v, 'det')).join('') : '')
+        + `<span class="rv-bps-l dim">Presets</span>` + common.map(v => chip(v, '')).join('');
+}
+
+// Full-page screenshot of one device: scroll its document step by step,
+// capture each step and stitch the crops into one tall PNG.
+async function rvFullShot(frameEl, s) {
+    const iframe = frameEl.querySelector('iframe');
+    let doc, win; try { doc = iframe.contentDocument; win = iframe.contentWindow; } catch (e) { doc = null; }
+    if (!doc || !win) { liToast('Full-page capture needs a same-origin page'); return; }
+    const inner = frameEl.querySelector('.rv-inner');
+    inner.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    await new Promise(r => setTimeout(r, 300));
+    const rect = inner.getBoundingClientRect();
+    if (rect.top < 0 || rect.bottom > innerHeight || rect.left < 0 || rect.right > innerWidth) {
+        liToast('Zoom out (use Fit) so the whole device is visible first'); return;
+    }
+    const de = doc.documentElement;
+    // Many sites don't scroll the WINDOW at all - a wrapper (<main> etc.)
+    // scrolls instead. Find the real scroller, otherwise every capture would
+    // show the same screen stacked over and over.
+    let scEl = null;
+    if (de.scrollHeight <= win.innerHeight + 4) {
+        let best = null;
+        try {
+            const all = doc.querySelectorAll('body, body *');
+            for (let i = 0; i < all.length && i < 3000; i++) {
+                const el = all[i];
+                if (el.clientHeight >= win.innerHeight * 0.5 && el.scrollHeight > el.clientHeight + 40) {
+                    const cs = win.getComputedStyle(el);
+                    if (/(auto|scroll|overlay)/.test(cs.overflowY) && (!best || el.scrollHeight > best.scrollHeight)) best = el;
+                }
+            }
+        } catch (e) { }
+        scEl = best;
+    }
+    const z = rvState.zoom, dpr = window.devicePixelRatio || 1;
+    // capture sub-rect inside the frame (whole viewport, or just the scroller)
+    let srL = 0, srT = 0, srW = win.innerWidth, srH = win.innerHeight;
+    if (scEl) { const b = scEl.getBoundingClientRect(); srL = b.left; srT = b.top; srW = scEl.clientWidth; srH = scEl.clientHeight; }
+    if (srH < 40 || srW < 40) { liToast('Nothing scrollable to capture'); return; }
+    const totalH = Math.max(scEl ? scEl.scrollHeight : de.scrollHeight, srH);
+    const steps = Math.min(Math.ceil(totalH / srH), 15);
+    const getY = () => scEl ? scEl.scrollTop : (win.scrollY || de.scrollTop || 0);
+    const setY = (y) => { if (scEl) scEl.scrollTop = y; else { win.scrollTo(0, y); try { de.scrollTop = y; } catch (e) { } } };
+    const prevY = getY(), prevSync = rvState.sync;
+    rvState.sync = false;                        // don't drag the other frames along
+    rvHideScrollbar(doc, true);
+    // rounded device corners let the dark stage show through - captured in
+    // EVERY slice they repeat as black marks. Square them during the capture.
+    const screenEl = frameEl.querySelector('.rv-screen');
+    const prevScreenR = screenEl.style.borderRadius, prevInnerR = inner.style.borderRadius;
+    screenEl.style.borderRadius = '0'; inner.style.borderRadius = '0';
+    await new Promise(r => setTimeout(r, 60));
+    const prevBehavior = de.style.scrollBehavior;
+    de.style.scrollBehavior = 'auto';
+    if (scEl) scEl.style.scrollBehavior = 'auto';
+    // fixed/sticky elements (navbars...) repeat in every slice - hide them after slice 0
+    const fixedEls = [];
+    if (!scEl) {
+        try {
+            const all = doc.querySelectorAll('body *');
+            for (let i = 0; i < all.length && i < 4000; i++) {
+                const cs = win.getComputedStyle(all[i]);
+                if (cs.position === 'fixed' || cs.position === 'sticky') fixedEls.push([all[i], all[i].style.visibility]);
+            }
+        } catch (e) { }
+    }
+    const capX = rect.left + srL * z, capY = rect.top + srT * z;
+    const capW = srW * z, capH = srH * z;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(capW * dpr));
+    canvas.height = Math.max(1, Math.round(totalH * z * dpr));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const cap = () => new Promise(res => { try { chrome.runtime.sendMessage({ action: 'captureTab' }, r => res(r && r.dataUrl)); } catch (e) { res(null); } });
+    // NO toasts while capturing - they'd be photographed into every slice
+    document.querySelectorAll('.qa-li-toast').forEach(t => t.remove());
+    let lastActual = -1, maxBottom = 0;
+    for (let i = 0; i < steps; i++) {
+        const target = Math.min(i * srH, Math.max(0, totalH - srH));
+        if (i === 1) fixedEls.forEach(([el]) => { el.style.visibility = 'hidden'; });
+        setY(target);
+        await new Promise(r => setTimeout(r, 650));   // paint + capture-rate quota
+        const actual = Math.round(getY());
+        if (i > 0 && actual <= lastActual) break;     // the page can't scroll further
+        lastActual = actual;
+        const dataUrl = await cap();
+        if (!dataUrl) break;
+        const img = await new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = dataUrl; });
+        if (!img) break;
+        const dy = Math.floor(actual * z * dpr);
+        const dh = Math.ceil(srH * z * dpr) + 2;   // slight overlap: no seam rows
+        // inset the source 1px on every edge: a sub-pixel spill would sample
+        // the dark stage around the frame and print it as hairlines
+        ctx.drawImage(img,
+            capX * dpr + 1, capY * dpr + 1, Math.max(1, capW * dpr - 2), Math.max(1, capH * dpr - 2),
+            0, dy, canvas.width, dh);
+        maxBottom = Math.max(maxBottom, Math.min(canvas.height, dy + dh));
+    }
+    fixedEls.forEach(([el, prev]) => { el.style.visibility = prev || ''; });
+    screenEl.style.borderRadius = prevScreenR; inner.style.borderRadius = prevInnerR;
+    de.style.scrollBehavior = prevBehavior;
+    if (scEl) scEl.style.scrollBehavior = '';
+    setY(prevY);
+    rvHideScrollbar(doc, rvState.hideScroll);
+    rvState.sync = prevSync;
+    let out = canvas;
+    if (maxBottom > 0 && maxBottom < canvas.height) {
+        out = document.createElement('canvas');
+        out.width = canvas.width; out.height = maxBottom;
+        out.getContext('2d').drawImage(canvas, 0, 0);
+    }
+    const w = s.rotated ? s.h : s.w, h = s.rotated ? s.w : s.h;
+    try { rvDownload(out.toDataURL('image/png'), `${s.name}-${w}x${h}-full.png`); liToast('Full-page screenshot saved'); }
+    catch (e) { liToast('Capture failed'); }
+}
+
 function rvEsc(e) { if (e.key === 'Escape' && document.getElementById('qa-rv')) closeResponsiveOverlay(); }
 function closeResponsiveOverlay() {
     const o = document.getElementById('qa-rv'); if (o) o.remove();
@@ -3661,6 +3887,37 @@ function rvRenderTabs() {
         </div>`).join('') + `<button class="rv-tabadd" id="rv-tabadd" title="New tab">+</button>`;
 }
 
+function rvFrameHtml(s) {
+    const z = rvState.zoom;
+    const w = s.rotated ? s.h : s.w, h = s.rotated ? s.w : s.h;
+    const sw = Math.round(w * z), sh = Math.round(h * z);
+    const outerW = Math.max(sw + (rvState.mockup ? 18 : 0), 150);
+    const hidden = rvState.isolated && rvState.isolated !== s.id;
+    return `<div data-id="${s.id}" style="flex-shrink:0; width:${outerW}px;${hidden ? 'display:none;' : ''}">
+        <div class="rv-fhead">
+            <span class="rv-fname" draggable="true" title="Drag to reorder">${qaEsc(s.name)}</span>
+            <span class="rv-fdim" title="Click to edit size">${w}×${h}</span>
+            <span class="rv-fact">
+                <button data-act="shot" title="Screenshot (visible)">${RV_ICON.camera}</button>
+                <button data-act="full" title="Full-page screenshot (whole scroll)"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 7v8"/><path d="m9 12 3 3 3-3"/></svg></button>
+                <button data-act="isolate" title="Isolate">${RV_ICON.eye}</button>
+                <button data-act="rotate" title="Rotate">${RV_ICON.rotate}</button>
+                <button data-act="reload" title="Reload">${RV_ICON.reload}</button>
+                <button data-act="remove" title="Remove">${RV_ICON.close}</button>
+            </span>
+        </div>
+        <div class="rv-screen ${rvState.mockup ? 'mock' : ''}">
+            <div class="rv-inner" style="width:${sw}px;height:${sh}px;">
+                <iframe src="${encodeURI(rvState.url)}" style="width:${w}px;height:${h}px;transform:scale(${z});transform-origin:top left;"></iframe>
+            </div>
+        </div>
+    </div>`;
+}
+
+// Full rebuild - ONLY for open / tab switch / URL change / UA reload. Any
+// geometry change (zoom, rotate, mockup, layout, isolate, resize) goes through
+// rvApplyGeometry() instead, which patches styles in place WITHOUT reloading
+// the iframes.
 function rvRender() {
     const o = document.getElementById('qa-rv'); if (!o || !rvState) return;
     rvRenderTabs();
@@ -3669,33 +3926,47 @@ function rvRender() {
     o.querySelector('#rv-iso').style.display = rvState.isolated ? 'block' : 'none';
     const screens = rvActiveTab().screens;
     if (!screens.length) { row.innerHTML = '<div class="rv-empty">No devices in this tab — add one with "+ Add device".</div>'; return; }
-    const shown = rvState.isolated ? screens.filter(s => s.id === rvState.isolated) : screens;
+    row.innerHTML = screens.map(rvFrameHtml).join('');
+    rvWireFrames();
+}
+
+// Patch sizes/classes/visibility in place - the iframes (and everything the
+// user did inside them) survive untouched.
+function rvApplyGeometry() {
+    const o = document.getElementById('qa-rv'); if (!o || !rvState) return;
+    const row = o.querySelector('#rv-row');
+    row.classList.toggle('stack', rvState.layout === 'stack');
+    o.querySelector('#rv-iso').style.display = rvState.isolated ? 'block' : 'none';
     const z = rvState.zoom;
-    row.innerHTML = shown.map(s => {
+    const tab = rvActiveTab();
+    const nodes = row.querySelectorAll('[data-id]');
+    nodes.forEach((node, i) => {
+        // match by id, fall back to position - DOM order always mirrors state order
+        const s = tab.screens.find(x => x.id === +node.dataset.id) || tab.screens[i];
+        if (!s) { node.remove(); return; }
+        node.dataset.id = s.id;
+        node.style.display = (rvState.isolated && rvState.isolated !== s.id) ? 'none' : '';
         const w = s.rotated ? s.h : s.w, h = s.rotated ? s.w : s.h;
         const sw = Math.round(w * z), sh = Math.round(h * z);
-        const outerW = Math.max(sw + (rvState.mockup ? 18 : 0), 150);
-        return `<div data-id="${s.id}" style="flex-shrink:0; width:${outerW}px;">
-            <div class="rv-fhead">
-                <span class="rv-fname" draggable="true" title="Drag to reorder">${qaEsc(s.name)}</span>
-                <span class="rv-fdim" title="Click to edit size">${w}×${h}</span>
-                <span class="rv-fact">
-                    <button data-act="shot" title="Screenshot">${RV_ICON.camera}</button>
-                    <button data-act="isolate" title="Isolate">${RV_ICON.eye}</button>
-                    <button data-act="rotate" title="Rotate">${RV_ICON.rotate}</button>
-                    <button data-act="reload" title="Reload">${RV_ICON.reload}</button>
-                    <button data-act="remove" title="Remove">${RV_ICON.close}</button>
-                </span>
-            </div>
-            <div class="rv-screen ${rvState.mockup ? 'mock' : ''}">
-                <div class="rv-inner" style="width:${sw}px;height:${sh}px;">
-                    <iframe src="${encodeURI(rvState.url)}" style="width:${w}px;height:${h}px;transform:scale(${z});transform-origin:top left;"></iframe>
-                    ${rvState.grid ? '<div class="rv-grid"></div>' : ''}
-                    ${rvState.ruler ? rvRulerHtml(w, h, z) : ''}
-                </div>
-            </div>
-        </div>`;
-    }).join('');
+        node.style.width = Math.max(sw + (rvState.mockup ? 18 : 0), 150) + 'px';
+        node.querySelector('.rv-screen').classList.toggle('mock', rvState.mockup);
+        const inner = node.querySelector('.rv-inner');
+        inner.style.width = sw + 'px'; inner.style.height = sh + 'px';
+        const f = node.querySelector('iframe');
+        f.style.width = w + 'px'; f.style.height = h + 'px'; f.style.transform = `scale(${z})`;
+        const dim = node.querySelector('.rv-fdim');
+        if (dim && !dim.isContentEditable) dim.textContent = `${w}×${h}`;
+    });
+}
+
+// Append ONE new device frame without rebuilding (and reloading) the others.
+function rvAddScreenLive(s) {
+    rvActiveTab().screens.push(s);
+    rvSave();
+    const o = document.getElementById('qa-rv'); if (!o) return;
+    const row = o.querySelector('#rv-row');
+    const emp = row.querySelector('.rv-empty'); if (emp) emp.remove();
+    row.insertAdjacentHTML('beforeend', rvFrameHtml(s));
     rvWireFrames();
 }
 
@@ -3716,6 +3987,40 @@ function rvPath(el) {
     return p;
 }
 function rvResolve(doc, p) { let el = doc.body; for (const i of p) { if (!el) return null; el = el.children[i]; } return el; }
+// Some sites decide mobile/desktop from the User-Agent on the SERVER - if the
+// devices are phone-sized while the UA is still Desktop, nudge the user.
+function rvUaHint() {
+    const sel = document.querySelector('#qa-rv #rv-ua'); if (!sel) return;
+    const phoneish = rvActiveTab().screens.some(s => Math.min(s.w, s.h) <= 500);
+    const warn = phoneish && rvState.ua === 'desktop';
+    sel.style.borderColor = warn ? '#f59e0b' : '';
+    sel.title = warn ? 'Tip: some sites serve different HTML per device - switch the UA to iPhone/Android for true mobile rendering' : 'User-Agent';
+}
+
+// Make the page's JavaScript see a touch device (hover:none, pointer:coarse,
+// maxTouchPoints) while Touch mode is on. CSS @media(hover/pointer) cannot be
+// overridden without the debugger API - this covers the JS side.
+function rvPatchTouchMedia(win) {
+    try {
+        if (win.__rvMM) return;
+        win.__rvMM = true;
+        const orig = win.matchMedia.bind(win);
+        win.matchMedia = (q) => {
+            if (rvState && rvState.touch && typeof q === 'string') {
+                const s = q.replace(/\s+/g, '').toLowerCase();
+                if (s.includes('(hover:none)') || s.includes('(pointer:coarse)') || s.includes('(any-pointer:coarse)')) {
+                    return { matches: true, media: q, onchange: null, addListener() { }, removeListener() { }, addEventListener() { }, removeEventListener() { }, dispatchEvent() { return false; } };
+                }
+                if (s.includes('(hover:hover)') || s.includes('(pointer:fine)')) {
+                    return { matches: false, media: q, onchange: null, addListener() { }, removeListener() { }, addEventListener() { }, removeEventListener() { }, dispatchEvent() { return false; } };
+                }
+            }
+            return orig(q);
+        };
+        try { Object.defineProperty(win.navigator, 'maxTouchPoints', { get: () => (rvState && rvState.touch) ? 5 : 0 }); } catch (e) { }
+    } catch (e) { }
+}
+
 function rvApplyCursor(doc, on) {
     try {
         let st = doc.getElementById('rv-cursor-style');
@@ -3751,6 +4056,7 @@ function rvWireFrames() {
             try { doc = f.contentDocument; win = f.contentWindow; } catch (e) { return; }
             if (!doc || !win) return;
             rvApplyCursor(doc, rvState.touch);
+            rvPatchTouchMedia(win);
             rvApplyOutline(doc, rvState.outline);
             rvHideScrollbar(doc, rvState.hideScroll); // optional: hide scrollbar like a phone
             if (doc.__rvBound) return;
@@ -3768,6 +4074,46 @@ function rvWireFrames() {
                 const path = rvPath(e.target);
                 o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvResolve(other.contentDocument, path); if (el) el.click(); } catch (e) { } } });
                 setTimeout(() => { rvClicking = false; }, 80);
+            }, true);
+            win.addEventListener('mouseover', (e) => {
+                if (!rvState.sync || !e.isTrusted) return;
+                // climb past tiny inline targets (text spans, icons) to the
+                // nearest stable block, so the highlight doesn't jitter
+                let t = e.target;
+                while (t && t !== doc.body && t.parentElement) {
+                    let cs; try { cs = win.getComputedStyle(t); } catch (err) { break; }
+                    if (cs.display !== 'inline' && t.offsetWidth > 8 && t.offsetHeight > 8) break;
+                    t = t.parentElement;
+                }
+                if (!t || t === doc.body) return;
+                const path = rvPath(t);
+                const frames = Array.prototype.slice.call(o.querySelectorAll('iframe'));
+                const key = frames.indexOf(f) + ':' + path.join('.');
+                if (o.__rvHoverKey === key) return;   // same element - keep the highlight steady
+                o.__rvHoverKey = key;
+                const tr = t.getBoundingClientRect();
+                const relX = (tr.left + tr.width / 2) / Math.max(1, win.innerWidth);
+                const relY = tr.top + tr.height / 2;   // viewport Y (scroll is synced)
+                o.querySelectorAll('iframe').forEach(other => {
+                    try {
+                        const od = other.contentDocument, ow = other.contentWindow;
+                        od.querySelectorAll('[data-rv-hover]').forEach(x => {
+                            x.style.outline = x.__rvPrevOl || ''; x.style.boxShadow = x.__rvPrevSh || '';
+                            x.removeAttribute('data-rv-hover');
+                        });
+                        if (other === f) return;
+                        // 1) try the exact DOM path; 2) if layouts differ, fall
+                        // back to the same relative point in the other viewport
+                        let el = rvResolve(od, path);
+                        if (!el || el === od.body) el = od.elementFromPoint(relX * ow.innerWidth, Math.min(relY, ow.innerHeight - 2));
+                        if (el && el !== od.body && el !== od.documentElement) {
+                            el.__rvPrevOl = el.style.outline; el.__rvPrevSh = el.style.boxShadow;
+                            el.style.outline = '2px solid rgba(167,139,250,0.95)';
+                            el.style.boxShadow = '0 0 0 2px rgba(167,139,250,0.7) inset';
+                            el.setAttribute('data-rv-hover', '1');
+                        }
+                    } catch (err) { }
+                });
             }, true);
             win.addEventListener('input', (e) => {
                 if (!rvState.sync || rvClicking || !e.isTrusted) return;
@@ -5824,6 +6170,7 @@ function liGuide(layer, vertical, pos) {
 
 function liToast(msg) {
     const t = document.createElement('div');
+    t.className = 'qa-li-toast';
     t.textContent = msg;
     t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1e1b2e;color:#fff;padding:9px 16px;border-radius:8px;font:13px -apple-system,Segoe UI,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);';
     document.body.appendChild(t);
