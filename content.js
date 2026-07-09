@@ -3134,43 +3134,98 @@ function doClearData() {
 // httpOnly), localStorage and sessionStorage for the current site. ----
 let stSection = 'cookies';
 let stCookies = [];
+let stFilter = '';
 function stGetStore() { return stSection === 'session' ? sessionStorage : localStorage; }
 
+const ST_IC = (() => {
+    const w = (p) => `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+    return {
+        x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+        check: w('<path d="M20 6 9 17l-5-5"/>'),
+        copy: w('<rect width="12" height="12" x="9" y="9" rx="2"/><path d="M5 15c-1.1 0-2-.9-2-2V5c0-1.1.9-2 2-2h8c1.1 0 2 .9 2 2"/>'),
+        down: w('<path d="m6 9 6 6 6-6"/>'),
+        reload: w('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'),
+        exp: w('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>'),
+        imp: w('<path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/>'),
+        trash: w('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>')
+    };
+})();
+
+// after a mutation-triggered reload, bring the panel back automatically
+try {
+    const rr = sessionStorage.getItem('qa-st-reopen');
+    if (rr) {
+        sessionStorage.removeItem('qa-st-reopen');
+        const d = JSON.parse(rr);
+        stSection = d.sec || 'cookies';
+        setTimeout(() => { if (!document.getElementById('qa-storage')) openStoragePanel(); }, 350);
+    }
+} catch (e) { }
+
 function openStoragePanel() {
-    const old = document.getElementById('qa-storage'); if (old) old.remove();
+    const old = document.getElementById('qa-storage'); if (old) { old.remove(); return; }
     const panel = document.createElement('div');
     panel.id = 'qa-storage';
     panel.innerHTML = `
         <style>
-            #qa-storage { position: fixed; top: 16px; right: 16px; width: 390px; max-height: 86vh; z-index: 2147483647; display: flex; flex-direction: column; direction: ltr; text-align: left;
-                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid rgba(56,189,248,0.5); border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff; font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; }
-            #qa-storage .st-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
-            #qa-storage .st-title { font-weight: 700; font-size: 13.5px; }
-            #qa-storage .st-close { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
+            #qa-storage { position: fixed; top: 16px; right: 16px; width: 400px; max-height: 88vh; z-index: 2147483647; display: flex; flex-direction: column; direction: ltr; text-align: left;
+                background: #17151f; border: 1px solid #2a2738; border-radius: 14px; box-shadow: 0 14px 44px rgba(0,0,0,0.6); color: #e5e7eb; font-family: -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 13px; overflow: hidden; }
+            #qa-storage * { box-sizing: border-box; }
+            #qa-storage .st-head { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; background: #1c1a26; border-bottom: 1px solid #2a2738; cursor: move; user-select: none; }
+            #qa-storage .st-title { font-weight: 600; font-size: 13px; color: #fff; }
+            #qa-storage .st-close { background: rgba(255,255,255,0.08); border: none; color: #e5e7eb; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
+            #qa-storage .st-close:hover { background: #3a1d24; color: #f87171; }
             #qa-storage .st-tabs { display: flex; gap: 4px; padding: 10px 12px 0; }
-            #qa-storage .st-tab { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid transparent; color: #cbd5e1; border-radius: 8px; padding: 7px 6px; font-size: 11.5px; cursor: pointer; font-family: inherit; }
-            #qa-storage .st-tab.on { background: rgba(56,189,248,0.22); border-color: rgba(56,189,248,0.5); color: #fff; }
-            #qa-storage .st-tab span { opacity: 0.7; }
+            #qa-storage .st-tab { flex: 1; background: #1d1a28; border: 1px solid transparent; color: #a9a6b8; border-radius: 8px; padding: 7px 6px; font-size: 11.5px; cursor: pointer; font-family: inherit; }
+            #qa-storage .st-tab.on { background: rgba(124,58,237,0.18); border-color: #7c3aed; color: #fff; }
+            #qa-storage .st-tab b { font-weight: 600; color: #a78bfa; }
+            #qa-storage .st-tools { display: flex; gap: 6px; padding: 10px 12px 0; align-items: center; }
+            #qa-storage .st-search { flex: 1; background: #0f0e16; border: 1px solid #2a2738; border-radius: 8px; color: #fff; padding: 7px 10px; font-size: 12px; outline: none; }
+            #qa-storage .st-search:focus { border-color: #7c3aed; }
+            #qa-storage .st-tools button { background: #1d1a28; border: 1px solid #2a2738; color: #a9a6b8; cursor: pointer; width: 30px; height: 30px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+            #qa-storage .st-tools button:hover { background: #262335; color: #fff; }
+            #qa-storage .st-tools button.st-clear:hover { background: #3a1d24; color: #f87171; border-color: #7f1d1d; }
             #qa-storage .st-add { display: flex; gap: 6px; padding: 10px 12px; }
-            #qa-storage .st-add input { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 7px; color: #fff; padding: 7px 8px; font-size: 12px; outline: none; }
-            #qa-storage .st-add .st-ak { width: 38%; } #qa-storage .st-add .st-av { flex: 1; }
-            #qa-storage .st-add button { background: linear-gradient(135deg,#38bdf8,#0ea5e9); border: none; color: #06283d; font-weight: 700; border-radius: 7px; padding: 0 12px; cursor: pointer; }
+            #qa-storage .st-add input { background: #0f0e16; border: 1px solid #2a2738; border-radius: 8px; color: #fff; padding: 7px 9px; font-size: 12px; outline: none; }
+            #qa-storage .st-add input:focus { border-color: #7c3aed; }
+            #qa-storage .st-add .st-ak { width: 36%; } #qa-storage .st-add .st-av { flex: 1; }
+            #qa-storage .st-add button { background: #7c3aed; border: none; color: #fff; font-weight: 600; border-radius: 8px; padding: 0 13px; cursor: pointer; font-family: inherit; }
+            #qa-storage .st-add button:hover { background: #6d28d9; }
             #qa-storage .st-body { overflow-y: auto; padding: 0 12px 12px; }
-            #qa-storage .st-row { display: flex; align-items: center; gap: 6px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
-            #qa-storage .st-k { width: 34%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12px; }
-            #qa-storage .st-k .st-flags { color: #fbbf24; font-size: 9px; font-weight: 700; margin-left: 4px; }
-            #qa-storage .st-v { flex: 1; min-width: 0; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #e2e8f0; padding: 6px 7px; font: 11.5px Consolas, monospace; outline: none; }
-            #qa-storage .st-v:focus { border-color: #38bdf8; }
-            #qa-storage .st-row button { background: rgba(255,255,255,0.08); border: none; color: #94a3b8; cursor: pointer; width: 24px; height: 24px; border-radius: 6px; flex-shrink: 0; }
-            #qa-storage .st-row button:hover { background: rgba(255,255,255,0.2); color: #fff; }
-            #qa-storage .st-row button.st-del:hover { color: #f87171; }
-            #qa-storage .st-empty { text-align: center; color: #64748b; padding: 26px 8px; }
+            #qa-storage .st-row { display: flex; align-items: center; gap: 5px; padding: 7px 0; border-bottom: 1px solid #221f2e; }
+            #qa-storage .st-k { width: 32%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12px; }
+            #qa-storage .st-k .st-flags { display: block; color: #f59e0b; font-size: 9px; font-weight: 700; }
+            #qa-storage .st-v { flex: 1; min-width: 0; background: #0f0e16; border: 1px solid #2a2738; border-radius: 6px; color: #e5e7eb; padding: 6px 7px; font: 11.5px Consolas, monospace; outline: none; }
+            #qa-storage .st-v:focus { border-color: #7c3aed; }
+            #qa-storage .st-row button { background: #1d1a28; border: 1px solid #2a2738; color: #8b8898; cursor: pointer; width: 24px; height: 24px; border-radius: 6px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; }
+            #qa-storage .st-row button:hover { background: #262335; color: #fff; }
+            #qa-storage .st-row button.st-del:hover { color: #f87171; background: #3a1d24; }
+            #qa-storage .st-row button.st-exp.on { color: #a78bfa; border-color: #7c3aed; }
+            #qa-storage .st-empty { text-align: center; color: #6b6878; padding: 26px 8px; }
+            #qa-storage .st-detail { background: #110f18; border: 1px solid #2a2738; border-radius: 8px; margin: 6px 0; padding: 10px; font-size: 11.5px; }
+            #qa-storage .st-detail .st-dl { color: #8b8898; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; margin: 8px 0 3px; }
+            #qa-storage .st-detail .st-dl:first-child { margin-top: 0; }
+            #qa-storage .st-detail pre { margin: 0; background: #0f0e16; border: 1px solid #262335; border-radius: 6px; padding: 7px; max-height: 150px; overflow: auto; font: 11px Consolas, monospace; color: #c4b5fd; white-space: pre-wrap; word-break: break-all; }
+            #qa-storage .st-detail .st-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+            #qa-storage .st-detail input[type=text], #qa-storage .st-detail input[type=datetime-local], #qa-storage .st-detail select { width: 100%; background: #0f0e16; border: 1px solid #2a2738; border-radius: 6px; color: #fff; padding: 5px 7px; font-size: 11.5px; outline: none; font-family: inherit; }
+            #qa-storage .st-detail .st-chk { display: flex; align-items: center; gap: 5px; color: #a9a6b8; font-size: 11.5px; }
+            #qa-storage .st-detail .st-chk input { accent-color: #7c3aed; }
+            #qa-storage .st-detail .st-apply { margin-top: 9px; width: 100%; background: #7c3aed; border: none; color: #fff; font-weight: 600; border-radius: 7px; padding: 7px; cursor: pointer; font-family: inherit; }
+            #qa-storage .st-detail .st-apply:hover { background: #6d28d9; }
         </style>
-        <div class="st-head"><span class="st-title">&#129528; Cookies &amp; Storage</span><button class="st-close" id="st-close" title="Close">&#10005;</button></div>
+        <div class="st-head"><span class="st-title">Cookies &amp; Storage</span><button class="st-close" id="st-close" title="Close">&#10005;</button></div>
         <div class="st-tabs">
-            <button class="st-tab" data-sec="cookies">Cookies</button>
-            <button class="st-tab" data-sec="local">Local Storage</button>
-            <button class="st-tab" data-sec="session">Session Storage</button>
+            <button class="st-tab" data-sec="cookies">Cookies <b id="st-n-cookies"></b></button>
+            <button class="st-tab" data-sec="local">Local <b id="st-n-local"></b></button>
+            <button class="st-tab" data-sec="session">Session <b id="st-n-session"></b></button>
+        </div>
+        <div class="st-tools">
+            <input class="st-search" id="st-search" placeholder="Search keys & values…" spellcheck="false">
+            <button id="st-refresh" title="Refresh">${ST_IC.reload}</button>
+            <button id="st-export" title="Export this section as JSON">${ST_IC.exp}</button>
+            <button id="st-import" title="Import JSON into this section">${ST_IC.imp}</button>
+            <button id="st-clearall" class="st-clear" title="Delete everything in this section">${ST_IC.trash}</button>
+            <input type="file" id="st-file" accept=".json,application/json" style="display:none;">
         </div>
         <div class="st-add">
             <input class="st-ak" placeholder="name / key"><input class="st-av" placeholder="value"><button id="st-add">Add</button>
@@ -3182,11 +3237,23 @@ function openStoragePanel() {
     qaAddMinimize(panel, panel.querySelector('.st-head'), panel.querySelector('#st-close'));
     panel.querySelectorAll('.st-tab').forEach(b => b.addEventListener('click', () => { stSection = b.dataset.sec; stRefresh(); }));
     panel.querySelector('#st-add').addEventListener('click', stAdd);
+    panel.querySelector('#st-search').addEventListener('input', (e) => { stFilter = e.target.value.toLowerCase(); stRefresh(false); });
+    panel.querySelector('#st-refresh').addEventListener('click', () => stRefresh());
+    panel.querySelector('#st-export').addEventListener('click', stExport);
+    panel.querySelector('#st-import').addEventListener('click', () => panel.querySelector('#st-file').click());
+    panel.querySelector('#st-file').addEventListener('change', stImport);
+    panel.querySelector('#st-clearall').addEventListener('click', stClearAll);
+
     panel.querySelector('#st-body').addEventListener('click', (e) => {
         const btn = e.target.closest('button[data-st]'); if (!btn) return;
         const row = btn.closest('.st-row');
-        if (btn.dataset.st === 'save') stSave(row.dataset.k, row.querySelector('.st-v').value);
-        else if (btn.dataset.st === 'del') stDelete(row.dataset.k);
+        const key = row.dataset.k;
+        if (btn.dataset.st === 'save') stSave(key, row.querySelector('.st-v').value);
+        else if (btn.dataset.st === 'del') stDelete(key);
+        else if (btn.dataset.st === 'copy') {
+            navigator.clipboard.writeText(row.querySelector('.st-v').value).then(() => stToast('Value copied'));
+        }
+        else if (btn.dataset.st === 'exp') stToggleDetail(row, btn);
     });
     panel.querySelector('#st-body').addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && e.target.classList.contains('st-v')) { const row = e.target.closest('.st-row'); stSave(row.dataset.k, e.target.value); }
@@ -3196,7 +3263,7 @@ function openStoragePanel() {
     (function () {
         const head = panel.querySelector('.st-head'); let sx, sy, sl, st;
         head.addEventListener('mousedown', (e) => {
-            if (e.target.closest('.st-close') || e.button !== 0) return;
+            if (e.target.closest('button') || e.button !== 0) return;
             const r = panel.getBoundingClientRect(); panel.style.left = r.left + 'px'; panel.style.top = r.top + 'px'; panel.style.right = 'auto';
             sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top; e.preventDefault();
             const mv = (ev) => { panel.style.left = Math.max(0, Math.min(sl + ev.clientX - sx, innerWidth - panel.offsetWidth)) + 'px'; panel.style.top = Math.max(0, Math.min(st + ev.clientY - sy, innerHeight - 40)) + 'px'; };
@@ -3208,16 +3275,21 @@ function openStoragePanel() {
     stRefresh();
 }
 
-function stRefresh() {
+function stCounts() {
+    const p = document.getElementById('qa-storage'); if (!p) return;
+    p.querySelector('#st-n-cookies').textContent = `(${stCookies.length})`;
+    try { p.querySelector('#st-n-local').textContent = `(${localStorage.length})`; } catch (e) { }
+    try { p.querySelector('#st-n-session').textContent = `(${sessionStorage.length})`; } catch (e) { }
+}
+
+function stRefresh(reloadCookies = true) {
     const panel = document.getElementById('qa-storage'); if (!panel) return;
     panel.querySelectorAll('.st-tab').forEach(b => b.classList.toggle('on', b.dataset.sec === stSection));
     if (stSection === 'cookies') {
+        if (!reloadCookies) { stRenderCookieRows(); return; }
         chrome.runtime.sendMessage({ action: 'getCookies', url: location.href }, (resp) => {
             stCookies = (resp && resp.cookies) || [];
-            stRenderRows(stCookies.map(c => ({
-                k: c.name, v: c.value,
-                flags: [c.httpOnly ? 'HttpOnly' : '', c.secure ? 'Secure' : '', c.sameSite && c.sameSite !== 'unspecified' ? c.sameSite : ''].filter(Boolean).join(' · ')
-            })));
+            stRenderCookieRows();
         });
     } else {
         const store = stGetStore(); const rows = [];
@@ -3226,31 +3298,172 @@ function stRefresh() {
     }
 }
 
+function stRenderCookieRows() {
+    stRenderRows(stCookies.map(c => ({
+        k: c.name, v: c.value,
+        flags: [c.httpOnly ? 'HttpOnly' : '', c.secure ? 'Secure' : '', c.sameSite && c.sameSite !== 'unspecified' ? c.sameSite : '', c.session ? 'Session' : ''].filter(Boolean).join(' · ')
+    })));
+}
+
 function stRenderRows(rows) {
+    stCounts();
     const body = document.getElementById('st-body'); if (!body) return;
-    if (!rows.length) { body.innerHTML = '<div class="st-empty">Nothing stored here for this site.</div>'; return; }
+    if (stFilter) rows = rows.filter(r => (r.k + ' ' + r.v).toLowerCase().includes(stFilter));
+    if (!rows.length) { body.innerHTML = `<div class="st-empty">${stFilter ? 'No matches.' : 'Nothing stored here for this site.'}</div>`; return; }
     body.innerHTML = rows.map(r => `<div class="st-row" data-k="${qaEsc(r.k)}">
         <div class="st-k" title="${qaEsc(r.k)}">${qaEsc(r.k)}${r.flags ? `<span class="st-flags">${qaEsc(r.flags)}</span>` : ''}</div>
         <input class="st-v" value="${qaEsc(r.v)}">
-        <button data-st="save" class="st-save" title="Save">&#10003;</button>
-        <button data-st="del" class="st-del" title="Delete">&#10005;</button>
+        <button data-st="copy" title="Copy value">${ST_IC.copy}</button>
+        <button data-st="exp" class="st-exp" title="Details">${ST_IC.down}</button>
+        <button data-st="save" class="st-save" title="Save">${ST_IC.check}</button>
+        <button data-st="del" class="st-del" title="Delete">${ST_IC.x}</button>
     </div>`).join('');
+}
+
+// value preview: pretty JSON, or a decoded JWT payload
+function stValuePreview(v) {
+    try { const j = JSON.parse(v); if (j && typeof j === 'object') return { label: 'JSON value', text: JSON.stringify(j, null, 2) }; } catch (e) { }
+    if (/^[\w-]{8,}\.[\w-]{8,}\.[\w-]+$/.test((v || '').trim())) {
+        try {
+            const part = v.trim().split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+            const json = JSON.parse(decodeURIComponent(escape(atob(part))));
+            return { label: 'JWT payload (decoded)', text: JSON.stringify(json, null, 2) };
+        } catch (e) { }
+    }
+    return null;
+}
+
+function stToggleDetail(row, btn) {
+    const open = row.nextElementSibling && row.nextElementSibling.classList.contains('st-detail');
+    document.querySelectorAll('#qa-storage .st-detail').forEach(d => d.remove());
+    document.querySelectorAll('#qa-storage .st-exp.on').forEach(b => b.classList.remove('on'));
+    if (open) return;
+    btn.classList.add('on');
+    const key = row.dataset.k;
+    const val = row.querySelector('.st-v').value;
+    const prev = stValuePreview(val);
+    let html = '';
+    if (prev) html += `<div class="st-dl">${qaEsc(prev.label)}</div><pre>${qaEsc(prev.text)}</pre>`;
+    if (stSection === 'cookies') {
+        const c = stCookies.find(x => x.name === key);
+        if (c) {
+            const expVal = (!c.session && c.expirationDate) ? new Date(c.expirationDate * 1000).toISOString().slice(0, 16) : '';
+            html += `<div class="st-dl">Cookie attributes</div>
+            <div class="st-grid">
+                <div><div class="st-dl">Domain</div><input type="text" data-cd="domain" value="${qaEsc(c.domain || '')}"></div>
+                <div><div class="st-dl">Path</div><input type="text" data-cd="path" value="${qaEsc(c.path || '/')}"></div>
+                <div><div class="st-dl">SameSite</div><select data-cd="sameSite">
+                    ${['unspecified', 'lax', 'strict', 'no_restriction'].map(s => `<option value="${s}" ${c.sameSite === s ? 'selected' : ''}>${s}</option>`).join('')}
+                </select></div>
+                <div><div class="st-dl">Expires</div><input type="datetime-local" data-cd="expires" value="${expVal}"></div>
+            </div>
+            <div class="st-grid" style="margin-top:7px;">
+                <label class="st-chk"><input type="checkbox" data-cd="secure" ${c.secure ? 'checked' : ''}> Secure</label>
+                <label class="st-chk"><input type="checkbox" data-cd="httpOnly" ${c.httpOnly ? 'checked' : ''}> HttpOnly</label>
+                <label class="st-chk"><input type="checkbox" data-cd="session" ${c.session ? 'checked' : ''}> Session cookie</label>
+            </div>
+            <button class="st-apply">Apply attributes</button>`;
+        }
+    } else if (!prev) {
+        html += `<div class="st-dl">Value</div><pre>${qaEsc(val)}</pre>`;
+    }
+    const d = document.createElement('div');
+    d.className = 'st-detail';
+    d.innerHTML = html || '<div class="st-empty" style="padding:8px;">No details.</div>';
+    row.after(d);
+    const apply = d.querySelector('.st-apply');
+    if (apply) apply.addEventListener('click', () => {
+        const c = stCookies.find(x => x.name === key); if (!c) return;
+        const g = (sel) => d.querySelector(`[data-cd="${sel}"]`);
+        const upd = Object.assign({}, c, {
+            value: row.querySelector('.st-v').value,
+            domain: g('domain').value.trim() || c.domain,
+            path: g('path').value.trim() || '/',
+            sameSite: g('sameSite').value,
+            secure: g('secure').checked,
+            httpOnly: g('httpOnly').checked,
+            session: g('session').checked,
+            hostOnly: !(g('domain').value.trim().startsWith('.'))
+        });
+        if (!upd.session) {
+            const ex = g('expires').value;
+            upd.expirationDate = ex ? Math.floor(new Date(ex).getTime() / 1000) : Math.floor(Date.now() / 1000) + 86400 * 365;
+        } else delete upd.expirationDate;
+        // domain/path/flags form the cookie's identity - remove the old one first
+        chrome.runtime.sendMessage({ action: 'removeCookie', cookie: c }, () => {
+            chrome.runtime.sendMessage({ action: 'setCookie', cookie: upd }, (r) => {
+                if (r && r.success) stMutated('Cookie updated — reloading…');
+                else { stToast('Failed: ' + ((r && r.error) || 'error')); stRefresh(); }
+            });
+        });
+    });
+}
+
+function stExport() {
+    let data, name;
+    if (stSection === 'cookies') { data = stCookies; name = `cookies-${location.hostname}.json`; }
+    else {
+        const store = stGetStore(); const obj = {};
+        for (let i = 0; i < store.length; i++) { const k = store.key(i); obj[k] = store.getItem(k); }
+        data = obj; name = `${stSection}Storage-${location.hostname}.json`;
+    }
+    const a = document.createElement('a');
+    a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(data, null, 2));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    stToast('Exported');
+}
+
+function stImport(e) {
+    const file = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!file) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+        let data; try { data = JSON.parse(rd.result); } catch (err) { stToast('Invalid JSON file'); return; }
+        if (stSection === 'cookies') {
+            const list = Array.isArray(data) ? data : [];
+            if (!list.length) { stToast('No cookies in the file'); return; }
+            let done = 0;
+            list.forEach(c => {
+                if (!c || !c.name) { if (++done === list.length) stRefresh(); return; }
+                chrome.runtime.sendMessage({ action: 'setCookie', cookie: Object.assign({ domain: location.hostname, path: '/', hostOnly: true, secure: location.protocol === 'https:' }, c) },
+                    () => { if (++done === list.length) stMutated(`Imported ${list.length} cookie(s) — reloading…`); });
+            });
+        } else {
+            if (!data || typeof data !== 'object' || Array.isArray(data)) { stToast('Expected a JSON object { key: value }'); return; }
+            let n = 0;
+            try { for (const k of Object.keys(data)) { stGetStore().setItem(k, typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k])); n++; } } catch (err) { }
+            stMutated(`Imported ${n} item(s) — reloading…`);
+        }
+    };
+    rd.readAsText(file);
+}
+
+function stClearAll() {
+    const label = stSection === 'cookies' ? `all ${stCookies.length} cookie(s)` : `all ${stGetStore().length} item(s)`;
+    qaConfirm(`Delete ${label} for this site?`).then((ok) => {
+        if (!ok) return;
+        if (stSection === 'cookies') {
+            let done = 0; const list = stCookies.slice();
+            if (!list.length) return;
+            list.forEach(c => chrome.runtime.sendMessage({ action: 'removeCookie', cookie: c }, () => { if (++done === list.length) stMutated('Cleared — reloading…'); }));
+        } else { try { stGetStore().clear(); } catch (e) { } stMutated('Cleared — reloading…'); }
+    });
 }
 
 function stSave(key, value) {
     if (stSection === 'cookies') {
         const c = stCookies.find(x => x.name === key); if (!c) return;
-        chrome.runtime.sendMessage({ action: 'setCookie', cookie: Object.assign({}, c, { value }) }, () => stToast('Saved'));
+        chrome.runtime.sendMessage({ action: 'setCookie', cookie: Object.assign({}, c, { value }) }, () => stMutated('Saved — reloading…'));
     } else {
-        try { stGetStore().setItem(key, value); stToast('Saved'); } catch (e) { stToast('Failed: ' + e.message); }
+        try { stGetStore().setItem(key, value); stMutated('Saved — reloading…'); } catch (e) { stToast('Failed: ' + e.message); }
     }
 }
 function stDelete(key) {
     if (stSection === 'cookies') {
         const c = stCookies.find(x => x.name === key); if (!c) return;
-        chrome.runtime.sendMessage({ action: 'removeCookie', cookie: c }, () => stRefresh());
+        chrome.runtime.sendMessage({ action: 'removeCookie', cookie: c }, () => stMutated('Deleted — reloading…'));
     } else {
-        try { stGetStore().removeItem(key); } catch (e) { } stRefresh();
+        try { stGetStore().removeItem(key); } catch (e) { } stMutated('Deleted — reloading…');
     }
 }
 function stAdd() {
@@ -3259,16 +3472,24 @@ function stAdd() {
     if (!k) { panel.querySelector('.st-ak').style.borderColor = '#ef4444'; return; }
     if (stSection === 'cookies') {
         const host = location.hostname;
-        chrome.runtime.sendMessage({ action: 'setCookie', cookie: { name: k, value: v, path: '/', domain: host, hostOnly: true, secure: location.protocol === 'https:' } }, () => { panel.querySelector('.st-ak').value = ''; panel.querySelector('.st-av').value = ''; stRefresh(); });
+        chrome.runtime.sendMessage({ action: 'setCookie', cookie: { name: k, value: v, path: '/', domain: host, hostOnly: true, secure: location.protocol === 'https:' } }, () => stMutated('Added — reloading…'));
     } else {
-        try { stGetStore().setItem(k, v); } catch (e) { } panel.querySelector('.st-ak').value = ''; panel.querySelector('.st-av').value = ''; stRefresh();
+        try { stGetStore().setItem(k, v); } catch (e) { } stMutated('Added — reloading…');
     }
 }
+// Any storage/cookie change should take effect on the SITE too: reload the
+// page shortly after the action, and re-open this panel automatically.
+function stMutated(msg) {
+    if (msg) stToast(msg);
+    try { sessionStorage.setItem('qa-st-reopen', JSON.stringify({ sec: stSection })); } catch (e) { }
+    setTimeout(() => location.reload(), 650);
+}
+
 function stToast(msg) {
     const old = document.getElementById('st-toast'); if (old) old.remove();
     const t = document.createElement('div'); t.id = 'st-toast'; t.textContent = msg;
-    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0ea5e9;color:#fff;padding:8px 16px;border-radius:8px;font:13px Segoe UI,Arial;z-index:2147483647;box-shadow:0 6px 20px rgba(0,0,0,.4);';
-    document.body.appendChild(t); setTimeout(() => t.remove(), 1300);
+    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1e1b2e;color:#fff;padding:9px 16px;border-radius:8px;font:13px -apple-system,Segoe UI,Arial;z-index:2147483647;box-shadow:0 6px 20px rgba(0,0,0,.4);';
+    document.body.appendChild(t); setTimeout(() => t.remove(), 1400);
 }
 
 // ---- Responsive Viewer: full-screen overlay with customizable workspace tabs,
@@ -4077,8 +4298,7 @@ function rvWireFrames() {
             }, true);
             win.addEventListener('mouseover', (e) => {
                 if (!rvState.sync || !e.isTrusted) return;
-                // climb past tiny inline targets (text spans, icons) to the
-                // nearest stable block, so the highlight doesn't jitter
+                // climb past tiny inline targets to the nearest stable block
                 let t = e.target;
                 while (t && t !== doc.body && t.parentElement) {
                     let cs; try { cs = win.getComputedStyle(t); } catch (err) { break; }
@@ -4087,31 +4307,23 @@ function rvWireFrames() {
                 }
                 if (!t || t === doc.body) return;
                 const path = rvPath(t);
-                const frames = Array.prototype.slice.call(o.querySelectorAll('iframe'));
-                const key = frames.indexOf(f) + ':' + path.join('.');
-                if (o.__rvHoverKey === key) return;   // same element - keep the highlight steady
-                o.__rvHoverKey = key;
                 const tr = t.getBoundingClientRect();
                 const relX = (tr.left + tr.width / 2) / Math.max(1, win.innerWidth);
                 const relY = tr.top + tr.height / 2;   // viewport Y (scroll is synced)
                 o.querySelectorAll('iframe').forEach(other => {
+                    if (other === f) return;
                     try {
                         const od = other.contentDocument, ow = other.contentWindow;
-                        od.querySelectorAll('[data-rv-hover]').forEach(x => {
-                            x.style.outline = x.__rvPrevOl || ''; x.style.boxShadow = x.__rvPrevSh || '';
-                            x.removeAttribute('data-rv-hover');
-                        });
-                        if (other === f) return;
-                        // 1) try the exact DOM path; 2) if layouts differ, fall
-                        // back to the same relative point in the other viewport
+                        // 1) exact DOM path; 2) same relative viewport point as fallback
                         let el = rvResolve(od, path);
-                        if (!el || el === od.body) el = od.elementFromPoint(relX * ow.innerWidth, Math.min(relY, ow.innerHeight - 2));
-                        if (el && el !== od.body && el !== od.documentElement) {
-                            el.__rvPrevOl = el.style.outline; el.__rvPrevSh = el.style.boxShadow;
-                            el.style.outline = '2px solid rgba(167,139,250,0.95)';
-                            el.style.boxShadow = '0 0 0 2px rgba(167,139,250,0.7) inset';
-                            el.setAttribute('data-rv-hover', '1');
-                        }
+                        if (!el || el === od.body) el = od.elementFromPoint(Math.round(relX * ow.innerWidth), Math.round(Math.min(relY, ow.innerHeight - 2)));
+                        if (!el || el === od.body || el === od.documentElement) return;
+                        if (el.getAttribute('data-rv-hover') === '1') return;   // already lit - keep it steady
+                        od.querySelectorAll('[data-rv-hover]').forEach(x => { x.style.outline = x.__rvPrevOl || ''; x.style.boxShadow = x.__rvPrevSh || ''; x.removeAttribute('data-rv-hover'); });
+                        el.__rvPrevOl = el.style.outline; el.__rvPrevSh = el.style.boxShadow;
+                        el.style.setProperty('outline', '2px solid #a78bfa', 'important');
+                        el.style.setProperty('box-shadow', '0 0 0 2px rgba(167,139,250,0.55) inset', 'important');
+                        el.setAttribute('data-rv-hover', '1');
                     } catch (err) { }
                 });
             }, true);
