@@ -7253,11 +7253,21 @@ function axDetectPagination(urlStr) {
     let u; try { u = new URL(urlStr); } catch (e) { return null; }
     const sp = u.searchParams;
     const lc = {}; for (const [k] of sp) lc[k.toLowerCase()] = k;   // lower -> real casing
-    const find = (names) => { for (const n of names) if (lc[n] !== undefined) return lc[n]; return null; };
+    // The value must be a plain integer: names like `from` double as date
+    // filters (from=2024-01-01), and rewriting those would corrupt the query.
+    const find = (names) => {
+        for (const n of names) {
+            const real = lc[n];
+            if (real === undefined) continue;
+            const v = (sp.get(real) || '').trim();
+            if (/^\d+$/.test(v)) return real;
+        }
+        return null;
+    };
 
-    const SKIP = ['skipcount', 'skip', 'offset', '$skip', 'start', 'startindex', 'from'];
-    const SIZE = ['maxresultcount', 'take', 'limit', '$top', 'top', 'pagesize', 'perpage', 'per_page', 'size', 'count', 'rows'];
-    const PAGE = ['pagenumber', 'pageindex', 'page', 'pageno', 'p'];
+    const SKIP = ['skipcount', 'skip', '_start', 'offset', '$skip', 'start', 'startindex', 'from'];
+    const SIZE = ['maxresultcount', 'take', 'limit', '_limit', '$top', 'top', 'pagesize', 'perpage', 'per_page', 'size', 'rows'];
+    const PAGE = ['pagenumber', 'pageindex', 'page', '_page', 'pageno'];
 
     const sizeKey = find(SIZE);
     const skipKey = find(SKIP);

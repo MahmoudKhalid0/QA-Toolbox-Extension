@@ -118,6 +118,11 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
     });
 });
 chrome.tabs.onRemoved.addListener((id) => { chrome.storage.local.get(['qaTM'], (r) => { const m = r.qaTM || {}; if (m[id] !== undefined) { delete m[id]; chrome.storage.local.set({ qaTM: m }); } }); });
+// Tab ids are reused across browser sessions, so stale entries would silently
+// fake the clock in an unrelated tab. The override never survives a restart
+// anyway — drop the state whenever the extension or the browser starts.
+chrome.runtime.onStartup.addListener(() => chrome.storage.local.remove('qaTM'));
+chrome.runtime.onInstalled.addListener(() => chrome.storage.local.remove('qaTM'));
 
 async function getClearCfg() { const r = await chrome.storage.local.get('qaClearData'); return Object.assign({ types: {}, auto: {} }, (r && r.qaClearData) || {}); }
 

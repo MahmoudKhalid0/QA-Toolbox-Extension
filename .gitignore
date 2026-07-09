@@ -1,2 +1,7 @@
 # API key lives here - never commit it. Copy config.example.js to config.js and add your key.
 config.js
+
+# Extension signing keys - the private key must never be committed.
+# It lives in ~/.qa-toolbox-keys/ ; only the PUBLIC key belongs in manifest.json ("key").
+*.pem
+*.crx
