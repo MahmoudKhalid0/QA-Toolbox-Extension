@@ -1,4 +1,4 @@
-// Cloud Sync for QA-Toolbox
+// Cloud Sync for QA Testing Toolkit
 // Stores a JSON backup of all user data (profiles, settings, categories) in the
 // user's own Google Drive appDataFolder - a hidden, app-only space. No servers,
 // no cost: the data lives in the user's Google account and follows them across

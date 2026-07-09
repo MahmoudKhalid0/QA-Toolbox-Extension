@@ -1,4 +1,4 @@
-// Background script for QA-Toolbox
+// Background script for QA Testing Toolkit
 importScripts('db.js');
 importScripts('config.js');
 importScripts('sync.js');

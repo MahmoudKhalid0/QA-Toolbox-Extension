@@ -1,6 +1,6 @@
 {
     "manifest_version": 3,
-    "name": "QA-Toolbox",
+    "name": "QA Testing Toolkit",
     "version": "1.0",
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz8wrFAm9xABVou4JTKPSAeOB0m8G0FYh8PViEgLG23o4TpCNO2kbVzVXvohJwDm/3+svzrmN5orQbzqIleFLOixbEwX3Eew2vnJVxiyfJbz5i0ONzXZ4EIa1IUSybXtfnTDF2J001bQ3dalOgVH5Tf9bbPYXXPeKPcOJMFStOekp3oKuxg5wgG1Ot9NMpPYfqEAJ23JGQXZ/eE19/Q3vYSZVDnDpIoWWU2dXoT9MpFFjQGlJ7eHIf0EkBMxkQuRqRE2NzCTAz5TiiVzQZ6Cr9pp0Uaf5nVrj35fE89p33iTETkMWBAvFKylGvOVsEbPP6TaUa0HeLg6M+GX7dS4HQQIDAQAB",
     "description": "QA testing toolkit: record & auto-fill forms, AI-generated test profiles, and element inspector - with more QA utilities on the way",
