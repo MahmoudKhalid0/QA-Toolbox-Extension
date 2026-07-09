@@ -94,11 +94,23 @@ function qaTMInstall(cfg) {
         W.__qaTMcfg = cfg;                       // {mode:'freeze'|'advance', targetMs, anchorMs}
         if (W.__qaTMInstalled) return;           // already wrapped — just updated cfg
         const RealDate = W.__qaRealDate;
-        const shift = () => { const c = W.__qaTMcfg; return c.mode === 'freeze' ? c.targetMs : c.targetMs + (RealDate.now() - c.anchorMs); };
-        class FakeDate extends RealDate {
-            constructor(...a) { if (a.length === 0) super(shift()); else super(...a); }
-            static now() { return Math.floor(shift()); }
+        const shift = () => {
+            const c = W.__qaTMcfg;
+            if (!c) return RealDate.now();
+            return c.mode === 'freeze' ? c.targetMs : c.targetMs + (RealDate.now() - c.anchorMs);
+        };
+        // A plain function, not `class ... extends`: a subclass gets its own
+        // prototype, so Dates created before the override would fail
+        // `x instanceof Date`. Sharing RealDate.prototype keeps that intact.
+        // It also lets Date() work when called without `new` (a class throws).
+        function FakeDate(...args) {
+            if (!new.target) return new RealDate(shift()).toString();
+            if (args.length === 0) return Reflect.construct(RealDate, [shift()], new.target);
+            return Reflect.construct(RealDate, args, new.target);
         }
+        FakeDate.prototype = RealDate.prototype;
+        Object.setPrototypeOf(FakeDate, RealDate);   // inherit parse / UTC
+        FakeDate.now = () => Math.floor(shift());
         try { Object.defineProperty(FakeDate, 'name', { value: 'Date' }); } catch (e) { }
         W.Date = FakeDate;
         W.__qaTMInstalled = true;
