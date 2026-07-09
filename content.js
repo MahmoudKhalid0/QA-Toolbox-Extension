@@ -2195,12 +2195,41 @@ function qaCopyFallback(text) {
     ta.remove();
 }
 
+// Apply the AI's issue list to the original text ourselves instead of asking it
+// to echo the whole corrected text back: that doubled the output tokens, made
+// long selections crawl, and could blow past max_tokens mid-JSON.
+// Each issue carries a verbatim `context` snippet, so we anchor on that before
+// replacing `original` — which keeps repeated words from being fixed in the
+// wrong place.
+function buildCorrectedText(text, issues) {
+    let out = text || '';
+    let cursor = 0;
+    for (const it of issues || []) {
+        const wrong = it && it.original;
+        const right = it && it.correction;
+        if (!wrong || right == null || wrong === right) continue;
+
+        // Anchor inside the issue's context when we can find it, else fall back
+        // to a plain forward search, else search from the very start.
+        let from = it.context ? out.indexOf(it.context, cursor) : -1;
+        if (from < 0) from = cursor;
+        let pos = out.indexOf(wrong, from);
+        if (pos < 0) pos = out.indexOf(wrong, cursor);
+        if (pos < 0) pos = out.indexOf(wrong);
+        if (pos < 0) continue;                       // fragment isn't there — skip it
+
+        out = out.slice(0, pos) + right + out.slice(pos + wrong.length);
+        cursor = pos + right.length;
+    }
+    return out;
+}
+
 // Render the structured language review: each mistake as wrong -> correct + why
 function showReviewResult(review, originalText) {
     const old = document.getElementById('ff-sel-result');
     if (old) old.remove();
     const issues = review.issues || [];
-    const corrected = review.corrected || originalText || '';
+    const corrected = buildCorrectedText(originalText || '', issues);
     const correctedRtl = /[؀-ۿ]/.test(corrected);
 
     // The whole fixed text, ready to copy back into the page/ticket

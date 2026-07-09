@@ -1809,7 +1809,6 @@ async function reviewTextWithAI(apiKey, text) {
         type: 'object',
         properties: {
             isCorrect: { type: 'boolean', description: 'true if the text has no real mistakes' },
-            corrected: { type: 'string', description: 'the FULL text with every issue fixed. Identical to the input except for the corrections. Never translate, never rephrase, never add or drop content. If there are no issues, return the input unchanged.' },
             issues: {
                 type: 'array',
                 items: {
@@ -1826,7 +1825,7 @@ async function reviewTextWithAI(apiKey, text) {
                 }
             }
         },
-        required: ['isCorrect', 'corrected', 'issues'],
+        required: ['isCorrect', 'issues'],
         additionalProperties: false
     };
     const prompt = [
@@ -1835,8 +1834,7 @@ async function reviewTextWithAI(apiKey, text) {
         '- spelling, grammar, word-choice',
         '- punctuation AND spacing/formatting (e.g. a space before a colon like "Word :" should be "Word:", double spaces, missing space after punctuation, wrong bracket/quote spacing)',
         'Return each issue separately: the exact wrong fragment, its correction, a short CONTEXT snippet (a few words before and after the mistake, copied verbatim from the text so the user can find where it is), the type, and a one-sentence reason in the SAME language as the text.',
-        'Also return "corrected": the COMPLETE text with every issue applied. It must be byte-for-byte the input except for the fixes — keep the same line breaks, keep every sentence, do NOT translate, do NOT rephrase, do NOT summarise, do NOT add commentary.',
-        'Do NOT translate. List every real issue you find (be thorough). If there are none, set isCorrect to true, return an empty issues array, and return the input unchanged as "corrected".',
+        'Do NOT rewrite the whole text. Do NOT translate. List every real issue you find (be thorough). If there are none, set isCorrect to true and return an empty issues array.',
         '',
         'Text:',
         text
