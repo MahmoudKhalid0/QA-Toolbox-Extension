@@ -2138,7 +2138,7 @@ function runSelectionAi(act, text) {
                 showSelectionResult('Translation', resp.text || '');
             } else {
                 showFabAiStatus('success', 'Reviewed');
-                showReviewResult(resp.review || { isCorrect: true, issues: [] });
+                showReviewResult(resp.review || { isCorrect: true, issues: [] }, text);
             }
         }
     );
@@ -2177,11 +2177,42 @@ function downloadReviewCsv(issues) {
     URL.revokeObjectURL(url);
 }
 
+// Clipboard write with a fallback: navigator.clipboard needs a secure origin
+// and a focused document, neither of which is guaranteed on a tested page.
+function qaCopyText(text) {
+    try {
+        if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).catch(() => qaCopyFallback(text)); return; }
+    } catch (e) { }
+    qaCopyFallback(text);
+}
+function qaCopyFallback(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { }
+    ta.remove();
+}
+
 // Render the structured language review: each mistake as wrong -> correct + why
-function showReviewResult(review) {
+function showReviewResult(review, originalText) {
     const old = document.getElementById('ff-sel-result');
     if (old) old.remove();
     const issues = review.issues || [];
+    const corrected = review.corrected || originalText || '';
+    const correctedRtl = /[؀-ۿ]/.test(corrected);
+
+    // The whole fixed text, ready to copy back into the page/ticket
+    const fixedBlock = (corrected && issues.length)
+        ? `<div class="rv-fixed">
+             <div class="rv-fixed-hd">
+               <span>Corrected text</span>
+               <button id="sr-copy" title="Copy the corrected text"><i class="fas fa-copy"></i> Copy</button>
+             </div>
+             <div class="rv-fixed-tx" style="${correctedRtl ? 'direction:rtl;text-align:right;' : ''}">${escapeHtml(corrected)}</div>
+           </div>`
+        : '';
 
     const body = (review.isCorrect || issues.length === 0)
         ? '<div style="padding:16px;text-align:center;color:#6ee7b7;"><i class="fas fa-circle-check"></i> No mistakes found.</div>'
@@ -2225,6 +2256,12 @@ function showReviewResult(review) {
             #ff-sel-result .rv-mark { background: rgba(239,68,68,0.3); color: #fecaca; border-radius: 3px; padding: 0 2px; }
             #ff-sel-result .rv-meta { font-size: 12px; color: #94a3b8; margin-top: 5px; line-height: 1.5; }
             #ff-sel-result .rv-tag { font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; margin-right: 5px; }
+            #ff-sel-result .rv-fixed { background: rgba(16,185,129,0.10); border: 1px solid rgba(16,185,129,0.35); border-radius: 9px; padding: 10px 12px; margin-top: 8px; }
+            #ff-sel-result .rv-fixed-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+            #ff-sel-result .rv-fixed-hd span { font: 700 11px/1 'Segoe UI', Arial; text-transform: uppercase; letter-spacing: 0.6px; color: #6ee7b7; }
+            #ff-sel-result .rv-fixed-hd button { background: rgba(16,185,129,0.18); border: 1px solid rgba(16,185,129,0.4); color: #6ee7b7; cursor: pointer; border-radius: 6px; padding: 4px 9px; font: 600 11px 'Segoe UI', Arial; display: inline-flex; align-items: center; gap: 5px; }
+            #ff-sel-result .rv-fixed-hd button:hover { background: rgba(16,185,129,0.3); color: #fff; }
+            #ff-sel-result .rv-fixed-tx { font-size: 13px; line-height: 1.8; color: #e2e8f0; white-space: pre-wrap; word-break: break-word; max-height: 30vh; overflow-y: auto; background: rgba(0,0,0,0.25); border-radius: 6px; padding: 8px 10px; }
         </style>
         <div class="sr-head">
             <span class="sr-title">&#128221; Language Review${issues.length ? ' (' + issues.length + ')' : ''}</span>
@@ -2233,12 +2270,20 @@ function showReviewResult(review) {
                 <button id="sr-close" title="Close">&#10005;</button>
             </div>
         </div>
-        <div class="sr-body">${body}</div>
+        <div class="sr-body">${fixedBlock}${body}</div>
     `;
     document.body.appendChild(panel);
     panel.querySelector('#sr-close').addEventListener('click', () => panel.remove());
     const csvBtn = panel.querySelector('#sr-csv');
     if (csvBtn) csvBtn.addEventListener('click', () => downloadReviewCsv(issues));
+
+    const copyBtn = panel.querySelector('#sr-copy');
+    if (copyBtn) copyBtn.addEventListener('click', () => {
+        qaCopyText(corrected);
+        const old = copyBtn.innerHTML;
+        copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied';
+        setTimeout(() => { copyBtn.innerHTML = old; }, 1400);
+    });
 
     let drag = null;
     const head = panel.querySelector('.sr-head');
