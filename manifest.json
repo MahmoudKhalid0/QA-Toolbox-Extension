@@ -14,13 +14,13 @@
         "cookies",
         "browsingData",
         "declarativeNetRequest",
-        "identity",
-        "identity.email"
+        "identity"
     ],
     "oauth2": {
-        "client_id": "846935486038-t98ecg6oammr0cgjf4g0tn59svcup5hs.apps.googleusercontent.com",
+        "client_id": "846935486038-hitaeqqvr4rqv1bso3hmrgi4bejccv5l.apps.googleusercontent.com",
         "scopes": [
-            "https://www.googleapis.com/auth/drive.appdata"
+            "https://www.googleapis.com/auth/drive.appdata",
+            "email"
         ]
     },
     "host_permissions": [

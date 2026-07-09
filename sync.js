@@ -14,38 +14,109 @@ const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000; // forget deletions after 90 
 let syncPushTimer = null;
 
 // ---------- Auth ----------
+//
+// We use identity.launchWebAuthFlow, not identity.getAuthToken: the latter only
+// exists in Chrome (it piggybacks on the browser's own Google sign-in), so the
+// extension would lose cloud sync on Edge and Firefox. launchWebAuthFlow is a
+// plain OAuth redirect dance and works in all three.
+//
+// Flow: implicit grant (response_type=token). It returns no refresh token, so we
+// cache the access token until it expires and then re-run the flow silently
+// (prompt=none) against the user's existing Google session.
+//
+// Google Cloud setup: the OAuth client must be a *Web application* client whose
+// authorized redirect URI is chrome.identity.getRedirectURL() — this differs per
+// browser, so register each one you intend to support:
+//   Chrome/Edge : https://<extension-id>.chromiumapp.org/
+//   Firefox     : https://<uuid>.extensions.allizom.org/
 
-function syncGetToken(interactive) {
+function syncOAuthConfig() {
+    const m = chrome.runtime.getManifest();
+    const o = m.oauth2 || {};
+    return { clientId: o.client_id || '', scopes: o.scopes || [] };
+}
+
+let syncTokenCache = null;   // { token, expiresAt }
+
+async function syncLoadToken() {
+    const fresh = (t) => t && t.token && t.expiresAt > Date.now() + 60000; // 1 min of slack
+    if (fresh(syncTokenCache)) return syncTokenCache;
+    const r = await chrome.storage.local.get(['cloudSyncToken']);
+    if (fresh(r.cloudSyncToken)) { syncTokenCache = r.cloudSyncToken; return syncTokenCache; }
+    return null;
+}
+
+async function syncStoreToken(t) {
+    syncTokenCache = t;
+    await chrome.storage.local.set({ cloudSyncToken: t });
+}
+
+async function syncClearToken() {
+    syncTokenCache = null;
+    await chrome.storage.local.remove('cloudSyncToken');
+}
+
+function syncLaunchFlow(interactive) {
+    const { clientId, scopes } = syncOAuthConfig();
+    if (!clientId) return Promise.reject(new Error('No OAuth client_id in the manifest'));
+    const params = new URLSearchParams({
+        client_id: clientId,
+        response_type: 'token',
+        redirect_uri: chrome.identity.getRedirectURL(),
+        scope: scopes.join(' ')
+    });
+    // Silent attempt: never show UI, just reuse the browser's Google session.
+    if (!interactive) params.set('prompt', 'none');
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+
     return new Promise((resolve, reject) => {
-        chrome.identity.getAuthToken({ interactive: !!interactive }, (token) => {
-            if (chrome.runtime.lastError || !token) {
-                reject(new Error(chrome.runtime.lastError ? chrome.runtime.lastError.message : 'No token'));
-            } else {
-                resolve(token);
+        chrome.identity.launchWebAuthFlow({ url, interactive: !!interactive }, (redirectUrl) => {
+            if (chrome.runtime.lastError || !redirectUrl) {
+                reject(new Error((chrome.runtime.lastError && chrome.runtime.lastError.message) || 'Authorization failed'));
+                return;
             }
+            // Implicit grant returns the token in the URL fragment
+            const frag = new URLSearchParams((redirectUrl.split('#')[1] || ''));
+            const error = frag.get('error');
+            if (error) { reject(new Error(error)); return; }
+            const token = frag.get('access_token');
+            if (!token) { reject(new Error('No access token returned')); return; }
+            const expiresIn = parseInt(frag.get('expires_in'), 10) || 3600;
+            resolve({ token, expiresAt: Date.now() + expiresIn * 1000 });
         });
     });
 }
 
-function syncRemoveCachedToken(token) {
-    return new Promise((resolve) => {
-        chrome.identity.removeCachedAuthToken({ token }, () => resolve());
-    });
+async function syncGetToken(interactive) {
+    const cached = await syncLoadToken();
+    if (cached) return cached.token;
+    // Always try silently first — an interactive prompt is a last resort.
+    try {
+        const t = await syncLaunchFlow(false);
+        await syncStoreToken(t);
+        return t.token;
+    } catch (e) {
+        if (!interactive) throw e;
+    }
+    const t = await syncLaunchFlow(true);
+    await syncStoreToken(t);
+    return t.token;
 }
 
-function syncGetEmail() {
-    return new Promise((resolve) => {
-        try {
-            chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' }, (info) => {
-                resolve((info && info.email) || '');
-            });
-        } catch (e) {
-            resolve('');
-        }
-    });
+// Needs the "email" scope; getProfileUserInfo() is Chrome-only.
+async function syncGetEmail() {
+    try {
+        const token = await syncGetToken(false);
+        const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` } });
+        if (!res.ok) return '';
+        const d = await res.json();
+        return d.email || '';
+    } catch (e) {
+        return '';
+    }
 }
 
-// Drive fetch with one retry on an expired cached token
+// Drive fetch with one retry on an expired token
 async function driveFetch(url, options = {}) {
     let token = await syncGetToken(false);
     const doFetch = (t) => fetch(url, {
@@ -54,7 +125,7 @@ async function driveFetch(url, options = {}) {
     });
     let res = await doFetch(token);
     if (res.status === 401) {
-        await syncRemoveCachedToken(token);
+        await syncClearToken();
         token = await syncGetToken(false);
         res = await doFetch(token);
     }
@@ -270,10 +341,12 @@ async function syncSignIn() {
 }
 
 async function syncSignOut() {
-    try {
-        const token = await syncGetToken(false);
-        await syncRemoveCachedToken(token);
-    } catch (e) { /* no cached token - nothing to clear */ }
+    // Revoke at Google so a silent re-auth can't quietly sign the user back in
+    const cached = await syncLoadToken();
+    if (cached) {
+        await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(cached.token), { method: 'POST' }).catch(() => { });
+    }
+    await syncClearToken();
     await syncSetMeta({ signedIn: false, email: '', lastError: null });
     syncBroadcastState('signedout');
     return { success: true };
