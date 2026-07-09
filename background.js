@@ -1167,6 +1167,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // API Data Export: replay one request from the background (host permissions
+    // let it read cross-origin responses that the page's own fetch could too,
+    // but without a CORS wall). Used by the paginated CSV exporter.
+    if (request.action === 'apiFetch') {
+        (async () => {
+            try {
+                const opts = { method: request.method || 'GET', headers: request.headers || {}, credentials: 'include', redirect: 'follow' };
+                if (request.body != null && !/^(GET|HEAD)$/i.test(opts.method)) opts.body = request.body;
+                const resp = await fetch(request.url, opts);
+                const text = await resp.text();
+                sendResponse({ ok: resp.ok, status: resp.status, text });
+            } catch (e) {
+                sendResponse({ ok: false, status: 0, error: String((e && e.message) || e) });
+            }
+        })();
+        return true;
+    }
+
     // Link Health: check a list of links for broken/dead URLs
     if (request.action === 'checkLinks') {
         (async () => {

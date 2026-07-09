@@ -92,6 +92,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         openTextMatchPanel();
         sendResponse({ success: true });
     }
+    if (request.action === 'openApiExport') {
+        openApiExportPanel();
+        sendResponse({ success: true });
+    }
     if (request.action === 'arStart') { arArm(request.seconds); sendResponse({ success: true }); }
     if (request.action === 'arStop') { arArm(0); sendResponse({ success: true }); }
     if (request.action === 'highlightBySelector') { sendResponse(highlightSelector(request.query)); }
@@ -7127,4 +7131,266 @@ function qaAddMinimize(panel, headerEl, beforeBtn) {
         wrap.appendChild(btn);
         wrap.appendChild(beforeBtn);
     } else headerEl.appendChild(btn);
+}
+
+// ============================================================================
+// API Data Export — paste a "Copy as fetch" request from DevTools; the tool
+// replays it through the background (no CORS wall), auto-paginates through
+// every page, and downloads the whole dataset as CSV. No AI.
+// ============================================================================
+const AX_IC = (() => {
+    const w = (p) => `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+    return {
+        x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+        db: w('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>'),
+        down: w('<path d="M12 15V3"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>')
+    };
+})();
+
+// headers a fetch/service-worker cannot (or shouldn't) set - stripped on replay
+const AX_SKIP_HEADERS = new Set(['host', 'connection', 'content-length', 'origin', 'referer', 'user-agent',
+    'cookie', 'accept-encoding', 'pragma', 'cache-control', 'dnt', 'upgrade-insecure-requests', 'te',
+    'sec-fetch-dest', 'sec-fetch-mode', 'sec-fetch-site', 'sec-fetch-user', 'sec-ch-ua', 'sec-ch-ua-mobile',
+    'sec-ch-ua-platform', 'sec-ch-ua-platform-version', 'sec-ch-ua-arch', 'sec-ch-ua-full-version',
+    'sec-ch-ua-full-version-list', 'sec-ch-ua-model', 'sec-ch-ua-bitness', 'sec-ch-ua-wow64', 'proxy-authorization']);
+
+// pull a balanced {...} out of a string starting at index i (string-aware)
+function axBalanced(str, i) {
+    let depth = 0, q = null;
+    for (let k = i; k < str.length; k++) {
+        const c = str[k];
+        if (q) { if (c === '\\') { k++; continue; } if (c === q) q = null; continue; }
+        if (c === '"' || c === "'" || c === '`') { q = c; continue; }
+        if (c === '{') depth++;
+        else if (c === '}') { depth--; if (depth === 0) return str.slice(i, k + 1); }
+    }
+    return null;
+}
+
+// parse a "Copy as fetch" snippet (or a bare URL) into {url, method, headers, body}
+function axParseFetch(text) {
+    text = (text || '').trim();
+    const m = text.match(/fetch\(\s*(["'`])([\s\S]*?)\1/);
+    let url, headers = {}, method = 'GET', body = null;
+    if (m) {
+        url = m[2];
+        const rest = text.slice(m.index + m[0].length);
+        const oi = rest.indexOf('{');
+        if (oi !== -1) {
+            const objStr = axBalanced(rest, oi);
+            if (objStr) {
+                try {
+                    const opts = JSON.parse(objStr);
+                    headers = opts.headers || {};
+                    method = (opts.method || 'GET').toUpperCase();
+                    body = opts.body != null ? opts.body : null;
+                } catch (e) { return { error: 'Could not read the fetch options — paste the exact "Copy as fetch" output.' }; }
+            }
+        }
+    } else if (/^https?:\/\//i.test(text)) {
+        url = text.split(/\s/)[0];
+    } else {
+        return { error: 'Paste a "Copy as fetch" snippet (DevTools → Network → right-click a request), or a URL.' };
+    }
+    const clean = {};
+    for (const k of Object.keys(headers)) { if (!AX_SKIP_HEADERS.has(k.toLowerCase())) clean[k] = headers[k]; }
+    return { url, method, headers: clean, body };
+}
+
+// figure out the pagination scheme from the URL's query string. Any "offset"
+// param + any "size" param counts as skip-mode (handles mixed conventions like
+// DummyJSON's skip+limit); otherwise a "page" param + optional "size" param.
+function axDetectPagination(urlStr) {
+    let u; try { u = new URL(urlStr); } catch (e) { return null; }
+    const sp = u.searchParams;
+    const lc = {}; for (const [k] of sp) lc[k.toLowerCase()] = k;   // lower -> real casing
+    const find = (names) => { for (const n of names) if (lc[n] !== undefined) return lc[n]; return null; };
+
+    const SKIP = ['skipcount', 'skip', 'offset', '$skip', 'start', 'startindex', 'from'];
+    const SIZE = ['maxresultcount', 'take', 'limit', '$top', 'top', 'pagesize', 'perpage', 'per_page', 'size', 'count', 'rows'];
+    const PAGE = ['pagenumber', 'pageindex', 'page', 'pageno', 'p'];
+
+    const sizeKey = find(SIZE);
+    const skipKey = find(SKIP);
+    const pageKey = find(PAGE);
+    const size = sizeKey ? (parseInt(sp.get(sizeKey)) || 100) : 100;
+
+    if (skipKey) return { mode: 'skip', skipParam: skipKey, sizeParam: sizeKey || 'maxResultCount', size, start: parseInt(sp.get(skipKey)) || 0 };
+    if (pageKey) return { mode: 'page', pageParam: pageKey, sizeParam: sizeKey, size, start: parseInt(sp.get(pageKey)) || 1 };
+    return null;
+}
+
+function axExtractItems(json) {
+    if (Array.isArray(json)) return json;
+    if (json && typeof json === 'object') {
+        for (const k of ['items', 'data', 'results', 'value', 'records', 'rows', 'list', 'content']) if (Array.isArray(json[k])) return json[k];
+        for (const k in json) if (Array.isArray(json[k])) return json[k];
+    }
+    return [];
+}
+function axExtractTotal(json) {
+    if (json && typeof json === 'object') {
+        for (const k of ['totalCount', 'total', 'count', 'totalRecords', 'totalItems', 'recordsTotal', 'totalElements']) if (typeof json[k] === 'number') return json[k];
+    }
+    return null;
+}
+
+function axBgFetch(url, method, headers, body) {
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: 'apiFetch', url, method, headers, body }, (r) => {
+            if (chrome.runtime.lastError) resolve({ ok: false, status: 0, error: chrome.runtime.lastError.message });
+            else resolve(r || { ok: false, status: 0, error: 'No response' });
+        });
+    });
+}
+
+function axToCsv(items) {
+    const cols = [...new Set(items.flatMap(i => (i && typeof i === 'object') ? Object.keys(i) : []))];
+    const esc = (v) => {
+        if (v === null || v === undefined) return '';
+        const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+        return `"${s.replace(/"/g, '""')}"`;
+    };
+    return '﻿' + [cols.join(','), ...items.map(it => cols.map(c => esc(it ? it[c] : '')).join(','))].join('\r\n');
+}
+function axDownload(text, name) {
+    const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+function closeApiExportPanel() { const p = document.getElementById('qa-ax'); if (p) p.remove(); const s = document.getElementById('qa-ax-style'); if (s) s.remove(); }
+
+let axLastRows = null;
+
+function openApiExportPanel() {
+    if (document.getElementById('qa-ax')) { closeApiExportPanel(); return; }
+    const style = document.createElement('style');
+    style.id = 'qa-ax-style';
+    style.textContent = `
+#qa-ax{position:fixed;top:16px;right:16px;width:380px;max-height:88vh;z-index:2147483647;display:flex;flex-direction:column;direction:ltr;
+  background:#17151f;color:#e5e7eb;border:1px solid #2a2738;border-radius:14px;box-shadow:0 14px 44px rgba(0,0,0,.6);font:13px/1.45 -apple-system,Segoe UI,sans-serif;overflow:hidden;}
+#qa-ax *{box-sizing:border-box;}
+#qa-ax .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px;background:#1c1a26;border-bottom:1px solid #2a2738;cursor:move;user-select:none;}
+#qa-ax .ttl{font-weight:600;display:flex;align-items:center;gap:7px;}
+#qa-ax .ttl svg{color:#34d399;}
+#qa-ax .iconbtn{all:unset;cursor:pointer;color:#8b8898;padding:5px;border-radius:7px;display:flex;}
+#qa-ax .iconbtn:hover{background:#3a1d24;color:#f87171;}
+#qa-ax .bd{padding:13px;overflow-y:auto;}
+#qa-ax textarea{width:100%;height:150px;resize:vertical;background:#0f0e16;border:1px solid #2a2738;color:#fff;border-radius:8px;padding:9px 10px;font:11.5px/1.5 Consolas,monospace;outline:none;}
+#qa-ax textarea:focus{border-color:#7c3aed;}
+#qa-ax .hint{font-size:11px;color:#6b6878;margin:7px 2px 10px;line-height:1.5;}
+#qa-ax .row{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+#qa-ax .row label{font-size:11.5px;color:#a9a6b8;}
+#qa-ax .row input{width:110px;background:#0f0e16;border:1px solid #2a2738;color:#fff;border-radius:8px;padding:6px 8px;font-size:12px;outline:none;}
+#qa-ax .go{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;width:100%;background:#7c3aed;color:#fff;font-weight:600;font-size:13px;padding:11px 0;border-radius:9px;}
+#qa-ax .go:hover{background:#6d28d9;}
+#qa-ax .go[disabled]{opacity:.6;cursor:default;}
+#qa-ax .spin{width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:qaaxspin .7s linear infinite;}
+@keyframes qaaxspin{to{transform:rotate(360deg)}}
+#qa-ax .prog{margin-top:12px;display:none;}
+#qa-ax .prog.show{display:block;}
+#qa-ax .bar{height:8px;background:#0f0e16;border:1px solid #2a2738;border-radius:6px;overflow:hidden;}
+#qa-ax .bar>i{display:block;height:100%;width:0;background:#7c3aed;transition:width .2s;}
+#qa-ax .pmeta{font-size:11.5px;color:#a9a6b8;margin-top:6px;text-align:center;font-variant-numeric:tabular-nums;}
+#qa-ax .done{margin-top:12px;display:none;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:10px;padding:12px;text-align:center;}
+#qa-ax .done.show{display:block;}
+#qa-ax .done .n{font-size:22px;font-weight:800;color:#34d399;}
+#qa-ax .done .l{font-size:11px;color:#94a3b8;margin:2px 0 10px;}
+#qa-ax .done button{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;background:#1d1a28;border:1px solid #2a2738;color:#e5e7eb;border-radius:8px;padding:7px 14px;font-weight:600;font-size:12px;}
+#qa-ax .done button:hover{background:#262335;}
+#qa-ax .err{color:#f87171;font-size:12px;margin-top:10px;word-break:break-word;}`;
+    (document.head || document.documentElement).appendChild(style);
+
+    const panel = document.createElement('div');
+    panel.id = 'qa-ax';
+    panel.innerHTML = `
+<div class="hd">
+  <span class="ttl">${AX_IC.db} API Data Export</span>
+  <button class="iconbtn" id="qa-ax-close" title="Close">${AX_IC.x}</button>
+</div>
+<div class="bd">
+  <textarea id="qa-ax-in" spellcheck="false" placeholder='Paste "Copy as fetch" here…\n\nDevTools → Network → right-click the request → Copy → Copy as fetch'></textarea>
+  <div class="hint">The tool replays the request, walks every page automatically, and saves all rows as CSV. Pagination (skipCount/pageNumber…) is detected from the URL.</div>
+  <div class="row">
+    <label>Max rows (safety)</label><input type="number" id="qa-ax-max" value="100000" min="1">
+  </div>
+  <button class="go" id="qa-ax-run">Fetch &amp; Export CSV</button>
+  <div class="prog" id="qa-ax-prog"><div class="bar"><i id="qa-ax-fill"></i></div><div class="pmeta" id="qa-ax-meta"></div></div>
+  <div class="done" id="qa-ax-done"><div class="n" id="qa-ax-count">0</div><div class="l">rows exported</div><button id="qa-ax-again">${AX_IC.down} Download CSV again</button></div>
+  <div class="err" id="qa-ax-err"></div>
+</div>`;
+    document.body.appendChild(panel);
+
+    const $ = (s) => panel.querySelector(s);
+    const err = $('#qa-ax-err'), prog = $('#qa-ax-prog'), fill = $('#qa-ax-fill'), meta = $('#qa-ax-meta'),
+        done = $('#qa-ax-done'), runBtn = $('#qa-ax-run');
+    let busy = false;
+
+    const run = async () => {
+        if (busy) return;
+        err.textContent = ''; done.classList.remove('show');
+        const parsed = axParseFetch($('#qa-ax-in').value);
+        if (parsed.error) { err.textContent = parsed.error; return; }
+        const maxRows = Math.max(1, parseInt($('#qa-ax-max').value) || 100000);
+        const pag = axDetectPagination(parsed.url);
+
+        busy = true; runBtn.disabled = true; runBtn.innerHTML = '<span class="spin"></span> Fetching…';
+        prog.classList.add('show'); fill.style.width = '0'; meta.textContent = 'Starting…';
+
+        let all = [], total = null, cur = pag ? pag.start : 0, guard = 0;
+        try {
+            while (guard++ < 100000) {
+                let pageUrl = parsed.url;
+                if (pag) {
+                    const u = new URL(parsed.url);
+                    if (pag.mode === 'skip') { u.searchParams.set(pag.skipParam, String(cur)); u.searchParams.set(pag.sizeParam, String(pag.size)); }
+                    else { u.searchParams.set(pag.pageParam, String(cur)); if (pag.sizeParam) u.searchParams.set(pag.sizeParam, String(pag.size)); }
+                    pageUrl = u.toString();
+                }
+                const r = await axBgFetch(pageUrl, parsed.method, parsed.headers, parsed.body);
+                if (!r.ok) throw new Error(r.status === 401 ? 'Unauthorized (401) — the token expired. Reload the page, re-copy the request, and paste again.' : `Request failed (HTTP ${r.status || 0}${r.error ? ': ' + r.error : ''})`);
+                let json; try { json = JSON.parse(r.text); } catch (e) { throw new Error('Response is not JSON — this endpoint may not return data rows.'); }
+                const items = axExtractItems(json);
+                const t = axExtractTotal(json); if (t != null) total = t;
+                all = all.concat(items);
+                const pct = total ? Math.min(100, Math.round(all.length / total * 100)) : 0;
+                fill.style.width = (total ? pct : 100) + '%';
+                meta.textContent = total ? `${all.length} / ${total}` : `${all.length} rows…`;
+                if (!pag) break;
+                if (!items.length) break;
+                if (total != null && all.length >= total) break;
+                if (items.length < pag.size) break;
+                if (all.length >= maxRows) { all = all.slice(0, maxRows); break; }
+                cur += (pag.mode === 'skip') ? pag.size : 1;
+            }
+        } catch (e) {
+            busy = false; runBtn.disabled = false; runBtn.innerHTML = 'Fetch &amp; Export CSV';
+            err.textContent = String(e.message || e);
+            return;
+        }
+
+        busy = false; runBtn.disabled = false; runBtn.innerHTML = 'Fetch &amp; Export CSV';
+        if (!all.length) { err.textContent = 'The request returned no data rows.'; prog.classList.remove('show'); return; }
+        fill.style.width = '100%';
+        let host = 'data'; try { host = new URL(parsed.url).hostname.replace(/^www\./, ''); } catch (e) { }
+        const name = `${host}-${all.length}rows.csv`;
+        axLastRows = { csv: axToCsv(all), name };
+        axDownload(axLastRows.csv, axLastRows.name);
+        $('#qa-ax-count').textContent = all.length.toLocaleString();
+        done.classList.add('show');
+    };
+
+    runBtn.addEventListener('click', run);
+    $('#qa-ax-again').addEventListener('click', () => { if (axLastRows) axDownload(axLastRows.csv, axLastRows.name); });
+    $('#qa-ax-close').addEventListener('click', closeApiExportPanel);
+    qaAddMinimize(panel, panel.querySelector('.hd'), $('#qa-ax-close'));
+
+    // drag by header
+    let off = null; const head = panel.querySelector('.hd');
+    head.addEventListener('mousedown', (e) => { if (e.target.closest('button')) return; const r = panel.getBoundingClientRect(); off = { dx: e.clientX - r.left, dy: e.clientY - r.top }; e.preventDefault(); });
+    document.addEventListener('mousemove', (e) => { if (!off) return; panel.style.right = 'auto'; panel.style.left = Math.max(4, Math.min(innerWidth - 80, e.clientX - off.dx)) + 'px'; panel.style.top = Math.max(4, Math.min(innerHeight - 50, e.clientY - off.dy)) + 'px'; });
+    document.addEventListener('mouseup', () => { off = null; });
+
+    panel.querySelector('#qa-ax-in').focus();
 }
