@@ -16,6 +16,17 @@
         "declarativeNetRequest",
         "identity"
     ],
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "vendor/fontawesome/css/all.min.css",
+                "vendor/fontawesome/webfonts/*"
+            ],
+            "matches": [
+                "<all_urls>"
+            ]
+        }
+    ],
     "oauth2": {
         "client_id": "846935486038-hitaeqqvr4rqv1bso3hmrgi4bejccv5l.apps.googleusercontent.com",
         "scopes": [

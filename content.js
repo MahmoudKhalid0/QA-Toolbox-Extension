@@ -5296,12 +5296,16 @@ function createFloatingButton() {
         window.ffCloseListenerAdded = true;
     }
 
-    // Add FontAwesome if not exists
-    if (!document.querySelector('link[href*="font-awesome"]')) {
+    // Our panels use FontAwesome icons. Ship it with the extension rather than
+    // pulling it from a CDN: a CDN leaks the user's IP + every page they visit,
+    // and pages with a strict style-src CSP would block it, leaving no icons.
+    // Guard on our own id so we don't depend on whatever FA the page may load.
+    if (!document.getElementById('qa-toolbox-fa')) {
         const fa = document.createElement('link');
+        fa.id = 'qa-toolbox-fa';
         fa.rel = 'stylesheet';
-        fa.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
-        document.head.appendChild(fa);
+        fa.href = chrome.runtime.getURL('vendor/fontawesome/css/all.min.css');
+        (document.head || document.documentElement).appendChild(fa);
     }
 }
 
