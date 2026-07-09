@@ -65,6 +65,7 @@
                 <i class="fas fa-cloud-upload-alt"></i>
             </button>
             <button id="viewHistoryBtn" title="View Gallery"><i class="fas fa-history"></i></button>
+            <button id="ctxBtn" title="Page context recorded with this capture"><i class="fas fa-circle-info"></i></button>
             <button id="reportBugBtn" class="bug-btn" title="Report Bug"><i class="fas fa-bug"></i> Report</button>
         </div>
     </div>
@@ -88,14 +89,19 @@
             </div>
 
             <div class="modal-body">
+                <div class="form-group" id="bugTargetGroup">
+                    <label for="bugTarget">Send to</label>
+                    <select id="bugTarget">
+                        <option value="azure">Azure DevOps</option>
+                        <option value="jira">Jira</option>
+                    </select>
+                </div>
+
                 <div class="form-row">
-                    <div class="form-group">
+                    <div class="form-group" id="bugOrgGroup">
                         <label for="bugOrg" class="required">Organization</label>
                         <select id="bugOrg">
                             <option value="">Select Organization</option>
-                            <option value="Digination">Digination</option>
-                            <option value="wathiqcms">wathiqcms</option>
-                            <option value="DiginationSTC">DiginationSTC</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -106,10 +112,25 @@
                     </div>
                 </div>
 
+                <!-- One line in, a whole report out: Claude reads the screenshot and
+                     the console/network recorded with it. -->
+                <div class="form-group ai-assist">
+                    <label for="aiNote"><i class="fas fa-wand-magic-sparkles"></i> Describe the bug (AI writes the report)</label>
+                    <div class="ai-row">
+                        <input type="text" id="aiNote" placeholder="e.g. the Save button does nothing on the profile page">
+                        <button type="button" id="aiWriteBtn"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
+                    </div>
+                    <span class="ai-hint" id="aiHint">Claude looks at the screenshot and the recorded logs, then fills the fields below.</span>
+                </div>
+
                 <div class="form-group">
                     <label for="bugTitle" class="required">Bug Title</label>
                     <input type="text" id="bugTitle" placeholder="What happened?">
                 </div>
+
+                <!-- Linked Issues belongs right under the title, above the
+                     description: it answers "what does this bug touch?" -->
+                <div id="jiraTopFields" class="jira-only" style="display:none;"></div>
 
                 <div class="form-group">
                     <label>Description & Repro Steps</label>
@@ -136,10 +157,22 @@
                                 <input type="color" id="rtBackColor" value="#ffff00" title="Highlight">
                             </div>
                             <div class="rt-separator"></div>
-                            <button type="button" class="rich-toolbar-btn" id="rtClear" title="Clear"><i
+                            <button type="button" class="rich-toolbar-btn" id="rtLink" title="Insert Link"><i
+                                    class="fas fa-link"></i></button>
+                            <button type="button" class="rich-toolbar-btn" id="rtCode" title="Inline Code"><i
+                                    class="fas fa-code"></i></button>
+                            <button type="button" class="rich-toolbar-btn" id="rtQuote" title="Quote"><i
+                                    class="fas fa-quote-right"></i></button>
+                            <div class="rt-separator"></div>
+                            <button type="button" class="rich-toolbar-btn" id="rtImage" title="Insert Image (or just paste one)"><i
+                                    class="fas fa-image"></i></button>
+                            <input type="file" id="rtImageInput" accept="image/*" multiple hidden>
+                            <div class="rt-separator"></div>
+                            <button type="button" class="rich-toolbar-btn" id="rtClear" title="Clear Formatting"><i
                                     class="fas fa-eraser"></i></button>
                         </div>
-                        <div id="bugDescription" contenteditable="true"></div>
+                        <div id="bugDescription" contenteditable="true"
+                             data-placeholder="Describe the bug. Paste or drop screenshots straight in."></div>
                     </div>
                 </div>
 
@@ -164,15 +197,35 @@
                     </div>
                 </div>
 
+                <!-- Jira's own fields. Its model has no Severity, Area or Iteration;
+                     it has issue types, priorities, labels and assignees. -->
+                <!-- This tool only files bugs, so the issue type never varies.
+                     Kept as a hidden input the submit path reads. -->
+                <input type="hidden" id="jiraIssueType" value="Bug">
+
+                <!-- Whatever this project's create screen exposes, nothing more.
+                     Required fields are added for you; the rest are opt-in,
+                     exactly like Azure's "Add New Field". -->
+                <input type="hidden" id="jiraIssueType">
+                <div id="jiraFieldsContainer" class="jira-only" style="display:none;"></div>
+
+                <div class="add-field-section jira-only" style="display:none;">
+                    <button type="button" id="jiraAddFieldBtn" class="btn-ghost">
+                        <i class="fas fa-plus"></i> Add New Field
+                    </button>
+                    <div id="jiraAddFieldMenu" class="add-field-menu">
+                        <div class="menu-search">
+                            <input type="text" id="jiraFieldSearch" placeholder="Search fields...">
+                        </div>
+                        <div id="jiraFieldList" class="field-list-items"></div>
+                    </div>
+                </div>
+
                 <div class="form-row">
                     <div class="form-group">
                         <label for="bugSeverity" class="required">Severity</label>
                         <select id="bugSeverity">
-                            <option value="1 - Critical">1 - Critical</option>
-                            <option value="2 - High">2 - High</option>
-                            <option value="3 - Medium" selected>3 - Medium</option>
-                            <option value="4 - Low">4 - Low</option>
-                            <option value="5- Enhancements">5- Enhancements</option>
+                            <option value="">Loading&hellip;</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -222,13 +275,14 @@
                             <i class="fas fa-cloud-upload-alt"></i> Choose Files
                         </label>
                         <input type="file" id="bugAttachments" multiple accept="image/*,video/*" style="display: none;">
+                        <span class="file-upload-hint">or press Ctrl+V to paste a screenshot</span>
                         <div id="bugAttachmentList" class="file-list"></div>
                     </div>
                 </div>
 
-                <div id="dynamicFieldsContainer"></div>
+                <div id="dynamicFieldsContainer" class="azure-only"></div>
 
-                <div class="add-field-section">
+                <div class="add-field-section azure-only">
                     <button type="button" id="addFieldBtn" class="btn-ghost" disabled>
                         <i class="fas fa-plus"></i> Add New Field
                     </button>
@@ -275,6 +329,16 @@
             </div>
         </div>
     </div>
+
+    <!-- Everything the page was doing when the shot was taken -->
+    <aside class="ctx-drawer" id="ctxDrawer">
+        <div class="ctx-head">
+            <span><i class="fas fa-circle-info"></i> Page context</span>
+            <button id="ctxClose" title="Close"><i class="fas fa-xmark"></i></button>
+        </div>
+        <div class="ctx-body" id="ctxBody"></div>
+        <button class="ctx-copy" id="ctxCopy"><i class="fas fa-file-lines"></i> Copy bug report</button>
+    </aside>
 
     <script type="module" src="editor.js"></script>
 </body>

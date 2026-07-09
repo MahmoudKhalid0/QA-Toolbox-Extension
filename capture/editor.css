@@ -618,9 +618,18 @@ body.video-mode .logo {
   border: 1px solid var(--glass-border);
   overflow: hidden;
   background: var(--bg-light);
+  /* Repro steps run long. Let the writer decide how much room they get. */
+  display: flex;
+  flex-direction: column;
+  resize: vertical;
+  min-height: 240px;
+  max-height: 80vh;
+  height: 260px;
 }
 
 .rich-text-toolbar {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   background: rgba(0, 0, 0, 0.3);
   padding: 10px;
   gap: 6px;
@@ -697,12 +706,53 @@ body.video-mode .logo {
 }
 
 #bugDescription {
-  min-height: 180px;
+  flex: 1;
+  overflow-y: auto;
   padding: 24px;
   outline: none;
   font-size: 14px;
   line-height: 1.7;
   color: #eee;
+}
+
+#bugDescription:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-secondary);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+#bugDescription.drop-target {
+  outline: 2px dashed var(--accent-blue);
+  outline-offset: -6px;
+  border-radius: 8px;
+}
+
+#bugDescription a {
+  color: var(--accent-blue);
+  text-decoration: underline;
+}
+
+#bugDescription code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+#bugDescription blockquote {
+  margin: 10px 0;
+  padding: 6px 0 6px 14px;
+  border-left: 3px solid var(--accent-blue);
+  color: var(--text-secondary);
+}
+
+#bugDescription ul,
+#bugDescription ol {
+  padding-left: 26px;
+  margin: 8px 0;
 }
 
 #bugDescription img {
@@ -740,6 +790,13 @@ body.video-mode .logo {
 }
 
 /* File Upload Improvements */
+.file-upload-hint {
+  margin-left: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
 .file-upload-container {
   display: flex;
   flex-direction: column;
@@ -1078,3 +1135,135 @@ body.video-mode .logo {
   border-color: #ff4757 !important;
   box-shadow: 0 0 0 3px rgba(255, 71, 87, 0.1) !important;
 }
+/* ── Page context drawer ─────────────────────────────────────────────────────
+   The console, network and environment captured with the shot, available while
+   you annotate — no need to open the gallery to remember what went wrong. */
+.ctx-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 380px;
+    max-width: 92vw;
+    height: 100vh;
+    background: var(--bg-dark);
+    border-left: 1px solid var(--glass-border);
+    box-shadow: -18px 0 44px rgba(0, 0, 0, 0.55);
+    transform: translateX(100%);
+    transition: transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 400;
+    display: flex;
+    flex-direction: column;
+}
+.ctx-drawer.open { transform: translateX(0); }
+
+.ctx-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--glass-border);
+    font: 600 13px 'Segoe UI', sans-serif;
+    color: var(--text-primary);
+}
+.ctx-head i { color: var(--accent-blue); margin-right: 7px; }
+.ctx-head button {
+    background: var(--glass-bg); border: none; color: var(--text-secondary);
+    width: 30px; height: 30px; border-radius: 8px; cursor: pointer;
+}
+.ctx-head button:hover { background: rgba(239, 68, 68, 0.22); color: #fca5a5; }
+
+.ctx-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
+
+.ctx-sec {
+    font: 700 10px 'Segoe UI', sans-serif; letter-spacing: 0.8px; text-transform: uppercase;
+    color: var(--accent-blue); margin: 18px 0 9px; display: flex; align-items: center; gap: 7px;
+}
+.ctx-sec:first-child { margin-top: 0; }
+.ctx-sec .cnt { margin-left: auto; color: var(--text-secondary); letter-spacing: 0; font-weight: 400; }
+
+.ctx-kv { display: grid; grid-template-columns: 84px 1fr; gap: 6px 10px; font-size: 11.5px; }
+.ctx-kv dt { color: var(--text-secondary); }
+.ctx-kv dd { color: #cbd5e1; word-break: break-word; }
+
+.ctx-log {
+    display: flex; gap: 9px; align-items: baseline;
+    background: rgba(0, 0, 0, 0.32); border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 9px; padding: 8px 10px; margin-bottom: 6px;
+    font: 11px/1.55 Consolas, monospace; color: #cbd5e1; word-break: break-word;
+}
+.ctx-log .lv {
+    flex: 0 0 auto; font: 700 8.5px 'Segoe UI', sans-serif; text-transform: uppercase;
+    letter-spacing: 0.5px; padding: 2px 6px; border-radius: 5px;
+    background: rgba(255, 255, 255, 0.07); color: var(--text-secondary);
+}
+.ctx-log .msg { flex: 1; min-width: 0; }
+.ctx-log.lvl-error { color: #fca5a5; }
+.ctx-log.lvl-error .lv { background: rgba(239, 68, 68, 0.3); color: #fecaca; }
+.ctx-log.lvl-warn { color: #fcd34d; }
+.ctx-log.lvl-warn .lv { background: rgba(245, 158, 11, 0.28); color: #fde68a; }
+.ctx-log.req .st { font-weight: 700; color: #fcd34d; }
+.ctx-log.req .u { color: var(--text-secondary); word-break: break-all; }
+
+.ctx-none { font-size: 11.5px; color: #4b5563; padding: 3px 0 5px; }
+
+.ctx-copy {
+    margin: 0 18px 18px; padding: 12px; border: none; border-radius: 10px; cursor: pointer;
+    background: var(--accent-gradient); color: #fff; font: 600 12.5px 'Segoe UI', sans-serif;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.ctx-copy:hover { filter: brightness(1.1); }
+
+/* a capture that carries errors says so on its own button */
+#ctxBtn.has-issues { position: relative; }
+#ctxBtn.has-issues::after {
+    content: ''; position: absolute; top: 6px; right: 6px;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent-red);
+    box-shadow: 0 0 0 2px var(--bg-dark);
+}
+
+/* ── AI report writer ────────────────────────────────────────────────────── */
+.ai-assist {
+    background: rgba(139, 92, 246, 0.07);
+    border: 1px solid rgba(139, 92, 246, 0.28);
+    border-radius: 12px;
+    padding: 13px 15px;
+}
+.ai-assist label { color: #c4b5fd !important; }
+.ai-assist label i { margin-right: 6px; }
+.ai-row { display: flex; gap: 9px; }
+.ai-row input { flex: 1; min-width: 0; }
+.ai-row button {
+    flex: 0 0 auto;
+    background: var(--accent-gradient);
+    border: none; color: #fff; border-radius: 8px;
+    padding: 0 16px; cursor: pointer;
+    font: 600 12.5px 'Segoe UI', sans-serif;
+    display: inline-flex; align-items: center; gap: 8px;
+}
+.ai-row button:hover { filter: brightness(1.1); }
+.ai-row button:disabled { opacity: 0.6; cursor: wait; }
+.ai-hint { display: block; margin-top: 8px; font-size: 11px; color: var(--text-secondary); }
+.ai-hint.err { color: #fca5a5; }
+.ai-hint.ok { color: #6ee7b7; }
+
+/* ── Jira dynamic fields ─────────────────────────────────────────────────────
+   .dynamic-input and .link-type live inside .form-group, which already styles
+   inputs and selects. These only cover what that rule cannot reach. */
+.dynamic-field-wrapper .link-type {
+    display: block;
+}
+
+.dynamic-field-wrapper input[type="date"],
+.dynamic-field-wrapper input[type="number"] {
+    color-scheme: dark;
+}
+
+/* the multi-select sits inside .form-group; its inner input must not inherit
+   the full-size padding the wrapper gives to plain inputs */
+.dynamic-field-wrapper .multi-select-container input[type="text"] {
+    padding: 11px 14px;
+    border-radius: 10px;
+}
+
+/* the Jira "Add New Field" section sat flush against the attachments block */
+.add-field-section.jira-only { margin-bottom: 26px; }

@@ -6,6 +6,7 @@
     "description": "QA testing toolkit: record & auto-fill forms, AI-generated test profiles, and element inspector - with more QA utilities on the way",
     "permissions": [
         "storage",
+        "alarms",
         "activeTab",
         "scripting",
         "webNavigation",

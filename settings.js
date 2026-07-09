@@ -52,7 +52,16 @@ chrome.runtime.onMessage.addListener((request) => {
         loadCategories();
         refreshSyncUi();
     }
+    if (request.action === 'syncStateChanged' && request.state === 'done') {
+        loadSettings();
+        loadCategories();
+        refreshSyncUi();
+    }
 });
+
+// Opening this page is exactly when you want the other machine's edits. Ask for
+// them quietly - a background pull may not prompt, so a stale token just fails.
+chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
 
 // ---- Cloud Sync UI ----
 
@@ -132,7 +141,11 @@ async function initClearData() {
     cfg.types = Object.assign({}, CLR_DEFAULT.types, cfg.types || {});
     cfg.auto = Object.assign({ startup: false, tabClose: false, domains: [] }, cfg.auto || {});
 
-    const save = () => { chrome.storage.local.set({ qaClearData: cfg }); showToast('Settings saved!'); };
+    const save = () => {
+        chrome.storage.local.set({ qaClearData: cfg });
+        chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
+        showToast('Settings saved!');
+    };
 
     document.getElementById('clrActiveTab').checked = cfg.activeTab !== false;
     document.getElementById('clrReload').checked = cfg.reload !== false;
@@ -598,6 +611,7 @@ function showToast(msg) {
     });
     delay.addEventListener('change', () => {
         chrome.storage.sync.set({ delaySeconds: parseInt(delay.value, 10) }, () => {
+            chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
             showToast(`Countdown set to ${delay.value}s`);
         });
     });
@@ -624,4 +638,137 @@ function showToast(msg) {
     try { saved = localStorage.getItem('qaSettingsPane'); } catch (e) { }
     const target = wanted || saved;
     if (target && document.getElementById('pane-' + target)) show(target);
+})();
+
+// ── Bug Reporting (Azure DevOps / Jira) ─────────────────────────────────────
+// Credentials never leave this device. Nothing is saved until it authenticates:
+// storing a broken token just moves the failure to the report form, where it is
+// far harder to explain.
+
+(function bugReportingSettings() {
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('brtStatus');
+    if (!statusEl) return;
+
+    const STORE_KEY = 'qaBugTracker';
+    let provider = 'azure';
+
+    const setStatus = (msg, kind) => {
+        statusEl.textContent = msg || '';
+        statusEl.className = 'brt-status' + (kind ? ' ' + kind : '');
+    };
+
+    const showProvider = (p) => {
+        provider = p;
+        document.querySelectorAll('.brt-tab').forEach(t => t.classList.toggle('active', t.dataset.brt === p));
+        $('brtAzure').style.display = p === 'azure' ? '' : 'none';
+        $('brtJira').style.display = p === 'jira' ? '' : 'none';
+        setStatus('');
+    };
+
+    document.querySelectorAll('.brt-tab').forEach(t =>
+        t.addEventListener('click', () => showProvider(t.dataset.brt)));
+
+    const b64 = (str) => {
+        const bytes = new TextEncoder().encode(str);
+        let bin = '';
+        for (const b of bytes) bin += String.fromCharCode(b);
+        return btoa(bin);
+    };
+
+    const paintOrgs = (orgs) => {
+        const box = $('brtAzOrgList');
+        box.innerHTML = (orgs || []).map(o => `<span class="brt-org">${o}</span>`).join('');
+    };
+
+    // Read once at load, and again whenever the cloud hands us something new.
+    const paintConfig = () => chrome.storage.local.get([STORE_KEY], (r) => {
+        const c = r[STORE_KEY] || {};
+        const az = c.azure || {}, ji = c.jira || {};
+        paintOrgs(az.orgs);
+        $('brtAzPat').value = az.pat || '';
+        $('brtJiraUrl').value = ji.baseUrl || '';
+        $('brtJiraEmail').value = ji.email || '';
+        $('brtJiraToken').value = ji.token || '';
+        showProvider(c.provider || 'azure');
+    });
+    paintConfig();
+
+    // storage.onChanged fires for the sync's own writes, so the pane follows the
+    // data instead of waiting for the page to be reopened. Two things it must
+    // never do: repaint over an unchanged value, or over what you are typing.
+    chrome.storage.onChanged.addListener((changes, area) => {
+        const c = area === 'local' && changes[STORE_KEY];
+        if (!c || JSON.stringify(c.oldValue) === JSON.stringify(c.newValue)) return;
+        if (document.activeElement && document.activeElement.closest('#brtAzure, #brtJira')) return;
+        paintConfig();
+    });
+
+    // dev.azure.com has no "my organizations" endpoint; the identity service does.
+    // It only answers when the PAT carries the "All accessible organizations" scope.
+    async function testAzure(cfg) {
+        if (!cfg.pat) throw new Error('Paste your PAT');
+        const auth = { Authorization: 'Basic ' + b64(':' + cfg.pat), Accept: 'application/json' };
+
+        const meRes = await fetch('https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1', { headers: auth });
+        if (!meRes.ok) throw new Error(`HTTP ${meRes.status} — the PAT was rejected`);
+        const me = await meRes.json();
+
+        const accRes = await fetch(`https://app.vssps.visualstudio.com/_apis/accounts?memberId=${encodeURIComponent(me.id)}&api-version=7.1`, { headers: auth });
+        if (!accRes.ok) throw new Error(`HTTP ${accRes.status} — could not list organizations`);
+        const orgs = ((await accRes.json()).value || []).map(a => a.accountName).filter(Boolean).sort();
+        if (!orgs.length) throw new Error('No organizations returned. Recreate the PAT with the "All accessible organizations" scope.');
+
+        cfg.orgs = orgs;
+        paintOrgs(orgs);
+        return `${me.displayName || me.emailAddress || 'Connected'} — ${orgs.length} organization(s) found`;
+    }
+
+    async function testJira(cfg) {
+        if (!cfg.baseUrl || !cfg.email || !cfg.token) throw new Error('Fill the site, email and token');
+        const res = await fetch(`${cfg.baseUrl}/rest/api/3/myself`,
+            { headers: { Authorization: 'Basic ' + b64(`${cfg.email}:${cfg.token}`), Accept: 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status} — check the email and API token`);
+        const me = await res.json();
+        return `Connected as ${me.displayName || me.emailAddress}`;
+    }
+
+    $('brtTestBtn').addEventListener('click', async () => {
+        setStatus('Connecting…', 'busy');
+        try {
+            const patch = { provider };
+            let msg;
+            if (provider === 'azure') {
+                patch.azure = { orgs: [], pat: $('brtAzPat').value.trim() };
+                msg = await testAzure(patch.azure);   // fills patch.azure.orgs
+            } else {
+                patch.jira = {
+                    baseUrl: $('brtJiraUrl').value.trim().replace(/\/+$/, ''),
+                    email: $('brtJiraEmail').value.trim(),
+                    token: $('brtJiraToken').value.trim()
+                    // `project` is remembered from the report form, never typed here
+                };
+                msg = await testJira(patch.jira);
+            }
+            const cur = await chrome.storage.local.get([STORE_KEY]);
+            const merged = Object.assign({ provider: 'azure', azure: {}, jira: {} }, cur[STORE_KEY], patch);
+            await chrome.storage.local.set({ [STORE_KEY]: merged });
+            chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
+            setStatus(msg + ' — saved', 'ok');
+            showToast('Bug reporting connected');
+        } catch (e) {
+            setStatus(String(e.message || e), 'err');
+        }
+    });
+
+    $('brtClearBtn').addEventListener('click', async () => {
+        const cur = await chrome.storage.local.get([STORE_KEY]);
+        const c = Object.assign({ provider, azure: {}, jira: {} }, cur[STORE_KEY]);
+        if (provider === 'azure') { c.azure = { orgs: [], pat: '' }; $('brtAzPat').value = ''; paintOrgs([]); }
+        else { c.jira = { baseUrl: '', email: '', token: '', project: '' }; ['brtJiraUrl', 'brtJiraEmail', 'brtJiraToken'].forEach(id => $(id).value = ''); }
+        await chrome.storage.local.set({ [STORE_KEY]: c });
+        chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
+        setStatus('Cleared', 'busy');
+        showToast('Credentials cleared');
+    });
 })();

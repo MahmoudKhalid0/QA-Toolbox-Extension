@@ -47,8 +47,23 @@ function dayGroup(ts) {
     return 'Older';
 }
 
-const errCount = (it) => ((it.ctx && it.ctx.consoleErrors) || []).length;
-const reqCount = (it) => ((it.ctx && it.ctx.failedRequests) || []).length;
+// Older captures stored only the errors (and `consoleAll`); newer ones keep the
+// whole console. Read both shapes so the counts never contradict each other.
+function ctxLogs(ctx) {
+    if (!ctx) return [];
+    if (ctx.console && ctx.console.length) return ctx.console;
+    if (ctx.consoleAll && ctx.consoleAll.length) return ctx.consoleAll;
+    return ctx.consoleErrors || [];
+}
+function ctxReqs(ctx) {
+    if (!ctx) return [];
+    if (ctx.requests && ctx.requests.length) return ctx.requests;
+    return ctx.failedRequests || [];
+}
+const isFailed = (r) => r.status === 0 || r.status >= 400;
+
+const errCount = (it) => ctxLogs(it.ctx).filter(l => l.level === 'error').length;
+const reqCount = (it) => ctxReqs(it.ctx).filter(isFailed).length;
 const issues = (it) => errCount(it) + reqCount(it);
 
 function toast(msg, isErr) {
@@ -100,8 +115,8 @@ function matchesSearch(it, q) {
     const ctx = it.ctx || {};
     const hay = [
         it.title, it.pageUrl,
-        ...(ctx.console || []).map(e => e.message),
-        ...(ctx.requests || []).map(r => r.url)
+        ...ctxLogs(ctx).map(e => e.message),
+        ...ctxReqs(ctx).map(r => r.url)
     ].join(' ').toLowerCase();
     return hay.includes(q);
 }
@@ -328,12 +343,13 @@ function reportMarkdown(it) {
         ''
     ];
 
-    const errs = c.consoleErrors || [];
+    const allLogs = ctxLogs(c);
+    const errs = allLogs.filter(l => l.level === 'error');
     lines.push('### Console errors', '');
     lines.push(errs.length ? '```\n' + errs.map(e => e.message).join('\n') + '\n```' : '_None_');
     lines.push('');
 
-    const logs = c.console || [];
+    const logs = allLogs;
     if (logs.length) {
         lines.push('<details><summary>Full console log</summary>', '');
         lines.push('```');
@@ -341,7 +357,7 @@ function reportMarkdown(it) {
         lines.push('```', '</details>', '');
     }
 
-    const reqs = c.failedRequests || [];
+    const reqs = ctxReqs(c).filter(isFailed);
     lines.push('### Failed requests', '');
     if (reqs.length) {
         lines.push('| Status | Method | URL |', '|---|---|---|');
@@ -400,10 +416,10 @@ function sideHtml(it) {
             <div class="none">No page context was recorded for this capture.</div>`;
     }
     const c = it.ctx;
-    const logs = c.console || [];
-    const errs = c.consoleErrors || [];
-    const allReqs = c.requests || [];
-    const reqs = c.failedRequests || [];
+    const logs = ctxLogs(c);
+    const errs = logs.filter(l => l.level === 'error');
+    const allReqs = ctxReqs(c);
+    const reqs = allReqs.filter(isFailed);
 
     const env = `
         <div class="sec-title"><i class="fas fa-circle-info"></i> Environment</div>

@@ -353,6 +353,32 @@
             .nav-item span { display: none; }
             .nav-item { justify-content: center; }
         }
+
+        /* Bug reporting */
+        .brt-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+        .brt-tab {
+            flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+            color: #9ca3af; border-radius: 8px; padding: 10px 0; cursor: pointer;
+            font: 600 12.5px inherit; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        }
+        .brt-tab.active { background: #667eea; border-color: #667eea; color: #fff; }
+        .brt-lbl { display: block; font-size: 11.5px; color: #9ca3af; margin: 12px 2px 5px; }
+        .brt-in {
+            width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1);
+            color: #e0e0e0; border-radius: 8px; padding: 10px 12px; font-size: 13px;
+            font-family: inherit; outline: none;
+        }
+        .brt-in:focus { border-color: #667eea; }
+        .brt-hint { display: block; font-size: 11px; color: #6b7280; margin-top: 6px; }
+        .brt-help { display: inline-block; margin-top: 8px; font-size: 11.5px; color: #667eea; text-decoration: none; }
+        .brt-help:hover { text-decoration: underline; }
+        .brt-status { margin-top: 12px; font-size: 12px; min-height: 17px; }
+        .brt-status.ok { color: #6ee7b7; }
+        .brt-status.err { color: #f87171; word-break: break-word; }
+        .brt-status.busy { color: #9ca3af; }
+        .brt-orgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+        .brt-org { font-size: 11.5px; padding: 5px 10px; border-radius: 7px;
+                   background: rgba(102,126,234,0.16); border: 1px solid rgba(102,126,234,0.35); color: #c7d2fe; }
     </style>
 </head>
 
@@ -369,6 +395,7 @@
                 <button class="nav-item" data-pane="clear-browsing-data"><i class="fas fa-trash-can"></i><span>Clear Browsing Data</span></button>
                 <button class="nav-item" data-pane="categories"><i class="fas fa-tags"></i><span>Categories</span></button>
                 <button class="nav-item" data-pane="screenshot-and-record"><i class="fas fa-camera"></i><span>Screenshot &amp; Record</span></button>
+                <button class="nav-item" data-pane="bug-reporting"><i class="fas fa-bug"></i><span>Bug Reporting</span></button>
                 <button class="nav-item" data-pane="cloud-sync"><i class="fas fa-cloud"></i><span>Cloud Sync</span></button>
                 <button class="nav-item" data-pane="data-management"><i class="fas fa-database"></i><span>Data Management</span></button>
             </nav>
@@ -568,6 +595,53 @@
                     <option value="10">10 seconds</option>
                 </select>
             </div>
+        </div>
+            </section>
+
+            <section class="pane hidden" id="pane-bug-reporting">
+        <div class="settings-card">
+            <h3 class="section-title"><i class="fas fa-bug"></i> Bug Reporting</h3>
+            <p style="font-size: 12px; color: #888; margin-bottom: 18px;">Send a capture straight to your tracker,
+                with the page URL and your screenshot attached. Your credentials are stored on this device
+                and, if Cloud Sync is on, in this extension's private Google Drive folder.</p>
+
+            <div class="brt-tabs">
+                <button class="brt-tab active" data-brt="azure"><i class="fab fa-microsoft"></i> Azure DevOps</button>
+                <button class="brt-tab" data-brt="jira"><i class="fab fa-jira"></i> Jira</button>
+            </div>
+
+            <div class="brt-pane" id="brtAzure">
+                <label class="brt-lbl">Personal Access Token</label>
+                <input type="password" id="brtAzPat" class="brt-in" placeholder="Paste your PAT">
+                <a class="brt-help" href="https://dev.azure.com" target="_blank" rel="noopener">
+                    User settings &rarr; Personal access tokens <i class="fas fa-arrow-up-right-from-square"></i></a>
+                <span class="brt-hint">Scope must be <b>All accessible organizations</b>, with
+                    <b>Work Items: Read &amp; Write</b>. Your organizations and projects are then discovered
+                    automatically &mdash; nothing to type.</span>
+
+                <div id="brtAzOrgList" class="brt-orgs"></div>
+            </div>
+
+            <div class="brt-pane" id="brtJira" style="display:none;">
+                <label class="brt-lbl">Site URL</label>
+                <input type="url" id="brtJiraUrl" class="brt-in" placeholder="https://your-company.atlassian.net">
+
+                <label class="brt-lbl">Email</label>
+                <input type="email" id="brtJiraEmail" class="brt-in" placeholder="you@company.com">
+
+                <label class="brt-lbl">API token</label>
+                <input type="password" id="brtJiraToken" class="brt-in" placeholder="Paste your Atlassian API token">
+                <a class="brt-help" href="https://id.atlassian.com/manage-profile/security/api-tokens"
+                    target="_blank" rel="noopener">Create an API token <i class="fas fa-arrow-up-right-from-square"></i></a>
+                <span class="brt-hint">Your projects are loaded automatically in the report form &mdash;
+                    the last one you used is preselected.</span>
+            </div>
+
+            <div class="backup-actions" style="margin-top: 18px;">
+                <button id="brtTestBtn" class="btn-backup"><i class="fas fa-plug"></i> Test &amp; Save</button>
+                <button id="brtClearBtn" class="btn-backup"><i class="fas fa-trash"></i> Clear</button>
+            </div>
+            <div id="brtStatus" class="brt-status"></div>
         </div>
             </section>
 

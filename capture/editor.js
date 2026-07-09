@@ -1,4 +1,5 @@
 import { uploadFileToSupabase, saveToHistory, isCloudConfigured } from './supabase-service.js';
+import { getBugConfig, saveBugConfig, azureOrgs, jiraProjects, jiraCreateMeta, jiraCreateFields, jiraFieldOptions, jiraLinkTypes, jiraIssuePicker, jiraCreateBug, azureFieldOptions, contextHtml } from './trackers.js';
 
 // Helper for custom modals (replaces alert/confirm)
 function showCustomModal({ title, message, showInput = false, inputValue = '', primaryText = 'Confirm', secondaryText = 'Cancel' }) {
@@ -144,6 +145,8 @@ const bugOrg = document.getElementById('bugOrg');
 const bugProject = document.getElementById('bugProject');
 const bugFoundIn = document.getElementById('bugFoundIn');
 const bugSeverity = document.getElementById('bugSeverity');
+// A hand-picked severity outranks whatever the AI infers on a rerun.
+bugSeverity?.addEventListener('change', () => { bugSeverity.dataset.userSet = '1'; });
 const bugArea = document.getElementById('bugArea');
 const bugIteration = document.getElementById('bugIteration');
 const bugParentSearch = document.getElementById('bugParentSearch');
@@ -1580,30 +1583,122 @@ const execRTCommand = function (command, value = null) {
     updateToolbarStates();
 };
 
+// An image only survives the trip to Azure or Jira if it reaches us as a
+// data: URL — that is what the upload step looks for. Chrome's own paste
+// sometimes hands back a blob: URL instead, so read the clipboard directly.
+const rtEsc = (v) => String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const rtAttr = (v) => rtEsc(v).replace(/"/g, '&quot;');
+
+const readAsDataUrl = (file) => new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+});
+
+async function insertImages(files) {
+    const images = [...files].filter(f => f.type.startsWith('image/'));
+    if (!images.length) return false;
+
+    bugDescription.focus();
+    for (const file of images) {
+        try {
+            const dataUrl = await readAsDataUrl(file);
+            document.execCommand('insertHTML', false,
+                `<img src="${dataUrl}" alt="${rtAttr(file.name || 'image')}">`);
+        } catch (err) {
+            console.error('Could not read image:', file.name, err);
+            showToast(`Could not read ${file.name || 'that image'}`);
+        }
+    }
+    bugDescription.dispatchEvent(new Event('input'));
+    return true;
+}
+
 if (bugDescription) {
     ['keyup', 'mouseup', 'input', 'focus'].forEach(evt => {
         bugDescription.addEventListener(evt, updateToolbarStates);
     });
 
-    // Handle image resize on paste for Description field
     bugDescription.addEventListener('paste', (e) => {
-        // Use a small delay to let the content be pasted
-        setTimeout(() => {
-            const images = bugDescription.querySelectorAll('img');
-            images.forEach(img => {
-                if (!img.style.maxWidth || img.style.maxWidth === '300px') {
-                    img.style.maxWidth = '600px';
-                    img.style.height = 'auto';
-                    img.style.display = 'block';
-                    img.style.margin = '10px 0';
-                    img.style.borderRadius = '4px';
-                    img.style.border = '1px solid #ddd';
-                }
-            });
+        const dt = e.clipboardData;
+        if (!dt) return;
+
+        // An image on the clipboard wins over any HTML that came with it:
+        // copying from a page often carries both, and the picture is the point.
+        const files = [...(dt.files || [])].filter(f => f.type.startsWith('image/'));
+        if (files.length) {
+            e.preventDefault();
+            insertImages(files).then(saveLastFormValues);
+            return;
+        }
+
+        // Otherwise paste the text and let our own toolbar do the formatting,
+        // rather than importing a foreign page's fonts, colours and classes.
+        const text = dt.getData('text/plain');
+        if (text) {
+            e.preventDefault();
+            document.execCommand('insertText', false, text);
             saveLastFormValues();
-        }, 10);
+        }
+    });
+
+    // Dropping a screenshot straight onto the box is the fastest path there is.
+    const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+    bugDescription.addEventListener('dragover', (e) => {
+        stop(e);
+        bugDescription.classList.add('drop-target');
+    });
+    bugDescription.addEventListener('dragleave', (e) => {
+        stop(e);
+        bugDescription.classList.remove('drop-target');
+    });
+    bugDescription.addEventListener('drop', (e) => {
+        stop(e);
+        bugDescription.classList.remove('drop-target');
+        const files = e.dataTransfer && e.dataTransfer.files;
+        if (files && files.length) insertImages(files).then(saveLastFormValues);
     });
 }
+
+document.getElementById('rtImage')?.addEventListener('click', () =>
+    document.getElementById('rtImageInput')?.click());
+
+document.getElementById('rtImageInput')?.addEventListener('change', async (e) => {
+    await insertImages(e.target.files);
+    e.target.value = '';          // the same file may be picked twice in a row
+    saveLastFormValues();
+});
+
+document.getElementById('rtLink')?.addEventListener('click', () => {
+    // prompt() blurs the editor and collapses the selection, so hold on to the
+    // range first and put it back before running the command.
+    const sel = window.getSelection();
+    const range = (sel && sel.rangeCount) ? sel.getRangeAt(0).cloneRange() : null;
+    const selected = sel ? String(sel).trim() : '';
+
+    const url = prompt('Link URL', 'https://');
+    if (!url || url === 'https://') return;
+
+    bugDescription.focus();
+    if (range) {
+        const s2 = window.getSelection();
+        s2.removeAllRanges();
+        s2.addRange(range);
+    }
+    if (selected) execRTCommand('createLink', url);
+    else execRTCommand('insertHTML', `<a href="${rtAttr(url)}">${rtEsc(url)}</a>`);
+});
+
+document.getElementById('rtCode')?.addEventListener('click', () => {
+    const sel = window.getSelection();
+    const text = sel ? String(sel) : '';
+    if (!text) { showToast('Select the text to mark as code'); return; }
+    execRTCommand('insertHTML', `<code>${rtEsc(text)}</code>`);
+});
+
+document.getElementById('rtQuote')?.addEventListener('click', () => execRTCommand('formatBlock', 'blockquote'));
 
 // Map RT Buttons
 document.getElementById('rtBold')?.addEventListener('click', () => execRTCommand('bold'));
@@ -1658,6 +1753,12 @@ let stageFieldReferenceName = 'Microsoft.VSTS.Build.FoundIn';
 
 // Load projects when organization changes
 bugOrg.addEventListener('change', async () => {
+    // bugProject is shared with Jira. Restoring the last form values dispatches
+    // a change on bugOrg even when Jira is selected, which used to repopulate
+    // the list with Azure projects behind Jira's back.
+    const targetSel = document.getElementById('bugTarget');
+    if (targetSel && targetSel.value !== 'azure') return;
+
     const org = bugOrg.value;
     bugProject.innerHTML = '<option value="">Loading...</option>';
     bugProject.disabled = true;
@@ -1748,7 +1849,13 @@ bugOrg.addEventListener('change', async () => {
 });
 
 // ========= Persistence Logic (Extension) =========
-const persistFields = ["bugOrg", "bugProject", "bugFoundIn", "bugSeverity", "bugParentSearch", "bugParent", "bugTags", "bugAssignedTo", "bugDirectManager", "bugArea", "bugIteration"];
+// Sticky fields: the ones that describe *where* a bug is filed. They rarely
+// change between reports, so retyping them every time is pure friction.
+// Deliberately excluded: bugTitle, bugDescription and bugSeverity — those
+// belong to one bug only, and carrying them over means the next report opens
+// pre-filled with the previous bug's text.
+const persistFields = ["bugOrg", "bugProject", "bugFoundIn", "bugParentSearch",
+    "bugParent", "bugTags", "bugAssignedTo", "bugDirectManager", "bugArea", "bugIteration"];
 
 function saveLastFormValues() {
     if (isInitializing) return;
@@ -1780,7 +1887,10 @@ async function loadLastFormValues() {
             return;
         }
 
-        if (values.bugOrg) {
+        const tSel = document.getElementById('bugTarget');
+        const isAzure = !tSel || tSel.value === 'azure';
+
+        if (isAzure && values.bugOrg) {
             bugOrg.value = values.bugOrg;
             bugOrg.dispatchEvent(new Event('change'));
 
@@ -1849,8 +1959,6 @@ persistFields.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', saveLastFormValues);
 });
-bugTitle.addEventListener('input', saveLastFormValues);
-bugDescription.addEventListener('input', saveLastFormValues);
 bugParentSearch.addEventListener('input', saveLastFormValues);
 bugTagsSearch.addEventListener('input', saveLastFormValues);
 
@@ -2520,11 +2628,24 @@ bugDirectManagerSearch.addEventListener('input', () => {
     }
 });
 
+// Copying an id out of a tracker's UI often brings invisible passengers:
+// non-breaking spaces, zero-width joiners, bidi marks. trim() leaves them,
+// and the search then matches nothing. Built from char codes because the
+// escapes themselves get mangled in transit.
+const INVISIBLE_CODES = [0x00A0, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F,
+    0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2060, 0xFEFF];
+const INVISIBLE = new Set(INVISIBLE_CODES);
+const cleanQuery = (v) => String(v || '')
+    .split('')
+    .filter(ch => !INVISIBLE.has(ch.charCodeAt(0)))
+    .join('')
+    .trim();
+
 // Dynamic Parent Search (WIQL fallback)
 let parentSearchTimeout = null;
 bugParentSearch.addEventListener('input', () => {
     clearTimeout(parentSearchTimeout);
-    const query = bugParentSearch.value.trim();
+    const query = cleanQuery(bugParentSearch.value);
     if (!query) {
         bugParentResults.classList.remove('show');
         bugParent.value = "";
@@ -2533,13 +2654,30 @@ bugParentSearch.addEventListener('input', () => {
     parentSearchTimeout = setTimeout(() => searchParentsDynamically(query), 500);
 });
 
+// A paste is a complete query, not a keystroke: search it at once rather than
+// after the 500 ms typing pause.
+bugParentSearch.addEventListener('paste', () => {
+    setTimeout(() => {
+        clearTimeout(parentSearchTimeout);
+        const q = cleanQuery(bugParentSearch.value);
+        if (q) searchParentsDynamically(q);
+    }, 0);
+});
+
 async function searchParentsDynamically(query) {
     const org = bugOrg.value.trim();
     const project = bugProject.value.trim();
     const encodedOrg = encodeURIComponent(org);
     const encodedProject = encodeURIComponent(project);
 
-    if (!org || !project) return;
+    // Pasting a work item id right after the modal opens lands here while the
+    // project dropdown is still loading. Say so instead of doing nothing.
+    if (!org || !project) {
+        bugParentResults.innerHTML =
+            '<div class="multi-select-item" style="opacity:.6;cursor:default;">Pick an organization and project first</div>';
+        bugParentResults.classList.add('show');
+        return;
+    }
 
     try {
         const settings = await new Promise(resolve => chrome.storage.sync.get(['azurePat'], resolve));
@@ -2652,12 +2790,17 @@ function showTagSuggestions(query) {
         const item = document.createElement('div');
         item.className = 'multi-select-item';
         item.textContent = tag;
-        item.onclick = () => {
+        // mousedown, not click: it fires before the input's blur closes the list
+        item.onmousedown = (e) => {
+            e.preventDefault();
             selectedTags.add(tag);
             bugTagsSearch.value = '';
-            bugTagsResults.classList.remove('show');
             renderTagPills();
             saveLastFormValues();
+            // Picking one tag is almost always followed by picking another:
+            // keep the caret and the list where they were.
+            bugTagsSearch.focus();
+            showTagSuggestions('');
         };
         bugTagsResults.appendChild(item);
     });
@@ -2684,6 +2827,33 @@ if (window.pendingVideo) {
     selectedFiles.push(window.pendingVideo);
     setTimeout(renderAttachmentList, 100); // Small delay to ensure UI is ready
 }
+// A screenshot on the clipboard has no filename: every one arrives as
+// "image.png", indistinguishable once it is in the list.
+function namedClipboardFile(file, i) {
+    if (file.name && file.name !== 'image.png') return file;
+    const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    return new File([file], `pasted-${stamp}${i ? `-${i + 1}` : ''}.${ext}`, { type: file.type });
+}
+
+document.addEventListener('paste', (e) => {
+    const modal = document.getElementById('bugModal');
+    if (!modal || !modal.classList.contains('show')) return;
+
+    // The description handles its own paste, images included.
+    const t = e.target;
+    if (t && t.closest && t.closest('#bugDescription')) return;
+
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])]
+        .filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
+    if (!files.length) return;      // a plain text paste is none of our business
+
+    e.preventDefault();
+    selectedFiles = [...selectedFiles, ...files.map(namedClipboardFile)];
+    renderAttachmentList();
+    showToast(files.length === 1 ? 'Attached from clipboard' : `Attached ${files.length} files`);
+});
+
 bugAttachments?.addEventListener('change', (e) => {
     const files = Array.from(e.target.files);
     selectedFiles = [...selectedFiles, ...files];
@@ -2724,8 +2894,9 @@ reportBugBtn.addEventListener('click', () => {
             renderAttachmentList();
         }
         bugModal.classList.add('show');
+        delete bugSeverity.dataset.userSet;      // a new bug, a fresh judgement
         bugOrg.focus();
-        loadLastFormValues();
+        Promise.resolve(window.bugTargetReady).then(() => loadLastFormValues());
         renderTagPills();
     });
 });
@@ -2929,10 +3100,15 @@ submitBugBtn.addEventListener('click', async () => {
     toggleLoader(true, "Creating Bug Report...");
 
     try {
+        // The URL, the browser, the console and the failed requests: Jira has
+        // carried these since the start, Azure never did.
+        const ctxRes = captureId ? await chrome.storage.local.get([`ctx_${captureId}`]) : {};
+        const ctx = captureId ? ctxRes[`ctx_${captureId}`] : null;
+
         const result = await createAzureDevOpsBug({
             org, project, title, description, assignedTo, directManager,
             areaPath: bugArea.value, iterationPath: bugIteration.value,
-            severity, foundIn, parent, tags, screenshotDataUrl, attachments,
+            severity, foundIn, parent, tags, screenshotDataUrl, attachments, ctx,
             dynamicFields: collectDynamicFields()
         });
 
@@ -2997,8 +3173,10 @@ async function createAzureDevOpsBug(data) {
         processedDescription = await processInlineImages(processedDescription, encodedOrg, encodedProject, authHeader);
     }
 
-    // Create repro steps with links to other attachments
     let reproSteps = `<div>${processedDescription}</div>`;
+
+    // The evidence reads before the picture: what broke, then what it looked like.
+    reproSteps += contextHtml(data.ctx);
 
     // Always upload and attach the screenshot
     const screenshotUrl = await uploadAttachment(encodedOrg, encodedProject, authHeader, data.screenshotDataUrl, `screenshot.png`);
@@ -3006,14 +3184,6 @@ async function createAzureDevOpsBug(data) {
         <br/>
         <img src="${screenshotUrl}" alt="Bug Screenshot" style="max-width: 100%; border: 1px solid #ddd; border-radius: 4px;" />
     `;
-
-    if (otherAttachmentUrls.length > 0) {
-        reproSteps += `<br/><br/><div><strong>Attachments:</strong></div><ul>`;
-        otherAttachmentUrls.forEach(attr => {
-            reproSteps += `<li><a href="${attr.url}">${attr.name}</a></li>`;
-        });
-        reproSteps += `</ul>`;
-    }
 
     const workItemData = [
         { op: 'add', path: '/fields/System.Title', value: data.title },
@@ -3176,3 +3346,765 @@ function collectDynamicFields() {
     });
     return fields;
 }
+
+// ── Page context drawer ─────────────────────────────────────────────────────
+// The console, network and environment recorded at the moment of capture,
+// readable while you annotate. Stored by the background as ctx_<captureId>.
+
+(function contextDrawer() {
+    const btn = document.getElementById('ctxBtn');
+    const drawer = document.getElementById('ctxDrawer');
+    if (!btn || !drawer || !captureId) { if (btn) btn.style.display = 'none'; return; }
+
+    let ctx = null;
+
+    // Old captures kept only the errors; new ones keep the whole console.
+    const logsOf = (c) => (c && c.console && c.console.length) ? c.console
+        : (c && c.consoleAll && c.consoleAll.length) ? c.consoleAll
+            : (c && c.consoleErrors) || [];
+    const reqsOf = (c) => (c && c.requests && c.requests.length) ? c.requests
+        : (c && c.failedRequests) || [];
+    const failed = (r) => r.status === 0 || r.status >= 400;
+
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+        (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+    function render() {
+        const body = document.getElementById('ctxBody');
+        if (!ctx) {
+            body.innerHTML = '<div class="ctx-none">No page context was recorded for this capture.</div>';
+            return;
+        }
+        const logs = logsOf(ctx);
+        const errs = logs.filter(l => l.level === 'error');
+        const reqs = reqsOf(ctx);
+        const bad = reqs.filter(failed);
+
+        body.innerHTML = `
+            <div class="ctx-sec"><i class="fas fa-circle-info"></i> Environment</div>
+            <dl class="ctx-kv">
+                <dt>Page</dt><dd>${esc(ctx.url) || '&mdash;'}</dd>
+                <dt>Browser</dt><dd>${esc(ctx.browser) || '&mdash;'}</dd>
+                <dt>Platform</dt><dd>${esc(ctx.platform) || '&mdash;'}</dd>
+                <dt>Viewport</dt><dd>${esc(ctx.viewport) || '&mdash;'}</dd>
+                <dt>Captured</dt><dd>${ctx.capturedAt ? new Date(ctx.capturedAt).toLocaleString() : '&mdash;'}</dd>
+            </dl>
+
+            <div class="ctx-sec"><i class="fas fa-terminal"></i> Console
+                <span class="cnt">${logs.length}${errs.length ? ` &middot; ${errs.length} error${errs.length > 1 ? 's' : ''}` : ''}</span>
+            </div>
+            ${logs.length ? logs.map(l => `
+                <div class="ctx-log lvl-${esc(l.level || 'log')}">
+                    <span class="lv">${esc(l.level || 'log')}</span>
+                    <span class="msg">${esc(l.message)}${l.count > 1 ? ` <b>&times;${l.count}</b>` : ''}</span>
+                </div>`).join('') : '<div class="ctx-none">The page logged nothing.</div>'}
+
+            <div class="ctx-sec"><i class="fas fa-wifi"></i> Network
+                <span class="cnt">${reqs.length}${bad.length ? ` &middot; ${bad.length} failed` : ''}</span>
+            </div>
+            ${bad.length ? bad.map(r => `
+                <div class="ctx-log req">
+                    <span class="st">${esc(r.status || 'ERR')}</span>
+                    <span class="u">${esc(r.method || 'GET')} ${esc(r.url)}</span>
+                </div>`).join('')
+                : reqs.length ? '<div class="ctx-none">Every request succeeded.</div>'
+                    : '<div class="ctx-none">No requests were recorded.</div>'}`;
+    }
+
+    function markdown() {
+        const logs = logsOf(ctx || {});
+        const errs = logs.filter(l => l.level === 'error');
+        const bad = reqsOf(ctx || {}).filter(failed);
+        const c = ctx || {};
+        const out = [
+            `## ${pageTitle}`, '',
+            '### Environment', '', '| | |', '|---|---|',
+            `| URL | ${c.url || '—'} |`,
+            `| Browser | ${c.browser || '—'} |`,
+            `| Platform | ${c.platform || '—'} |`,
+            `| Viewport | ${c.viewport || '—'} |`,
+            `| Captured | ${c.capturedAt ? new Date(c.capturedAt).toLocaleString() : '—'} |`,
+            '', '### Console errors', '',
+            errs.length ? '```\n' + errs.map(e => e.message).join('\n') + '\n```' : '_None_',
+            '', '### Failed requests', ''
+        ];
+        if (bad.length) {
+            out.push('| Status | Method | URL |', '|---|---|---|');
+            for (const r of bad) out.push(`| ${r.status || 'failed'} | ${r.method || 'GET'} | ${r.url} |`);
+        } else {
+            out.push('_None_');
+        }
+        return out.join('\n');
+    }
+
+    chrome.storage.local.get([`ctx_${captureId}`], (r) => {
+        ctx = r[`ctx_${captureId}`] || null;
+        // a capture with nothing worth reporting should not advertise a button
+        const logs = logsOf(ctx || {});
+        const bad = reqsOf(ctx || {}).filter(failed);
+        const n = logs.filter(l => l.level === 'error').length + bad.length;
+        if (n) btn.classList.add('has-issues');
+        render();
+    });
+
+    btn.addEventListener('click', () => drawer.classList.toggle('open'));
+    document.getElementById('ctxClose').addEventListener('click', () => drawer.classList.remove('open'));
+    document.getElementById('ctxCopy').addEventListener('click', async () => {
+        await navigator.clipboard.writeText(markdown());
+        showToast('Bug report copied');
+    });
+})();
+
+// ── AI bug report writer ────────────────────────────────────────────────────
+// The tester types one line. Claude reads that, the annotated screenshot, and
+// the console/network recorded with the capture, then writes the report and
+// fills the form.
+
+(function aiBugWriter() {
+    const noteEl = document.getElementById('aiNote');
+    const btn = document.getElementById('aiWriteBtn');
+    const hint = document.getElementById('aiHint');
+    if (!noteEl || !btn) return;
+
+    const setHint = (msg, kind) => {
+        hint.textContent = msg;
+        hint.className = 'ai-hint' + (kind ? ' ' + kind : '');
+    };
+
+    // Only the four sections a reader actually needs. Module, environment and
+    // impact are already carried by the ticket's fields and the attached
+    // context; severity lives in its dropdown, not in the prose.
+    //
+    // Real HTML structure, not fake indentation: headings are <b>, steps are an
+    // <ol>, results are <ul>. Both trackers understand this - Azure stores it
+    // verbatim, and the Jira path converts it to the same structure in ADF.
+    function renderTemplate(r) {
+        const li = (t) => `<li>${escapeHtmlLite(t)}</li>`;
+
+        const steps = (r.stepsToReproduce || []).length
+            ? `<ol>${r.stepsToReproduce.map(li).join('')}</ol>`
+            : '<ol><li></li><li></li></ol>';
+
+        // one bullet per sentence, so a two-part expectation reads as two points
+        const bullets = (text) => {
+            const parts = String(text || '').split(/(?<=[.!?])\s+(?=[A-Z0-9])/).map(x => x.trim()).filter(Boolean);
+            return parts.length ? `<ul>${parts.map(li).join('')}</ul>` : '<ul><li></li></ul>';
+        };
+
+        return `
+<div><b>Description</b></div>
+<div>${escapeHtmlLite(r.description || '')}</div>
+<br/>
+<div><b>Steps to Reproduce</b></div>
+${steps}
+<br/>
+<div><b>Expected Result</b></div>
+${bullets(r.expectedResult)}
+<br/>
+<div><b>Actual Result</b></div>
+${bullets(r.actualResult)}`.trim();
+    }
+
+    function escapeHtmlLite(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // The form's severity list is worded differently from the AI's three levels.
+    // Azure labels its severities "1 - Critical, 2 - High, 3 - Medium, 4 - Low".
+    // Matching on the leading digit made the AI's "High" land on Critical, so
+    // match the name. And once the tester has picked a level themselves, a
+    // regenerated report must not quietly take it back.
+    function matchSeverity(level) {
+        const sel = document.getElementById('bugSeverity');
+        if (!sel || sel.dataset.userSet === '1') return;
+
+        const want = { High: /high/i, Medium: /medium/i, Low: /low/i }[level];
+        if (!want) return;
+        for (const opt of sel.options) {
+            if (want.test(opt.value)) { sel.value = opt.value; return; }
+        }
+    }
+
+    async function loadCtx() {
+        if (!captureId) return null;
+        const r = await chrome.storage.local.get([`ctx_${captureId}`]);
+        return r[`ctx_${captureId}`] || null;
+    }
+
+    btn.addEventListener('click', async () => {
+        const note = noteEl.value.trim();
+        selectedObjectId = null;
+        render();   // drop the selection handles before photographing the canvas
+
+        btn.disabled = true;
+        const label = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Writing…';
+        setHint('Claude is reading the screenshot…');
+
+        try {
+            const ctx = await loadCtx();
+            // Annotations are part of the evidence, so send the edited canvas.
+            const imageData = canvas.toDataURL('image/png').split(',')[1];
+
+            const res = await new Promise((resolve) => {
+                chrome.runtime.sendMessage(
+                    { action: 'aiWriteBugReport', note, ctx, imageData, mediaType: 'image/png' },
+                    (r) => resolve(chrome.runtime.lastError ? { error: chrome.runtime.lastError.message } : r)
+                );
+            });
+
+            if (!res || res.error) {
+                setHint(res && res.error === 'no_api_key'
+                    ? 'The AI key is not configured.'
+                    : `Failed: ${(res && res.error) || 'unknown error'}`, 'err');
+                return;
+            }
+
+            const r = res.report;
+            const titleEl = document.getElementById('bugTitle');
+            if (titleEl) titleEl.value = r.title || '';
+            const desc = document.getElementById('bugDescription');
+            if (desc) desc.innerHTML = renderTemplate(r);
+            matchSeverity(r.severity);
+            // Jira has no Severity field: remember the level so submit can map
+            // it onto the standard Priority.
+            window.aiSeverityLevel = r.severity || '';
+
+            setHint(`Report written from ${note ? 'your note and ' : ''}the screenshot. Review before sending.`, 'ok');
+        } catch (e) {
+            setHint(`Failed: ${e.message || e}`, 'err');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = label;
+        }
+    });
+
+    noteEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+})();
+
+// ── Bug target: Azure DevOps or Jira ────────────────────────────────────────
+// The Azure flow is untouched. Jira is a parallel path that intercepts the
+// submit button before the Azure handler ever runs, so neither can break the
+// other. Organizations come from Settings instead of being hard-coded here.
+
+(function bugTarget() {
+    const target = document.getElementById('bugTarget');
+    const orgSel = document.getElementById('bugOrg');
+    const projSel = document.getElementById('bugProject');
+    const submit = document.getElementById('submitBugBtn');
+    if (!target || !orgSel || !projSel || !submit) return;
+
+    // Fields that exist only in Azure's work-item model. Severity and Tags were
+    // missing here, which is why they kept showing up under Jira.
+    const AZURE_ONLY = ['bugOrgGroup', 'bugAssignedTo', 'bugDirectManager', 'bugParent',
+        'bugArea', 'bugIteration', 'bugFoundIn', 'bugSeverity', 'bugTags'];
+
+    let cfg = null;
+
+    const groupOf = (id) => {
+        const el = document.getElementById(id);
+        return el ? el.closest('.form-group') : null;
+    };
+
+    function showAzureFields(show) {
+        for (const id of AZURE_ONLY) {
+            // Tags and the people pickers wrap their input in a container, so
+            // walk up to the .form-group rather than hiding the input alone.
+            const g = groupOf(id) || (document.getElementById(id + 'Pills') || {}).closest?.('.form-group');
+            if (g) g.style.display = show ? '' : 'none';
+        }
+        // "Add New Field" walks Azure's reference names; Jira has no such model
+        document.querySelectorAll('.azure-only').forEach(el => { el.style.display = show ? '' : 'none'; });
+        document.querySelectorAll('.jira-only').forEach(r => { r.style.display = show ? 'none' : ''; });
+
+        // an empty .form-row would still hold its margin
+        document.querySelectorAll('.form-row:not(.jira-only)').forEach(row => {
+            const anyVisible = [...row.querySelectorAll('.form-group')]
+                .some(g => g.style.display !== 'none');
+            row.style.display = anyVisible ? '' : 'none';
+        });
+    }
+
+
+    // ── search-and-pill picker ──────────────────────────────────────────────
+    // One component behind every list-valued Jira field: type to filter, click
+    // to add, x to remove. Same markup and CSS as Azure's pickers.
+    const escHtml = (v) => String(v == null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (v) => escHtml(v).replace(/"/g, '&quot;');
+
+    function makePicker(root, { options = [], multi = true, allowNew = false, lookup = null, eager = false }) {
+        const pills = root.querySelector('.tags-pills-container');
+        const search = root.querySelector('input[type=text]');
+        const results = root.querySelector('.multi-select-content');
+        const chosen = [];
+        let remote = [];        // options fetched for the current query
+        let visible = [];       // exactly what the list is showing right now
+        let seq = 0;            // only the newest lookup may paint
+
+        const sync = () => {
+            pills.innerHTML = chosen.map(c =>
+                `<span class="tag-pill" data-id="${escAttr(c.id)}">${escHtml(c.name)}<i class="fas fa-times remove-tag"></i></span>`).join('');
+            search.style.display = (!multi && chosen.length) ? 'none' : '';
+        };
+
+        // Delegated: the list is re-rendered whenever a lookup resolves, so a
+        // listener bound to an <div> would be gone by the time mouseup lands.
+        pills.addEventListener('click', (e) => {
+            const x = e.target.closest('.remove-tag');
+            if (!x) return;
+            const id = x.parentElement.dataset.id;
+            const i = chosen.findIndex(c => String(c.id) === id);
+            if (i >= 0) chosen.splice(i, 1);
+            sync();
+        });
+
+        const pick = (opt) => {
+            if (!multi) chosen.length = 0;
+            if (!chosen.some(c => String(c.id) === String(opt.id))) chosen.push(opt);
+            search.value = '';
+            sync();
+            if (multi) { search.focus(); paint(); }
+            else { results.classList.remove('show'); }
+        };
+
+        // mousedown, not click: it fires before the input's blur hides the list
+        results.addEventListener('mousedown', (e) => {
+            const item = e.target.closest('.multi-select-item');
+            if (!item) return;
+            e.preventDefault();
+
+            if (item.dataset.new === '1') {
+                const v = cleanQuery(search.value);
+                if (v) pick({ id: v, name: v });
+                return;
+            }
+            const opt = visible.find(o => String(o.id) === item.dataset.id);
+            if (opt) pick(opt);
+        });
+
+        const nameOf = (o) => String((o && o.name != null) ? o.name : '');
+
+        const paint = () => {
+            const q = cleanQuery(search.value).toLowerCase();
+            const taken = new Set(chosen.map(c => String(c.id)));
+            const pool = (lookup ? remote : options).filter(o => o && o.id != null);
+            visible = pool.filter(o => !taken.has(String(o.id)) && nameOf(o).toLowerCase().includes(q)).slice(0, 40);
+
+            let html = visible.map(o =>
+                `<div class="multi-select-item" data-id="${escAttr(o.id)}">${escHtml(nameOf(o))}</div>`).join('');
+            if (allowNew && q && !visible.some(o => nameOf(o).toLowerCase() === q)) {
+                html = `<div class="multi-select-item" data-new="1">Create &ldquo;${escHtml(cleanQuery(search.value))}&rdquo;</div>` + html;
+            }
+            results.innerHTML = html ||
+                '<div class="multi-select-empty" style="opacity:.5;padding:10px 15px;font-size:13px;">No matches</div>';
+            results.classList.add('show');
+        };
+
+        // Fields that hand back an autoCompleteUrl expect a query per keystroke;
+        // fields that inlined their allowedValues just filter what they have.
+        let timer = null;
+        const refresh = (immediate) => {
+            if (!lookup) { paint(); return; }
+            clearTimeout(timer);
+            paint();                       // show what we already have
+
+            // A focus and a paste can be in flight together. Without this, the
+            // slower (older, emptier) response overwrites the newer one.
+            const mine = ++seq;
+            const run = async () => {
+                const q = cleanQuery(search.value);
+                const res = await lookup(q);
+                if (mine !== seq) return;
+                remote = res;
+                paint();
+            };
+            if (immediate) run(); else timer = setTimeout(run, 220);
+        };
+
+        void eager;
+
+        search.addEventListener('focus', () => refresh(true));
+        search.addEventListener('input', () => refresh(false));
+        // paste fires input too, but the value is only set afterwards; a
+        // microtask later it is there, and the user expects an instant result
+        search.addEventListener('paste', () => setTimeout(() => refresh(true), 0));
+        // long enough for mousedown on the list to land first
+        search.addEventListener('blur', () => setTimeout(() => results.classList.remove('show'), 180));
+        search.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const first = results.querySelector('.multi-select-item');
+                if (first) first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            }
+            if (e.key === 'Backspace' && !search.value && chosen.length) { chosen.pop(); sync(); }
+        });
+
+        sync();
+        return { values: () => chosen.map(c => c.id) };
+    }
+
+    // ── dynamic Jira fields ─────────────────────────────────────────────────
+    // The create screen decides what exists. Required fields render themselves;
+    // the rest arrive through "Add New Field" and can be removed again.
+    let jiraFields = [];
+    let jiraLinkTypeList = [];
+    const jiraInputs = {};      // fieldId -> read()
+
+    const LIST_KINDS = new Set(['option', 'user', 'version', 'component',
+        'priority', 'resolution', 'issuetype', 'securitylevel', 'group', 'project']);
+
+    // A bug nobody owns and nothing links to is a bug nobody acts on.
+    const JIRA_ALWAYS_REQUIRED = new Set(['issuelinks', 'assignee']);
+
+    const hasList = (f) => f.id !== 'issuelinks' &&
+        (LIST_KINDS.has(f.kind) || f.id === 'labels' || f.options.length > 0 || !!f.autoCompleteUrl);
+
+    // Azure's exact wrapper. Anything else and the inputs fall back to the
+    // browser's default chrome: white borders, wrong background, no spacing.
+    function fieldShell(f, innerHtml) {
+        return `
+            <div class="dynamic-field-header">
+                <label>${escHtml(f.name)}${f.required ? ' <span style="color:var(--accent-red);">*</span>' : ''}</label>
+                ${f.required ? '' : '<button type="button" class="remove-field-btn" title="Remove Field"><i class="fas fa-trash"></i></button>'}
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">${innerHtml}</div>`;
+    }
+
+    const pickerHtml = (placeholder) => `
+        <div class="multi-select-container">
+            <div class="tags-pills-container"></div>
+            <input type="text" placeholder="${escAttr(placeholder)}">
+            <div class="multi-select-content"></div>
+        </div>`;
+
+    async function renderJiraField(f) {
+        // Linked Issues renders under the title; everything else after the
+        // description, where the optional-field section lives.
+        const box = document.getElementById(f.id === 'issuelinks' ? 'jiraTopFields' : 'jiraFieldsContainer');
+        if (!box || jiraInputs[f.id]) return;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'dynamic-field-wrapper';
+        wrap.dataset.fieldId = f.id;
+        box.appendChild(wrap);
+
+        if (f.id === 'issuelinks') {
+            // both controls must live inside .form-group: that is what carries
+            // the background, border and radius. Outside it the browser paints
+            // its own white chrome.
+            wrap.innerHTML = fieldShell(f,
+                '<select class="link-type" style="margin-bottom:12px;"></select>' +
+                pickerHtml('Type an issue key or summary...'));
+
+            const typeSel = wrap.querySelector('.link-type');
+            typeSel.innerHTML = jiraLinkTypeList.length
+                ? jiraLinkTypeList.map(t => `<option value="${escAttr(t.id)}">${escHtml(t.name)}</option>`).join('')
+                : '<option value="">No link types</option>';
+
+            const picker = makePicker(wrap, { options: [], multi: true, lookup: (q) => jiraIssuePicker(cfg.jira, q) });
+            jiraInputs.issuelinks = () => picker.values();
+            jiraInputs.__linkType = () => typeSel.value;
+
+        } else if (hasList(f)) {
+            wrap.innerHTML = fieldShell(f, pickerHtml(`Search ${f.name.toLowerCase()}...`));
+            const allowNew = f.id === 'labels';
+            // an empty allowedValues means Jira expects you to ask for them
+            const picker = makePicker(wrap, {
+                options: f.options,
+                multi: f.array || allowNew,
+                allowNew,
+                lookup: (!f.options.length && (f.autoCompleteUrl || f.kind === 'user' || f.id === 'labels'))
+                    ? (q) => jiraFieldOptions(cfg.jira, f, q, projSel.value)
+                    : null,
+                // a list with no query and no remote source should still open
+                eager: f.options.length > 0
+            });
+            jiraInputs[f.id] = () => (f.array || allowNew) ? picker.values() : (picker.values()[0] || '');
+
+        } else if (f.kind === 'date' || f.kind === 'datetime') {
+            wrap.innerHTML = fieldShell(f, '<input type="date" class="dynamic-input">');
+            jiraInputs[f.id] = () => wrap.querySelector('input[type=date]').value;
+
+        } else if (f.kind === 'number') {
+            wrap.innerHTML = fieldShell(f, '<input type="number" class="dynamic-input">');
+            jiraInputs[f.id] = () => wrap.querySelector('input[type=number]').value;
+
+        } else {
+            wrap.innerHTML = fieldShell(f, `<input type="text" class="dynamic-input" placeholder="${escAttr(f.name)}">`);
+            jiraInputs[f.id] = () => wrap.querySelector('input[type=text]').value;
+        }
+
+        const rm = wrap.querySelector('.remove-field-btn');
+        if (rm) rm.addEventListener('click', () => {
+            delete jiraInputs[f.id];
+            if (f.id === 'issuelinks') delete jiraInputs.__linkType;
+            wrap.remove();
+            paintFieldMenu();
+        });
+        paintFieldMenu();
+    }
+
+    // Azure's menu is a list of .field-item-btn buttons; a div gets none of the
+    // padding, hover or text layout that class carries.
+    function paintFieldMenu() {
+        const list = document.getElementById('jiraFieldList');
+        if (!list) return;
+        const q = (document.getElementById('jiraFieldSearch').value || '').toLowerCase();
+        const left = jiraFields.filter(f => !jiraInputs[f.id] && f.name.toLowerCase().includes(q));
+        list.innerHTML = '';
+
+        if (!left.length) {
+            const empty = document.createElement('div');
+            empty.className = 'field-item-btn';
+            empty.style.opacity = '.5';
+            empty.textContent = 'No fields left';
+            list.appendChild(empty);
+            return;
+        }
+
+        for (const f of left) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'field-item-btn';
+            btn.innerHTML = `<strong>${escHtml(f.name)}</strong><small>${escHtml(f.id)}</small>`;
+            btn.onclick = () => {
+                renderJiraField(f);
+                document.getElementById('jiraAddFieldMenu').classList.remove('show');
+            };
+            list.appendChild(btn);
+        }
+    }
+
+    // Every Jira dropdown and every optional field comes from that project's
+    // own configuration - never from a list written here.
+    async function fillJiraMeta(projectKey) {
+        if (!projectKey) return;
+        const meta = await jiraCreateMeta(cfg.jira, projectKey).catch(() => null);
+        if (!meta) { showToast('Could not read this project from Jira'); return; }
+
+        if (!meta.bugTypeId) {
+            const why = (meta.errors || []).join(' | ');
+            showToast(why ? `Jira refused: ${why}` : 'This project exposes no issue type you can create');
+            return;
+        }
+
+        const typeEl = document.getElementById('jiraIssueType');
+        if (typeEl) typeEl.value = meta.bugTypeId;
+        window.jiraBugTypeName = meta.bugTypeName || '';
+
+        // fields belong to a project + issue type pair, so start clean
+        for (const id of ['jiraFieldsContainer', 'jiraTopFields']) {
+            const box = document.getElementById(id);
+            if (box) box.innerHTML = '';
+        }
+        for (const k of Object.keys(jiraInputs)) delete jiraInputs[k];
+
+        [jiraFields, jiraLinkTypeList] = await Promise.all([
+            jiraCreateFields(cfg.jira, projectKey, meta.bugTypeId).catch(() => []),
+            jiraLinkTypes(cfg.jira).catch(() => [])
+        ]);
+
+        // Fields this team always fills, whether or not Jira insists on them.
+        // Marking them required renders them up front and blocks an empty submit.
+        for (const f of jiraFields) {
+            if (JIRA_ALWAYS_REQUIRED.has(f.id)) f.required = true;
+        }
+
+        // Priority is missing from many projects' create screens, yet every Jira
+        // site has it and every bug wants one. Synthesise the field from the
+        // global /priority list when createmeta leaves it out.
+        if (!jiraFields.some(f => f.id === 'priority') && meta.priorities.length) {
+            jiraFields.push({
+                id: 'priority',
+                name: 'Priority',
+                required: false,
+                array: false,
+                kind: 'priority',
+                autoCompleteUrl: '',
+                options: meta.priorities
+            });
+        }
+
+        // Linked Issues sits directly under the title; everything else follows
+        // the description.
+        const links = jiraFields.find(f => f.id === 'issuelinks');
+        if (links) await renderJiraField(links);
+
+        for (const f of jiraFields.filter(f => f.required && f.id !== 'issuelinks')) await renderJiraField(f);
+        const pri = jiraFields.find(f => f.id === 'priority' && !f.required);
+        if (pri) await renderJiraField(pri);
+        paintFieldMenu();
+    }
+
+    // Azure's severity list belongs to the process template, not to us.
+    async function fillAzureSeverity(org, project) {
+        const sel = document.getElementById('bugSeverity');
+        if (!sel || !org || !project) return;
+        const values = await azureFieldOptions(cfg.azure, org, project, 'Microsoft.VSTS.Common.Severity');
+        if (!values.length) { sel.innerHTML = '<option value="">Unavailable</option>'; return; }
+        sel.innerHTML = values.map(v => `<option value="${v}">${v}</option>`).join('');
+        // A new project brings a new list: whatever was picked before is gone,
+        // so the flag guarding it has to go too.
+        delete sel.dataset.userSet;
+        const mid = values.find(v => /medium/i.test(v));
+        if (mid) sel.value = mid;
+    }
+
+    // The organizations belong to the token, not to a cached copy of it: ask
+    // Azure every time the form opens, so a PAT that gained or lost access is
+    // reflected immediately.
+    async function fillAzureOrgs() {
+        if (!cfg.azure || !cfg.azure.pat) {
+            orgSel.innerHTML = '<option value="">Add your PAT in Settings</option>';
+            return;
+        }
+        // the legacy project/member lookups still read the PAT from storage.sync
+        chrome.storage.sync.set({ azurePat: cfg.azure.pat });
+
+        orgSel.innerHTML = '<option value="">Loading…</option>';
+        orgSel.disabled = true;
+        try {
+            const { orgs } = await azureOrgs(cfg.azure);
+            orgSel.innerHTML = '<option value="">Select Organization</option>' +
+                orgs.map(o => `<option value="${o}">${o}</option>`).join('');
+            orgSel.disabled = false;
+        } catch (e) {
+            orgSel.innerHTML = `<option value="">${escHtml(e.message || 'Could not list organizations')}</option>`;
+        }
+    }
+
+    async function fillJiraProjects() {
+        projSel.disabled = true;
+        projSel.innerHTML = '<option value="">Loading…</option>';
+        try {
+            const list = await jiraProjects(cfg.jira);
+            projSel.innerHTML = '<option value="">Select Project</option>' +
+                list.map(p => `<option value="${p.key}">${p.name}</option>`).join('');
+            // the last project used is the one you almost always want next
+            if (cfg.jira.project) projSel.value = cfg.jira.project;
+            projSel.disabled = false;
+            if (projSel.value) fillJiraMeta(projSel.value);
+        } catch (e) {
+            projSel.innerHTML = `<option value="">${e.message || 'Could not load projects'}</option>`;
+        }
+    }
+
+    // Where a bug goes barely changes between reports; remember both the
+    // provider and the last project so nothing has to be picked twice.
+    projSel.addEventListener('change', () => {
+        if (!projSel.value) return;
+        if (target.value === 'jira') {
+            saveBugConfig({ jira: { project: projSel.value } }).catch(() => { });
+            fillJiraMeta(projSel.value);          // priorities and components are per project
+        } else {
+            fillAzureSeverity(orgSel.value, projSel.value);
+        }
+    });
+
+    async function applyTarget() {
+        const t = target.value;
+        showAzureFields(t === 'azure');
+        if (t === 'jira') await fillJiraProjects();
+        else {
+            projSel.innerHTML = '<option value="">Select Org First</option>';
+            projSel.disabled = true;
+        }
+    }
+
+    // The modal must not restore anything until the target is settled: the
+    // restore path dispatches change events that assume a provider.
+    window.bugTargetReady = (async () => {
+        cfg = await getBugConfig();
+        target.value = cfg.provider || 'azure';
+        await fillAzureOrgs();
+        await applyTarget();
+    })();
+
+    target.addEventListener('change', () => {
+        saveBugConfig({ provider: target.value }).catch(() => { });
+        applyTarget();
+    });
+
+    const addBtn = document.getElementById('jiraAddFieldBtn');
+    const addMenu = document.getElementById('jiraAddFieldMenu');
+    if (addBtn && addMenu) {
+        addBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            addMenu.classList.toggle('show');
+            if (addMenu.classList.contains('show')) { paintFieldMenu(); document.getElementById('jiraFieldSearch').focus(); }
+        });
+        document.getElementById('jiraFieldSearch').addEventListener('input', paintFieldMenu);
+        document.addEventListener('click', (e) => { if (!addMenu.contains(e.target)) addMenu.classList.remove('show'); });
+    }
+
+    // Capture phase: runs before the Azure submit handler and stops it.
+    submit.addEventListener('click', async (e) => {
+        if (target.value !== 'jira') return;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+
+        const project = projSel.value.trim();
+        const title = document.getElementById('bugTitle').value.trim();
+        if (!project) { showToast('Please select a Project'); return; }
+        if (!title) { showToast('Please enter a title'); return; }
+        const emptyRequired = jiraFields.find(f => {
+            if (!f.required || !jiraInputs[f.id]) return false;
+            const v = jiraInputs[f.id]();
+            return Array.isArray(v) ? !v.length : !String(v || '').trim();
+        });
+        if (emptyRequired) {
+            showToast(`${emptyRequired.name} is required`);
+            return;
+        }
+        if (!(document.getElementById('jiraIssueType') || {}).value) {
+            showToast('Loading this project’s issue types…');
+            await fillJiraMeta(project);
+            if (!(document.getElementById('jiraIssueType') || {}).value) return;   // fillJiraMeta already explained why
+        }
+
+        submit.disabled = true;
+        const label = submit.innerHTML;
+        submit.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating…';
+        // Creating an issue means several round trips: fields, links, uploads.
+        // Azure blocks the form while it happens; Jira should too.
+        toggleLoader(true, 'Creating Bug Report...');
+
+        try {
+            const ctxRes = captureId ? await chrome.storage.local.get([`ctx_${captureId}`]) : {};
+            selectedObjectId = null; render();
+
+            const val = (id) => (document.getElementById(id) || {}).value || '';
+
+            // whatever the user actually filled, keyed by Jira's own field ids
+            const extra = {};
+            for (const [id, read] of Object.entries(jiraInputs)) extra[id] = read();
+            // __linkType is consumed by the link call, not sent as a field
+
+            const issue = await jiraCreateBug(cfg.jira, {
+                project,
+                title,
+                issueTypeId: val('jiraIssueType'),
+                issueType: window.jiraBugTypeName || '',
+                description: document.getElementById('bugDescription').innerHTML.trim(),
+                ctx: captureId ? ctxRes[`ctx_${captureId}`] : null,
+                screenshotDataUrl: canvas.toDataURL('image/png'),
+                severity: window.aiSeverityLevel || '',
+                attachments: [...selectedFiles],
+                extra,
+                extraMeta: jiraFields
+            });
+
+            showToast(`Created ${issue.key}`);
+            window.open(issue.url, '_blank');
+            document.getElementById('bugModal').classList.remove('show');
+        } catch (err) {
+            showToast(`Failed: ${err.message || err}`);
+        } finally {
+            toggleLoader(false);
+            submit.disabled = false;
+            submit.innerHTML = label;
+        }
+    }, true);
+})();

@@ -172,6 +172,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     chrome.storage.local.set({ capEyeEnabled: !!request.enabled }, () => {
       if (!request.enabled) capRemoveEyeEverywhere();
       else capInjectEyeEverywhere();
+      // The eye is also toggled from its own floating menu, not just Settings.
+      // Push from here and both routes are covered.
+      if (typeof CloudSync !== 'undefined') CloudSync.syncSchedulePush();
     });
     return false;
   }

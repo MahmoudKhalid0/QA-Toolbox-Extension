@@ -397,7 +397,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
     if (request.action === 'syncNow') {
-        CloudSync.syncNow().then(result => sendResponse(result));
+        CloudSync.syncNow(true).then(result => sendResponse(result));
         return true;
     }
     if (request.action === 'syncStatus') {
@@ -993,6 +993,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     // Inspector OCR: extract text from a picked image (uses the smart model)
+    if (request.action === 'aiWriteBugReport') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
+                const report = await writeBugReportWithAI(AI_CONFIG.apiKey, request);
+                sendResponse({ report });
+            } catch (err) {
+                console.error('aiWriteBugReport error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     if (request.action === 'aiExtractImageText') {
         (async () => {
             try {
@@ -1454,6 +1468,80 @@ async function fetchImageAsBase64(src) {
 }
 
 // Read all text from an image (OCR) via Claude vision - uses the smart model.
+// Writes a QA bug report from three sources at once: what the tester typed,
+// what the screenshot shows, and what the page actually logged. The schema is
+// what fills the form, so every field the form needs is required here.
+async function writeBugReportWithAI(apiKey, req) {
+    // Only what belongs in the ticket body. Module, environment and impact are
+    // either tracked as fields or simply noise once the URL and browser are
+    // already attached; severity drives a dropdown, not prose.
+    const schema = {
+        type: 'object',
+        properties: {
+            title: { type: 'string', description: 'One line, English, imperative and specific. No "Bug:" prefix.' },
+            description: { type: 'string', description: 'Two or three sentences on what is wrong. English.' },
+            stepsToReproduce: { type: 'array', items: { type: 'string' }, description: 'Numbered steps, each a single action. Infer them from the screenshot, URL and the reporter note.' },
+            expectedResult: { type: 'string' },
+            actualResult: { type: 'string', description: 'What happens instead, as seen on the screen.' },
+            severity: { type: 'string', enum: ['High', 'Medium', 'Low'], description: 'Fills the severity dropdown; it is never written into the description.' }
+        },
+        required: ['title', 'description', 'stepsToReproduce', 'expectedResult', 'actualResult', 'severity'],
+        additionalProperties: false
+    };
+
+    const ctx = req.ctx || {};
+
+    const prompt = [
+        'You are a senior QA engineer writing a bug report that a developer can act on without asking questions.',
+        '',
+        'You are given the tester\'s note and a screenshot of the page. Write the report from those two things.',
+        'Do NOT invent error messages, endpoints, stack traces or steps that the note and the screenshot do not support.',
+        'Do NOT diagnose the cause, and do NOT discuss console output or network calls: the failing error is attached to the ticket separately, verbatim.',
+        'Describe only what is on the screen and what the tester reported.',
+        'Write in English regardless of the language of the note or the screenshot.',
+        'Do NOT restate the module, the environment, the browser, the URL or the impact anywhere in your text: those are attached to the ticket already, and repeating them is noise.',
+        'Do NOT write a "Severity:" line - the severity you return fills a dropdown.',
+        '',
+        `Tester's note: ${req.note || '(none - rely on the screenshot)'}`,
+        `Page URL (for inferring the steps only, never to be written out): ${ctx.url || 'unknown'}`
+    ].join('\n');
+
+    const content = [{ type: 'text', text: prompt }];
+    if (req.imageData) {
+        content.push({
+            type: 'image',
+            source: { type: 'base64', media_type: req.mediaType || 'image/png', data: req.imageData }
+        });
+    }
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
+            max_tokens: 2048,
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content }]
+        })
+    });
+
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
+        throw new Error(message);
+    }
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
+    const block = (data.content || []).find(b => b.type === 'text');
+    if (!block || !block.text) throw new Error('Empty AI response');
+    return JSON.parse(block.text);
+}
+
 async function extractImageTextWithAI(apiKey, base64, mediaType) {
     const prompt = [
         'Extract ALL text visible in this image, exactly as written (verbatim), preserving the original language and line breaks.',
@@ -2180,7 +2268,25 @@ function broadcastProfilesUpdated(skipCloudPush) {
 
 // Pull cloud changes when the browser starts (e.g. edits made on another device)
 chrome.runtime.onStartup.addListener(() => {
-    CloudSync.syncNow();
+    CloudSync.syncNow(false);      // no window may open behind the user's back
+});
+
+// A push tells Drive. Nothing tells the other browser, so ask on a timer.
+// chrome.alarms, not setInterval: the service worker is torn down when idle.
+const CLOUD_PULL_ALARM = 'cloudSyncPull';
+const CLOUD_PULL_MINUTES = 5;
+
+function ensureCloudPullAlarm() {
+    chrome.alarms.get(CLOUD_PULL_ALARM, (existing) => {
+        if (!existing) chrome.alarms.create(CLOUD_PULL_ALARM, { periodInMinutes: CLOUD_PULL_MINUTES });
+    });
+}
+chrome.runtime.onStartup.addListener(ensureCloudPullAlarm);
+chrome.runtime.onInstalled.addListener(ensureCloudPullAlarm);
+ensureCloudPullAlarm();          // and after every service-worker restart
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === CLOUD_PULL_ALARM) CloudSync.syncNow(false);
 });
 
 // Auto-fill logic for "On Reload"
