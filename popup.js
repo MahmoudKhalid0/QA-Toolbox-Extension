@@ -1542,3 +1542,97 @@ chrome.runtime.onMessage.addListener((req) => {
     }
 });
 
+// ── Screenshot & Record (capture/ module) ───────────────────────────────────
+// The original lived in its own popup that closed after each action; the side
+// panel stays open, so the flows just fire and toast.
+
+(function captureCard() {
+    const $id = (x) => document.getElementById(x);
+    if (!$id('capVisibleBtn')) return;
+
+    const activeTab = () => new Promise((res) => {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => res(tabs && tabs[0]));
+    });
+    const pageOk = (t) => t && t.url && !/^(chrome|chrome-extension|about|edge):/i.test(t.url);
+
+    // Only Area and Full page inject into the page. Visible and Delayed capture
+    // whatever the tab shows, chrome:// pages included - never disable those.
+    const pageOnly = ['capAreaBtn', 'capFullBtn'];
+    async function syncPageOnly() {
+        const ok = pageOk(await activeTab());
+        for (const id of pageOnly) {
+            const b = $id(id);
+            b.disabled = !ok;
+            b.title = ok ? '' : 'Open a website first';
+        }
+    }
+    syncPageOnly();
+    chrome.tabs.onActivated.addListener(syncPageOnly);
+    chrome.tabs.onUpdated.addListener((_id, info) => { if (info.status === 'complete' || info.url) syncPageOnly(); });
+
+    $id('capVisibleBtn').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'capture' });
+    });
+
+    $id('capDelayedBtn').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'delayedCapture' });
+        showToastMessage('Capturing after the countdown…', 'success');
+    });
+
+    $id('capAreaBtn').addEventListener('click', async () => {
+        const t = await activeTab();
+        if (!pageOk(t)) { showToastMessage('Open a website first', 'error'); return; }
+        chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['capture/area-selection.js'] });
+    });
+
+    $id('capFullBtn').addEventListener('click', async () => {
+        const t = await activeTab();
+        if (!pageOk(t)) { showToastMessage('Open a website first', 'error'); return; }
+        showToastMessage('Scrolling & capturing the whole page…', 'success');
+        chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['capture/full-page.js'] });
+    });
+
+    $id('capScreenBtn').addEventListener('click', async () => {
+        const t = await activeTab();
+        chrome.windows.create({
+            url: chrome.runtime.getURL(`capture/entire-screen.html?tabId=${t ? t.id : ''}`),
+            type: 'popup', width: 710, height: 540, focused: true
+        });
+    });
+
+    const recBtn = $id('capRecordBtn');
+    const paintRecState = () => {
+        chrome.storage.local.get(['isRecordingInProgress'], (r) => {
+            const on = !!r.isRecordingInProgress;
+            recBtn.classList.toggle('rec-on', on);
+            recBtn.innerHTML = on ? '<i class="fas fa-stop"></i> Stop' : '<i class="fas fa-video"></i> Record';
+        });
+    };
+    paintRecState();
+    chrome.storage.onChanged.addListener((ch, area) => {
+        if (area === 'local' && ch.isRecordingInProgress) paintRecState();
+    });
+
+    recBtn.addEventListener('click', async () => {
+        const r = await chrome.storage.local.get(['isRecordingInProgress']);
+        if (r.isRecordingInProgress) {
+            chrome.runtime.sendMessage({ action: 'requestStopRecording' });
+            return;
+        }
+        const t = await activeTab();
+        chrome.windows.create({
+            url: chrome.runtime.getURL(`capture/entire-screen.html?mode=record&tabId=${t ? t.id : ''}`),
+            type: 'popup', width: 710, height: 540, focused: true
+        });
+    });
+
+    $id('capGalleryBtn').addEventListener('click', () => {
+        chrome.tabs.create({ url: chrome.runtime.getURL('capture/history.html') });
+    });
+
+    // the background can't capture Chrome's own pages without an activeTab grant
+    chrome.runtime.onMessage.addListener((msg) => {
+        if (msg && msg.action === 'capCaptureFailed') showToastMessage(msg.message, 'error');
+    });
+
+})();

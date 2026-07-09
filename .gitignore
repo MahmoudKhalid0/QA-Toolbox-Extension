@@ -5,3 +5,7 @@ config.js
 # It lives in ~/.qa-toolbox-keys/ ; only the PUBLIC key belongs in manifest.json ("key").
 *.pem
 *.crx
+
+# Supabase keys for the capture tool's cloud share - never commit them.
+# Copy capture/supabase-config.example.js to capture/supabase-config.js.
+capture/supabase-config.js

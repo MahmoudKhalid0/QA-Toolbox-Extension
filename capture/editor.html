@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Capture Editor - QA Testing Toolkit</title>
+    <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="editor.css">
+</head>
+
+<body>
+    <div class="toolbar">
+        <div class="logo">QA Toolkit</div>
+
+        <div class="tools">
+            <div class="shapes-group" id="shapesGroup">
+                <button id="mainShapeBtn" title="Shapes">
+                    <i class="fas fa-shapes"></i>
+                    <i class="fas fa-chevron-down" style="font-size: 8px;"></i>
+                </button>
+                <div class="shapes-dropdown">
+                    <button id="arrowBtn" title="Arrow"><i class="fas fa-location-arrow"></i></button>
+                    <button id="pencilBtn" title="Freehand"><i class="fas fa-pencil-alt"></i></button>
+                    <button id="lineBtn" title="Line"><i class="fas fa-minus"></i></button>
+                    <button id="rectBtn" title="Rectangle"><i class="far fa-square"></i></button>
+                    <button id="circleBtn" title="Circle"><i class="far fa-circle"></i></button>
+                </div>
+            </div>
+
+            <button id="textBtn" title="Text"><i class="fas fa-font"></i></button>
+            <button id="cropBtn" title="Crop Selection"><i class="fas fa-crop-alt"></i></button>
+
+            <div class="separator"></div>
+
+            <button id="uploadBtn" title="Overlay Image"><i class="fas fa-image"></i></button>
+            <input type="file" id="imageInput" accept="image/*" style="display: none;">
+
+            <div class="separator"></div>
+
+            <input type="color" id="colorPicker" value="#ff0000" title="Color Picker">
+            <input type="number" id="lineWidth" value="3" min="1" max="20" title="Stroke Width">
+
+            <div id="headerCropControls" style="display: none; align-items: center; gap: 8px;">
+                <div class="separator"></div>
+                <button id="confirmCropBtn" class="primary" style="background: var(--accent-green);"
+                    title="Confirm Crop">
+                    <i class="fas fa-check"></i> Crop
+                </button>
+                <button id="cancelCropBtn" class="primary" style="background: var(--accent-red);" title="Cancel Crop">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button id="undoBtn" title="Undo"><i class="fas fa-rotate-left"></i></button>
+            <button id="redoBtn" title="Redo"><i class="fas fa-rotate-right"></i></button>
+            <button id="deleteBtn" title="Delete Selected" disabled><i class="fas fa-trash-can"></i></button>
+
+            <div class="separator"></div>
+
+            <button id="copyBtn" title="Copy to Clipboard"><i class="far fa-copy"></i></button>
+            <button id="saveBtn" class="primary" title="Download Image/Video"><i class="fas fa-download"></i></button>
+            <button id="cloudUploadBtn" class="primary"
+                style="background: #2ed573; box-shadow: 0 4px 15px rgba(46, 213, 115, 0.4);" title="Save to Cloud">
+                <i class="fas fa-cloud-upload-alt"></i>
+            </button>
+            <button id="viewHistoryBtn" title="View Gallery"><i class="fas fa-history"></i></button>
+            <button id="reportBugBtn" class="bug-btn" title="Report Bug"><i class="fas fa-bug"></i> Report</button>
+        </div>
+    </div>
+
+    <div class="workspace" id="workspace">
+        <div id="canvasContainer">
+            <canvas id="canvas"></canvas>
+            <video id="videoPlayer" controls style="display: none;"></video>
+            <div id="overlayContainer"></div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <!-- Bug Report Modal -->
+    <div id="bugModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-bug"></i> Create Bug Report</h3>
+                <button class="modal-close" id="closeBugModal">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="bugOrg" class="required">Organization</label>
+                        <select id="bugOrg">
+                            <option value="">Select Organization</option>
+                            <option value="Digination">Digination</option>
+                            <option value="wathiqcms">wathiqcms</option>
+                            <option value="DiginationSTC">DiginationSTC</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="bugProject" class="required">Project</label>
+                        <select id="bugProject" disabled>
+                            <option value="">Select Org First</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="bugTitle" class="required">Bug Title</label>
+                    <input type="text" id="bugTitle" placeholder="What happened?">
+                </div>
+
+                <div class="form-group">
+                    <label>Description & Repro Steps</label>
+                    <div class="rich-text-container">
+                        <div class="rich-text-toolbar">
+                            <button type="button" class="rich-toolbar-btn" id="rtBold" title="Bold"><i
+                                    class="fas fa-bold"></i></button>
+                            <button type="button" class="rich-toolbar-btn" id="rtItalic" title="Italic"><i
+                                    class="fas fa-italic"></i></button>
+                            <button type="button" class="rich-toolbar-btn" id="rtUnderline" title="Underline"><i
+                                    class="fas fa-underline"></i></button>
+                            <div class="rt-separator"></div>
+                            <button type="button" class="rich-toolbar-btn" id="rtBullet" title="Bullet List"><i
+                                    class="fas fa-list-ul"></i></button>
+                            <button type="button" class="rich-toolbar-btn" id="rtOrderedList" title="Numbered List"><i
+                                    class="fas fa-list-ol"></i></button>
+                            <div class="rt-separator"></div>
+                            <div class="rich-toolbar-btn color-tool">
+                                <i class="fas fa-font"></i>
+                                <input type="color" id="rtFontColor" title="Font Color">
+                            </div>
+                            <div class="rich-toolbar-btn color-tool">
+                                <i class="fas fa-highlighter"></i>
+                                <input type="color" id="rtBackColor" value="#ffff00" title="Highlight">
+                            </div>
+                            <div class="rt-separator"></div>
+                            <button type="button" class="rich-toolbar-btn" id="rtClear" title="Clear"><i
+                                    class="fas fa-eraser"></i></button>
+                        </div>
+                        <div id="bugDescription" contenteditable="true"></div>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="bugAssignedTo" class="required">Assigned To</label>
+                        <div class="multi-select-container">
+                            <div id="bugAssignedToPills" class="tags-pills-container"></div>
+                            <input type="text" id="bugAssignedToSearch" placeholder="Search team members...">
+                            <div id="bugAssignedToResults" class="multi-select-content"></div>
+                        </div>
+                        <input type="hidden" id="bugAssignedTo">
+                    </div>
+                    <div class="form-group">
+                        <label for="bugDirectManager" class="required">Direct Manager</label>
+                        <div class="multi-select-container">
+                            <div id="bugDirectManagerPills" class="tags-pills-container"></div>
+                            <input type="text" id="bugDirectManagerSearch" placeholder="Search managers...">
+                            <div id="bugDirectManagerResults" class="multi-select-content"></div>
+                        </div>
+                        <input type="hidden" id="bugDirectManager">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="bugSeverity" class="required">Severity</label>
+                        <select id="bugSeverity">
+                            <option value="1 - Critical">1 - Critical</option>
+                            <option value="2 - High">2 - High</option>
+                            <option value="3 - Medium" selected>3 - Medium</option>
+                            <option value="4 - Low">4 - Low</option>
+                            <option value="5- Enhancements">5- Enhancements</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="bugFoundIn">Stage</label>
+                        <select id="bugFoundIn">
+                            <option value="">Select Stage</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="bugParent" class="required">Parent Work Item</label>
+                    <div class="multi-select-container">
+                        <input type="text" id="bugParentSearch" placeholder="Search by ID or Title...">
+                        <div id="bugParentResults" class="multi-select-content"></div>
+                    </div>
+                    <input type="hidden" id="bugParent">
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="bugArea">Area Path</label>
+                        <input type="text" id="bugArea" readonly
+                            placeholder="Field is auto-filled when a parent is selected">
+                    </div>
+                    <div class="form-group">
+                        <label for="bugIteration">Iteration Path</label>
+                        <input type="text" id="bugIteration" readonly
+                            placeholder="Field is auto-filled when a parent is selected">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="bugTags">Tags</label>
+                    <div class="multi-select-container">
+                        <div id="bugTagsPills" class="tags-pills-container"></div>
+                        <input type="text" id="bugTagsSearch" placeholder="Add tags...">
+                        <div id="bugTagsResults" class="multi-select-content"></div>
+                    </div>
+                    <input type="hidden" id="bugTags">
+                </div>
+
+                <div class="form-group">
+                    <label>Attachments</label>
+                    <div class="file-upload-container">
+                        <label for="bugAttachments" class="file-upload-label">
+                            <i class="fas fa-cloud-upload-alt"></i> Choose Files
+                        </label>
+                        <input type="file" id="bugAttachments" multiple accept="image/*,video/*" style="display: none;">
+                        <div id="bugAttachmentList" class="file-list"></div>
+                    </div>
+                </div>
+
+                <div id="dynamicFieldsContainer"></div>
+
+                <div class="add-field-section">
+                    <button type="button" id="addFieldBtn" class="btn-ghost" disabled>
+                        <i class="fas fa-plus"></i> Add New Field
+                    </button>
+                    <div id="addFieldMenu" class="add-field-menu">
+                        <div class="menu-search">
+                            <input type="text" id="fieldSearch" placeholder="Search fields...">
+                        </div>
+                        <div id="fieldList" class="field-list-items"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button id="cancelBugBtn" class="btn-secondary">Cancel</button>
+                <button id="submitBugBtn" class="primary"><i class="fas fa-paper-plane"></i> Submit Bug</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="globalLoader" class="loader-overlay">
+        <div class="spinner"></div>
+        <div class="loader-text" id="loaderText">Processing...</div>
+    </div>
+
+    <!-- Custom Modal System -->
+    <div id="customModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Confirmation</h3>
+                <button class="modal-close" id="modalCloseBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="modalMessage"></p>
+                <div id="modalInputContainer" style="display: none; margin-top: 15px;">
+                    <label
+                        style="display: block; margin-bottom: 8px; font-size: 13px; color: var(--text-secondary);">Capture
+                        Title</label>
+                    <input type="text" id="modalInput" placeholder="Enter title...">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="modalSecondaryBtn" class="btn-secondary">Cancel</button>
+                <button id="modalPrimaryBtn" class="primary">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="editor.js"></script>
+</body>
+
+</html>

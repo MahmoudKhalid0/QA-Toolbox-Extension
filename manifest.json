@@ -14,7 +14,11 @@
         "cookies",
         "browsingData",
         "declarativeNetRequest",
-        "identity"
+        "identity",
+        "contextMenus",
+        "desktopCapture",
+        "offscreen",
+        "unlimitedStorage"
     ],
     "web_accessible_resources": [
         {
@@ -27,6 +31,16 @@
             ]
         }
     ],
+    "commands": {
+        "capture-visible": {
+            "suggested_key": { "default": "Alt+Shift+S" },
+            "description": "Capture the visible area (works on Chrome's own pages too)"
+        },
+        "capture-delayed": {
+            "suggested_key": { "default": "Alt+Shift+D" },
+            "description": "Capture after the countdown"
+        }
+    },
     "oauth2": {
         "client_id": "846935486038-hitaeqqvr4rqv1bso3hmrgi4bejccv5l.apps.googleusercontent.com",
         "scopes": [

@@ -576,3 +576,29 @@ function showToast(msg) {
     toast.classList.add('show');
     setTimeout(() => toast.classList.remove('show'), 3000);
 }
+
+// ── Screenshot & Record settings ────────────────────────────────────────────
+
+(function captureSettings() {
+    const eye = document.getElementById('capEyeToggle');
+    const delay = document.getElementById('capDelaySeconds');
+    if (!eye || !delay) return;
+
+    chrome.storage.local.get(['capEyeEnabled'], (r) => { eye.checked = !!r.capEyeEnabled; });
+    eye.addEventListener('change', () => {
+        // the background adds/removes the eye across every open tab
+        chrome.runtime.sendMessage({ action: 'capEyeSetting', enabled: eye.checked });
+        showToast(eye.checked ? 'Capture button shown on pages' : 'Capture button hidden');
+    });
+
+    // delaySeconds lives in storage.sync: the capture module already reads it there
+    chrome.storage.sync.get(['delaySeconds'], (r) => {
+        const v = String(r.delaySeconds || 3);
+        if ([...delay.options].some(o => o.value === v)) delay.value = v;
+    });
+    delay.addEventListener('change', () => {
+        chrome.storage.sync.set({ delaySeconds: parseInt(delay.value, 10) }, () => {
+            showToast(`Countdown set to ${delay.value}s`);
+        });
+    });
+})();

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Capture Screen - QA Testing Toolkit</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background: #f4f4f9;
+        }
+
+        .container {
+            text-align: center;
+            padding: 20px;
+            background: transparent;
+        }
+
+        .spinner {
+            border: 3px solid rgba(0, 0, 0, 0.1);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border-left-color: #8b5cf6;
+            animation: spin 1s linear infinite;
+            margin: 10px auto;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        h2 {
+            color: #333;
+            font-size: 18px;
+            margin: 10px 0;
+        }
+
+        p {
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="init-ui" class="container">
+        <div class="spinner"></div>
+        <h2 id="status-text">Preparing recording...</h2>
+    </div>
+
+    <div id="recording-ui" class="container" style="display: none;">
+        <div class="rec-indicator"
+            style="width: 15px; height: 15px; background: #ff4757; border-radius: 50%; animation: spin 2s infinite linear; margin: 10px auto;">
+        </div>
+        <h2 style="color: #ff4757;">Recording Screen...</h2>
+        <div id="timer" style="font-size: 24px; font-weight: bold; margin: 15px 0;">00:00</div>
+        <button id="stopBtn"
+            style="background: #ff4757; color: white; border: none; padding: 12px 30px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s;">
+            Stop Recording
+        </button>
+        <p style="margin-top: 15px; color: #888;">This window is minimized to prevent it appearing in the recording.</p>
+    </div>
+    <div id="globalLoader" class="loader-overlay"
+        style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(30, 30, 30, 0.9); z-index: 10000; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 20px; color: white;">
+        <div class="spinner"
+            style="width: 50px; height: 50px; border: 4px solid rgba(0, 120, 212, 0.1); border-top: 4px solid #8b5cf6; border-radius: 50%; animation: spin 1s linear infinite;">
+        </div>
+        <div style="font-size: 16px; font-weight: bold;">PROCESSING...</div>
+    </div>
+
+    <script src="entire-screen-page.js"></script>
+</body>
+
+</html>
