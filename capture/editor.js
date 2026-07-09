@@ -1,4 +1,4 @@
-import { uploadFileToSupabase, saveToHistory } from './supabase-service.js';
+import { uploadFileToSupabase, saveToHistory, isCloudConfigured } from './supabase-service.js';
 
 // Helper for custom modals (replaces alert/confirm)
 function showCustomModal({ title, message, showInput = false, inputValue = '', primaryText = 'Confirm', secondaryText = 'Cancel' }) {
@@ -127,6 +127,12 @@ const addFieldMenu = document.getElementById('addFieldMenu');
 const fieldSearch = document.getElementById('fieldSearch');
 const fieldList = document.getElementById('fieldList');
 const cloudUploadBtn = document.getElementById('cloudUploadBtn');
+
+// Cloud sharing is optional; a machine without credentials should not be shown
+// a button that can only fail.
+isCloudConfigured().then((ok) => {
+    if (!ok && cloudUploadBtn) cloudUploadBtn.style.display = 'none';
+});
 const viewHistoryBtn = document.getElementById('viewHistoryBtn');
 const reportBugBtn = document.getElementById('reportBugBtn');
 const bugModal = document.getElementById('bugModal');
@@ -1395,8 +1401,28 @@ function createOverlay(x, y, initialText, callback) {
     });
 }
 
+// Annotations belong to the capture, not to a downloaded file: push the edited
+// image back into the local library so the gallery shows what you actually drew.
+let libSaveTimer = null;
+function saveToLibrary(showToastMsg) {
+    if (!captureId || isVideoSession) return;
+    clearTimeout(libSaveTimer);
+    libSaveTimer = setTimeout(() => {
+        chrome.runtime.sendMessage({
+            action: 'capLibrarySave',
+            id: captureId,
+            title: pageTitle,
+            dataUrl: canvas.toDataURL('image/png')
+        }, (r) => {
+            if (chrome.runtime.lastError) return;
+            if (r && r.ok && showToastMsg) showToast('Saved to the gallery');
+        });
+    }, 250);
+}
+
 saveBtn.addEventListener('click', () => {
     selectedObjectId = null; render();
+    saveToLibrary(false);
     const link = document.createElement('a');
 
     // Improved sanitation for download filename: allow Arabic/Global characters
@@ -1423,6 +1449,7 @@ saveBtn.addEventListener('click', () => {
 
 copyBtn.addEventListener('click', async () => {
     selectedObjectId = null; render();
+    saveToLibrary(false);
     try {
         const dataUrl = canvas.toDataURL('image/png');
         const resp = await fetch(dataUrl);

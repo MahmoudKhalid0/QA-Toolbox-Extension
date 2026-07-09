@@ -2,6 +2,7 @@
 importScripts('db.js');
 importScripts('config.js');
 importScripts('sync.js');
+importScripts('capture/cap-store.js');
 importScripts('capture/cap-background.js');
 
 // Clicking the toolbar icon opens the side panel (the extension's main surface)

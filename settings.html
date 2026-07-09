@@ -135,7 +135,7 @@
             display: flex;
             flex-direction: column;
             gap: 10px;
-            margin-bottom: 15px;
+            margin-top: 15px;
         }
 
         .category-item {
@@ -300,6 +300,59 @@
             gap: 6px;
         }
         .page-footer a:hover { color: #667eea; text-decoration: underline; }
+
+        /* Sidebar layout: six sections, one visible at a time */
+        .container { max-width: 900px; }
+
+        .settings-layout {
+            display: grid;
+            grid-template-columns: 208px 1fr;
+            gap: 22px;
+            align-items: start;
+        }
+
+        .settings-nav {
+            position: sticky;
+            top: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 10px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            width: 100%;
+            padding: 11px 13px;
+            border: none;
+            border-radius: 10px;
+            background: none;
+            color: #9ca3af;
+            font: 600 13px inherit;
+            text-align: left;
+            cursor: pointer;
+            transition: background .18s, color .18s;
+        }
+
+        .nav-item i { width: 16px; text-align: center; font-size: 13px; }
+        .nav-item:hover { background: rgba(255, 255, 255, 0.05); color: #e0e0e0; }
+        .nav-item.active { background: #667eea; color: #fff; }
+
+        .settings-panes { min-width: 0; }
+        .pane.hidden { display: none; }
+        .pane .settings-card { margin-bottom: 0; }
+
+        @media (max-width: 760px) {
+            .settings-layout { grid-template-columns: 1fr; }
+            .settings-nav { position: static; flex-direction: row; overflow-x: auto; }
+            .nav-item span { display: none; }
+            .nav-item { justify-content: center; }
+        }
     </style>
 </head>
 
@@ -310,6 +363,18 @@
             <h1>Settings</h1>
         </div>
 
+        <div class="settings-layout">
+            <nav class="settings-nav">
+                <button class="nav-item active" data-pane="general"><i class="fas fa-sliders-h"></i><span>General</span></button>
+                <button class="nav-item" data-pane="clear-browsing-data"><i class="fas fa-trash-can"></i><span>Clear Browsing Data</span></button>
+                <button class="nav-item" data-pane="categories"><i class="fas fa-tags"></i><span>Categories</span></button>
+                <button class="nav-item" data-pane="screenshot-and-record"><i class="fas fa-camera"></i><span>Screenshot &amp; Record</span></button>
+                <button class="nav-item" data-pane="cloud-sync"><i class="fas fa-cloud"></i><span>Cloud Sync</span></button>
+                <button class="nav-item" data-pane="data-management"><i class="fas fa-database"></i><span>Data Management</span></button>
+            </nav>
+
+            <div class="settings-panes">
+            <section class="pane" id="pane-general">
         <div class="settings-card">
             <h3 class="section-title"><i class="fas fa-sliders-h"></i> General</h3>
             <div class="setting-item">
@@ -365,7 +430,9 @@
                 </select>
             </div>
         </div>
+            </section>
 
+            <section class="pane hidden" id="pane-clear-browsing-data">
         <div class="settings-card">
             <h3 class="section-title"><i class="fas fa-trash-can"></i> Clear Browsing Data</h3>
             <p style="font-size: 12px; color: #888; margin-bottom: 16px;">Configure what the floating button's
@@ -457,18 +524,22 @@
             </div>
             <div id="autoDomainList" style="margin-top: 10px;"></div>
         </div>
+            </section>
 
+            <section class="pane hidden" id="pane-categories">
         <div class="settings-card">
             <h3 class="section-title"><i class="fas fa-tags"></i> Categories</h3>
-            <div class="category-list" id="categoryList">
-                <!-- Categories will be listed here -->
-            </div>
             <div class="add-cat-form">
                 <input type="text" id="newCategoryInput" class="input-text" placeholder="Add new category...">
                 <button id="addCategoryBtn" class="btn-primary">Add</button>
             </div>
+            <div class="category-list" id="categoryList">
+                <!-- Categories will be listed here -->
+            </div>
         </div>
+            </section>
 
+            <section class="pane hidden" id="pane-screenshot-and-record">
         <div class="settings-card">
             <h3 class="section-title"><i class="fas fa-camera"></i> Screenshot &amp; Record</h3>
 
@@ -498,7 +569,9 @@
                 </select>
             </div>
         </div>
+            </section>
 
+            <section class="pane hidden" id="pane-cloud-sync">
         <div class="settings-card">
             <h3 class="section-title"><i class="fas fa-cloud"></i> Cloud Sync</h3>
             <p style="font-size: 12px; color: #888; margin-bottom: 16px;">Sign in with Google to keep your profiles and
@@ -527,7 +600,9 @@
                 </div>
             </div>
         </div>
+            </section>
 
+            <section class="pane hidden" id="pane-data-management">
         <div class="settings-card">
             <h3 class="section-title"><i class="fas fa-database"></i> Data Management</h3>
             <p style="font-size: 12px; color: #888; margin-bottom: 20px;">Backup your profiles and categories to a JSON
@@ -543,6 +618,9 @@
             <input type="file" id="importInput" style="display: none;" accept=".json">
         </div>
     </div>
+            </section>
+            </div>
+        </div>
 
     <div class="page-footer">
         <a href="https://github.com/MahmoudKhalid0/QA-Toolbox-Extension/blob/main/PRIVACY.md" target="_blank"

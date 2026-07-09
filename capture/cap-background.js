@@ -66,7 +66,7 @@ function capCollectContext(tab) {
     const logs = (typeof consoleLogs !== 'undefined' && consoleLogs.get(tab.id)) || [];
     const reqs = (typeof networkReqs !== 'undefined' && networkReqs.get(tab.id)) || [];
     const ua = navigator.userAgent;
-    const brand = (navigator.userAgentData && navigator.userAgentData.brands || [])
+    const brand = ((navigator.userAgentData && navigator.userAgentData.brands) || [])
         .filter(b => !/Not.?A.?Brand/i.test(b.brand)).map(b => `${b.brand} ${b.version}`).join(', ');
     return {
         url: tab.url || '',
@@ -75,26 +75,53 @@ function capCollectContext(tab) {
         browser: brand || ua,
         platform: (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '',
         userAgent: ua,
-        viewport: `${tab.width || ''}x${tab.height || ''}`,
-        consoleErrors: logs.filter(l => l.level === 'error').slice(-30),
-        consoleAll: logs.slice(-60),
-        failedRequests: reqs.filter(r => r.status === 0 || r.status >= 400).slice(-30)
+        viewport: '',                        // filled in by capAttachViewport
+        // Everything the page logged, not just errors: a warning right before
+        // the bug is often the whole story.
+        console: logs.slice(-120),
+        consoleErrors: logs.filter(l => l.level === 'error').slice(-40),
+        requests: reqs.slice(-80),
+        failedRequests: reqs.filter(r => r.status === 0 || r.status >= 400).slice(-40)
     };
+}
+
+// A Tab has no width/height. Ask the page - and shrug on chrome:// pages.
+function capAttachViewport(tab, ctx) {
+    return chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`
+    }).then(r => {
+        if (r && r[0] && r[0].result) ctx.viewport = r[0].result;
+        return ctx;
+    }).catch(() => ctx);
 }
 
 function capOpenEditor(tab, dataUrl, extra) {
     if (!dataUrl) return;
     const captureId = Date.now().toString();
+    const ctx = capCollectContext(tab);
     const payload = Object.assign({
         [captureId]: dataUrl,
         isVideo: false,
-        [`ctx_${captureId}`]: capCollectContext(tab)
+        [`ctx_${captureId}`]: ctx
     }, extra || {});
+
     chrome.storage.local.set(payload, () => {
         chrome.tabs.create({
             url: chrome.runtime.getURL(`capture/editor.html?id=${captureId}&title=${encodeURIComponent(tab.title || 'screenshot')}` + ((extra && extra.cropArea) ? '&crop=true' : ''))
         });
     });
+
+    // Save to the library immediately: nothing is lost if the editor is closed.
+    // An area capture is cropped in the editor, which then patches this record.
+    capAttachViewport(tab, ctx).then(() => CapStore.save({
+        id: captureId,
+        type: 'image',
+        title: tab.title || 'Screenshot',
+        pageUrl: tab.url || '',
+        dataUrl,
+        ctx
+    })).catch(e => console.error('library save failed:', e));
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -147,6 +174,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       else capInjectEyeEverywhere();
     });
     return false;
+  }
+
+  // The editor patches its record after the user annotates and saves.
+  if (request.action === "capLibrarySave") {
+    (async () => {
+      try {
+        const blob = await CapStore.dataUrlToBlob(request.dataUrl);
+        const patched = await CapStore.patch(request.id, { blob, title: request.title || undefined });
+        if (!patched) {
+          await CapStore.save({ id: request.id, type: request.type || 'image', title: request.title || 'Capture', blob, ctx: request.ctx || null });
+        }
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
   }
 
   if (request.action === "capture") {
@@ -353,6 +397,14 @@ async function handleRecordingFinished(videoDataUrl) {
       });
       chrome.storage.local.remove(['tempTabTitle', 'tempTabId', 'recordingStartTime']);
     });
+
+    const finish = (ctx) => CapStore.save({
+      id: captureId, type: 'video', title: tabTitle,
+      pageUrl: (ctx && ctx.url) || '', dataUrl: videoDataUrl, ctx
+    }).catch(e => console.error('library save failed:', e));
+
+    if (tabId) chrome.tabs.get(tabId, (t) => finish(t ? capCollectContext(t) : null));
+    else finish(null);
   });
 }
 

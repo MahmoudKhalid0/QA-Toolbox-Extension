@@ -602,3 +602,26 @@ function showToast(msg) {
         });
     });
 })();
+
+// ── Section navigation ──────────────────────────────────────────────────────
+// Presentation only: the cards and their controls are untouched, just paged.
+
+(function settingsNav() {
+    const items = document.querySelectorAll('.nav-item');
+    if (!items.length) return;
+
+    const show = (slug) => {
+        items.forEach(b => b.classList.toggle('active', b.dataset.pane === slug));
+        document.querySelectorAll('.pane').forEach(p => p.classList.toggle('hidden', p.id !== 'pane-' + slug));
+        try { localStorage.setItem('qaSettingsPane', slug); } catch (e) { }
+    };
+
+    items.forEach(b => b.addEventListener('click', () => show(b.dataset.pane)));
+
+    // ?pane=cloud-sync deep-links here (the panel's "Sign in" link uses it)
+    const wanted = new URLSearchParams(location.search).get('pane');
+    let saved = null;
+    try { saved = localStorage.getItem('qaSettingsPane'); } catch (e) { }
+    const target = wanted || saved;
+    if (target && document.getElementById('pane-' + target)) show(target);
+})();

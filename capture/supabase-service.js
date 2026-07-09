@@ -1,11 +1,34 @@
-import supabaseConfig from './supabase-config.js';
+// Cloud sharing is optional. The credentials live in supabase-config.js, which
+// is gitignored - so a fresh clone has no such file. Import it dynamically and
+// carry on without it, instead of taking the whole editor down with a hard
+// import that fails before a single line of it runs.
+let supabaseUrl = '';
+let supabaseKey = '';
+let configPromise = null;
 
-const { supabaseUrl, supabaseKey } = supabaseConfig;
+async function ensureConfig() {
+    if (!configPromise) {
+        configPromise = import('./supabase-config.js')
+            .then(m => {
+                const c = (m && m.default) || {};
+                supabaseUrl = c.supabaseUrl || '';
+                supabaseKey = c.supabaseKey || '';
+            })
+            .catch(() => { /* not configured - stays empty */ });
+    }
+    await configPromise;
+    return !!(supabaseUrl && supabaseKey);
+}
+
+export async function isCloudConfigured() {
+    return ensureConfig();
+}
 
 /**
  * Upload a file to Supabase Storage
  */
 export async function uploadFileToSupabase(blob, fileName) {
+    if (!await ensureConfig()) throw new Error('Cloud sharing is not configured on this machine');
     const bucket = 'captures'; // Ensure you create this bucket in Supabase and make it public
     const url = `${supabaseUrl}/storage/v1/object/${bucket}/${fileName}`;
     console.log("Supabase Upload Attempt:", { url, fileName, type: blob.type });
@@ -46,6 +69,7 @@ export async function uploadFileToSupabase(blob, fileName) {
  * Save metadata to Supabase 'history' table
  */
 export async function saveToHistory(data) {
+    if (!await ensureConfig()) throw new Error('Cloud sharing is not configured on this machine');
     const url = `${supabaseUrl}/rest/v1/history`;
 
     const response = await fetch(url, {
@@ -71,6 +95,7 @@ export async function saveToHistory(data) {
  * Fetch items from Supabase 'history' table
  */
 export async function getHistoryFromSupabase() {
+    if (!await ensureConfig()) return [];
     const url = `${supabaseUrl}/rest/v1/history?select=*&order=timestamp.desc`;
 
     const response = await fetch(url, {
