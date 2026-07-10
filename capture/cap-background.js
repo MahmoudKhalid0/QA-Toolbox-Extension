@@ -112,16 +112,10 @@ function capOpenEditor(tab, dataUrl, extra) {
         });
     });
 
-    // Save to the library immediately: nothing is lost if the editor is closed.
-    // An area capture is cropped in the editor, which then patches this record.
-    capAttachViewport(tab, ctx).then(() => CapStore.save({
-        id: captureId,
-        type: 'image',
-        title: tab.title || 'Screenshot',
-        pageUrl: tab.url || '',
-        dataUrl,
-        ctx
-    })).catch(e => console.error('library save failed:', e));
+    // The gallery only ever holds what has been shared to Drive - see the
+    // editor's cloud button. A capture that is never shared must never appear
+    // here, so nothing is written to CapStore at capture time.
+    capAttachViewport(tab, ctx).catch(e => console.error('viewport attach failed:', e));
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

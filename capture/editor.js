@@ -1459,28 +1459,11 @@ function createOverlay(x, y, initialText, callback) {
     });
 }
 
-// Annotations belong to the capture, not to a downloaded file: push the edited
-// image back into the local library so the gallery shows what you actually drew.
-let libSaveTimer = null;
-function saveToLibrary(showToastMsg) {
-    if (!captureId || isVideoSession) return;
-    clearTimeout(libSaveTimer);
-    libSaveTimer = setTimeout(() => {
-        chrome.runtime.sendMessage({
-            action: 'capLibrarySave',
-            id: captureId,
-            title: pageTitle,
-            dataUrl: canvas.toDataURL('image/png')
-        }, (r) => {
-            if (chrome.runtime.lastError) return;
-            if (r && r.ok && showToastMsg) showToast('Saved to the gallery');
-        });
-    }, 250);
-}
-
+// A capture only enters the gallery once it is shared to Drive - see the cloud
+// button below. Downloading or copying a file to the clipboard is a local,
+// throwaway action and must not, on its own, make the capture persist anywhere.
 saveBtn.addEventListener('click', () => {
     selectedObjectId = null; render();
-    saveToLibrary(false);
     const link = document.createElement('a');
 
     // Improved sanitation for download filename: allow Arabic/Global characters
@@ -1507,7 +1490,6 @@ saveBtn.addEventListener('click', () => {
 
 copyBtn.addEventListener('click', async () => {
     selectedObjectId = null; render();
-    saveToLibrary(false);
     try {
         const dataUrl = canvas.toDataURL('image/png');
         const resp = await fetch(dataUrl);
@@ -2055,17 +2037,23 @@ if (cloudUploadBtn) {
             toggleLoader(true, updating ? 'Updating the shared image…' : 'Uploading to Drive…');
             selectedObjectId = null; render();   // no selection handles in the shared image
 
-            // Write what is on the canvas back to the library, so the link shows
-            // the annotations rather than the untouched screenshot.
-            if (!isVideoSession) {
-                const dataUrl = canvas.toDataURL('image/png');
-                await chrome.runtime.sendMessage({ action: 'capLibrarySave', id, dataUrl, title, type: 'image', skipCloud: true });
+            // This is the moment the capture is kept at all: nothing was written
+            // to the gallery when it was taken, only to this editor session. Write
+            // what is on the canvas (or, for a recording, the video itself) into
+            // the library now, so the link shows this and the gallery entry exists.
+            const dataUrl = isVideoSession
+                ? (window.pendingVideo ? await readAsDataUrl(window.pendingVideo) : null)
+                : canvas.toDataURL('image/png');
+            if (dataUrl) {
+                await chrome.runtime.sendMessage({
+                    action: 'capLibrarySave', id, dataUrl, title,
+                    type: isVideoSession ? 'video' : 'image', skipCloud: true
+                });
             }
 
             // `replace` keeps the same Drive file, so the link a colleague already
-            // has keeps working and starts showing the new version. The canvas
-            // rides along so the upload is exactly what is on screen.
-            const dataUrl = isVideoSession ? null : canvas.toDataURL('image/png');
+            // has keeps working and starts showing the new version. The same bytes
+            // ride along here too, so the upload is exactly what was just saved.
             const res = await chrome.runtime.sendMessage({ action: 'shareCapture', id, title, replace: updating, dataUrl });
             if (!res || !res.success) throw new Error((res && res.error) || 'no response from the extension');
 
