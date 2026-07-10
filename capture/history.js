@@ -577,12 +577,30 @@ $('bulkDelete').addEventListener('click', async () => {
         warn: sharedCount ? `${sharedCount} shared link${sharedCount > 1 ? 's' : ''} stop working.` : ''
     });
     if (!yes) return;
+
+    // Each deletion is a round trip to revoke the Drive link before removing
+    // the local record, so a large batch is not instant. Disable the bar and
+    // show live progress, or a second click reads as "it didn't work" and
+    // invites exactly the repeated clicking that prompted this.
+    const btn = $('bulkDelete');
+    const cancelBtn = $('bulkCancel');
+    const label = btn.innerHTML;
+    btn.disabled = true;
+    cancelBtn.disabled = true;
+
     const n = picked.size;
+    let done = 0;
     let stuck = 0;
     for (const id of picked) {
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Deleting ${done + 1}/${n}…`;
         const res = await chrome.runtime.sendMessage({ action: 'deleteCapture', id }).catch(() => null);
         if (res && res.revoked === false) stuck++;
+        done++;
     }
+
+    btn.innerHTML = label;
+    btn.disabled = false;
+    cancelBtn.disabled = false;
     toast(stuck ? `${n} deleted, ${stuck} link(s) still live` : `${n} deleted`);
     picked.clear();
     load();

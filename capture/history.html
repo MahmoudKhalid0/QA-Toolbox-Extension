@@ -64,6 +64,7 @@
         .grid { display: grid; gap: 17px; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); }
 
         .card {
+            position: relative;   /* so the .pick checkbox anchors to the card, not the page */
             background: rgba(255,255,255,0.03);
             border: 1px solid rgba(255,255,255,0.07);
             border-radius: 15px; overflow: hidden;
@@ -223,7 +224,12 @@
         .group-h:first-child { margin-top: 0; }
 
         .card.picked { border-color: #667eea; box-shadow: 0 0 0 2px rgba(102,126,234,0.35); }
-        .pick { position: absolute; top: 9px; right: 9px; width: 20px; height: 20px; accent-color: #667eea; cursor: pointer; z-index: 2; }
+        /* Always visible, so a glance tells you what is selected. The dark disc
+           behind it keeps the box legible over a light thumbnail. */
+        .pick {
+            position: absolute; top: 8px; right: 8px; width: 20px; height: 20px;
+            margin: 0; accent-color: #667eea; cursor: pointer; z-index: 2;
+        }
 
         .toast {
             position: fixed; bottom: 26px; left: 50%; transform: translate(-50%, 90px);
