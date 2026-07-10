@@ -116,6 +116,25 @@
         }
         @keyframes sp { to { transform: rotate(360deg); } }
 
+        /* ── confirm ── */
+        .confirm { position: fixed; inset: 0; z-index: 200; display: none; place-items: center;
+            background: rgba(4,4,12,0.86); backdrop-filter: blur(5px); padding: 20px; }
+        .confirm.open { display: grid; }
+        .confirm-box { width: 100%; max-width: 420px; background: #14142a;
+            border: 1px solid rgba(255,255,255,0.09); border-radius: 18px; overflow: hidden; }
+        .confirm-box header { display: flex; align-items: center; gap: 11px; padding: 17px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.07); font-size: 15px; font-weight: 600; }
+        .confirm-box header i { color: #fca5a5; }
+        .confirm-box p { padding: 18px 20px 6px; font-size: 13.5px; line-height: 1.65; color: #b6b8c8; }
+        .confirm-box p.warn { padding-top: 0; color: #fca5a5; }
+        .confirm-box footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 20px 20px; }
+        .confirm-box button { border: none; border-radius: 10px; padding: 10px 18px; font-size: 13px;
+            font-weight: 600; cursor: pointer; font-family: inherit; }
+        .confirm-cancel { background: rgba(255,255,255,0.07); color: #cbd0e0; }
+        .confirm-cancel:hover { background: rgba(255,255,255,0.12); }
+        .confirm-ok { background: #ef4444; color: #fff; }
+        .confirm-ok:hover { background: #dc2626; }
+
         /* ── preview ── */
         .overlay {
             position: fixed; inset: 0; z-index: 100; display: none;
@@ -273,6 +292,18 @@
             <div class="loader">
                 <div class="spin"></div>Loading your captures&hellip;
             </div>
+        </div>
+    </div>
+
+    <div class="confirm" id="confirmBox">
+        <div class="confirm-box">
+            <header><i class="fas fa-triangle-exclamation"></i><span id="confirmTitle"></span></header>
+            <p id="confirmText"></p>
+            <p class="warn" id="confirmWarn"></p>
+            <footer>
+                <button class="confirm-cancel" id="confirmCancel">Cancel</button>
+                <button class="confirm-ok" id="confirmOk">Delete</button>
+            </footer>
         </div>
     </div>
 

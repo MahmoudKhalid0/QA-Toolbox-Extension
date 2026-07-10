@@ -1,4 +1,3 @@
-import { uploadFileToSupabase, saveToHistory, isCloudConfigured } from './supabase-service.js';
 import { getBugConfig, saveBugConfig, azureOrgs, jiraProjects, jiraCreateMeta, jiraCreateFields, jiraFieldSupported, jiraFieldOptions, jiraLinkTypes, jiraIssuePicker, jiraCreateBug, azureFieldOptions, contextHtml } from './trackers.js';
 
 // Helper for custom modals (replaces alert/confirm)
@@ -129,11 +128,11 @@ const fieldSearch = document.getElementById('fieldSearch');
 const fieldList = document.getElementById('fieldList');
 const cloudUploadBtn = document.getElementById('cloudUploadBtn');
 
-// Cloud sharing is optional; a machine without credentials should not be shown
-// a button that can only fail.
-isCloudConfigured().then((ok) => {
-    if (!ok && cloudUploadBtn) cloudUploadBtn.style.display = 'none';
-});
+// Sharing rides on the same Google account as Cloud Sync. Without one, the
+// button can only fail, so it does not appear.
+chrome.runtime.sendMessage({ action: 'syncStatus' }).then((meta) => {
+    if (cloudUploadBtn && !(meta && meta.signedIn)) cloudUploadBtn.style.display = 'none';
+}).catch(() => { });
 const viewHistoryBtn = document.getElementById('viewHistoryBtn');
 const reportBugBtn = document.getElementById('reportBugBtn');
 const bugModal = document.getElementById('bugModal');
@@ -320,12 +319,14 @@ async function initEditor() {
     }
 }
 
+// Once shared, the button's job changes: it hands the link back. Disabling it
+// would leave the one thing the user came for behind a closed door.
 function applyUploadedUI() {
     if (cloudUploadBtn) {
-        cloudUploadBtn.disabled = true;
-        cloudUploadBtn.style.opacity = '0.5';
-        cloudUploadBtn.innerHTML = '<i class="fas fa-check"></i>';
-        cloudUploadBtn.title = "Already uploaded to cloud";
+        cloudUploadBtn.disabled = false;
+        cloudUploadBtn.style.opacity = '';
+        cloudUploadBtn.innerHTML = '<i class="fas fa-link"></i>';
+        cloudUploadBtn.title = 'Copy the share link';
     }
 }
 
@@ -1962,83 +1963,53 @@ persistFields.forEach(id => {
 bugParentSearch.addEventListener('input', saveLastFormValues);
 bugTagsSearch.addEventListener('input', saveLastFormValues);
 
-// ========= Cloud Upload Logic =========
+// ========= Sharing a capture =========
+// One folder in the user's own Drive, one link, readable by anyone who has it.
 if (cloudUploadBtn) {
     cloudUploadBtn.addEventListener('click', async () => {
+        const id = captureId || 'currentScreenshot';
+
         if (isUploaded) {
-            showToast("Already uploaded to cloud!");
-            return;
+            const r = await chrome.storage.local.get([`cloudUrl_${id}`]);
+            if (r[`cloudUrl_${id}`]) {
+                await navigator.clipboard.writeText(r[`cloudUrl_${id}`]).catch(() => { });
+                showToast('Link copied again');
+                return;
+            }
         }
 
-        const userTitle = await showCustomModal({
-            title: "Upload to Cloud",
-            message: "Enter a title for this capture:",
+        const title = await showCustomModal({
+            title: 'Share this capture',
+            message: 'Name it, so you can find it in Drive later:',
             showInput: true,
             inputValue: pageTitle,
-            primaryText: "Upload"
+            primaryText: 'Share'
         });
-
-        if (userTitle === false) return; // Cancelled
+        if (title === false) return;
 
         try {
-            toggleLoader(true, "Uploading to Cloud...");
+            toggleLoader(true, 'Uploading to Drive…');
+            selectedObjectId = null; render();   // no selection handles in the shared image
 
-            let blob;
-            let finalTitle = userTitle;
-            let fileName = `capture_${Date.now()}`;
-
-            if (isVideoSession) {
-                // If it's a video, pendingVideo is already a Blob (or dataUrl)
-                if (window.pendingVideo) {
-                    if (window.pendingVideo instanceof Blob) {
-                        blob = window.pendingVideo;
-                    } else if (typeof window.pendingVideo === 'string') {
-                        // Data URL
-                        const res = await fetch(window.pendingVideo);
-                        blob = await res.blob();
-                    }
-                    fileName += ".webm";
-                } else {
-                    throw new Error("No video data found to upload.");
-                }
-            } else {
-                // For images, get from canvas
-                blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-                fileName += ".png";
+            // Write what is on the canvas back to the library, so the link shows
+            // the annotations rather than the untouched screenshot.
+            if (!isVideoSession) {
+                const dataUrl = canvas.toDataURL('image/png');
+                await chrome.runtime.sendMessage({ action: 'capLibrarySave', id, dataUrl, title, type: 'image' });
             }
 
-            if (!blob) throw new Error("Could not process file for upload.");
+            const res = await chrome.runtime.sendMessage({ action: 'shareCapture', id, title });
+            if (!res || !res.success) throw new Error((res && res.error) || 'no response from the extension');
 
-            // 1. Upload to Supabase Storage
-            const uploadResult = await uploadFileToSupabase(blob, fileName);
-
-            // 2. Save Metadata to Supabase Table
-            await saveToHistory({
-                title: finalTitle,
-                url: uploadResult.url,
-                type: isVideoSession ? 'video' : 'image',
-                timestamp: new Date().toISOString(),
-                size: uploadResult.size
-            });
-
-            showToast("Successfully uploaded to cloud!");
+            await chrome.storage.local.set({ [`uploaded_${id}`]: true, [`cloudUrl_${id}`]: res.url });
             isUploaded = true;
-            cloudUploadBtn.disabled = true;
-            cloudUploadBtn.style.opacity = '0.5';
-            cloudUploadBtn.innerHTML = '<i class="fas fa-check"></i>';
-            cloudUploadBtn.title = "Already uploaded to cloud";
+            applyUploadedUI();
 
-            // Save state to survive refresh
-            const uploadHistoryKey = `uploaded_${captureId || 'currentScreenshot'}`;
-            chrome.storage.local.set({ [uploadHistoryKey]: true });
-
-            // Open history page and close current tab quickly
-            window.open('history.html', '_blank');
-            setTimeout(() => window.close(), 50);
-
+            await navigator.clipboard.writeText(res.url).catch(() => { });
+            showToast(res.existing ? 'Already shared — link copied' : 'Link copied to clipboard');
         } catch (err) {
-            console.error("Cloud Upload Error:", err);
-            showToast("Failed to upload: " + err.message);
+            console.error('Share failed:', err);
+            showToast('Could not share: ' + (err.message || err));
         } finally {
             toggleLoader(false);
         }

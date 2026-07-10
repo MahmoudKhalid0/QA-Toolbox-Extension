@@ -410,6 +410,65 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return false;
     }
 
+    // Deleting a capture revokes its link. A screenshot removed from the gallery
+    // whose URL still opens for whoever you sent it to is not deleted.
+    if (request.action === 'deleteCapture') {
+        (async () => {
+            let revoked = null;
+            try {
+                const rec = await CapStore.get(request.id);
+                const fileId = rec && (rec.cloudFileId || (String(rec.cloudUrl || '').match(/\/d\/([^/]+)/) || [])[1]);
+                if (fileId) {
+                    await CloudSync.driveTrashFile(fileId);
+                    revoked = true;
+                }
+            } catch (e) {
+                // The capture still goes; say plainly that the link did not.
+                revoked = false;
+                console.error('Could not revoke the shared link:', e);
+            }
+            await CapStore.remove(request.id);
+            sendResponse({ success: true, revoked });
+        })();
+        return true;
+    }
+
+    // Share a capture. The blob is read here, from IndexedDB, rather than sent
+    // through a message - a recording does not belong in a base64 string.
+    if (request.action === 'shareCapture') {
+        (async () => {
+            try {
+                let rec = await CapStore.get(request.id);
+                if (!rec || !rec.blob) throw new Error('That capture is no longer stored on this device');
+                if (rec.cloudUrl) return sendResponse({ success: true, url: rec.cloudUrl, existing: true });
+
+                // A recording never passes through capLibrarySave, so the title the
+                // user confirmed reaches the record only from here.
+                if (request.title && request.title !== rec.title) {
+                    await CapStore.patch(request.id, { title: request.title });
+                    rec = await CapStore.get(request.id);
+                }
+
+                // The file is named for the tab it was taken from. Drive tolerates
+                // most characters; the ones a filesystem never does are replaced,
+                // so the same name survives a download.
+                const ext = rec.type === 'video' ? 'webm' : 'png';
+                const stamp = new Date(rec.createdAt || Date.now()).toISOString().slice(0, 19).replace(/[:T]/g, '-');
+                // Characters a filesystem refuses, so the name survives a download.
+                const ILLEGAL = /[\\\/:*?"<>|]/g;
+                const safe = String(rec.title || '').replace(ILLEGAL, '-').replace(/\s+/g, ' ').trim();
+                const name = `${(safe || 'Capture').slice(0, 60)} ${stamp}.${ext}`;
+
+                const { id, url } = await CloudSync.driveShareBlob(rec.blob, name, true);
+                await CapStore.patch(request.id, { cloudUrl: url, cloudFileId: id, sharedAt: Date.now() });
+                sendResponse({ success: true, url });
+            } catch (err) {
+                sendResponse({ success: false, error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     // Get recording state for content.js on page load
     if (request.action === 'getRecordingState') {
         sendResponse({

@@ -33,6 +33,11 @@ let syncPushTimer = null;
 // Google's consent screen lets the user untick a permission and continue. The
 // token then arrives looking perfectly valid and fails on the first Drive call.
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+const SHARE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const SHARE_FOLDER = 'QA Testing Toolkit';
+
+// Every scope we cannot work without. `email` is cosmetic; these are not.
+const requiredScopes = () => syncOAuthConfig().scopes.filter(s => s.includes('/auth/drive'));
 
 function syncOAuthConfig() {
     const m = chrome.runtime.getManifest();
@@ -40,11 +45,15 @@ function syncOAuthConfig() {
     return { clientId: o.client_id || '', scopes: o.scopes || [] };
 }
 
-let syncTokenCache = null;      // { token, expiresAt }
+let syncTokenCache = null;      // { token, expiresAt, scopes }
 let syncAllowPrompt = false;    // only a user-initiated sync may open a window
 
 async function syncLoadToken() {
-    const fresh = (t) => t && t.token && t.expiresAt > Date.now() + 60000; // 1 min of slack
+    // Adding a scope invalidates every token minted before it, no matter how
+    // long it has left to live.
+    const covers = (t) => Array.isArray(t.scopes) && requiredScopes().every(s => t.scopes.includes(s));
+    const fresh = (t) => t && t.token && t.expiresAt > Date.now() + 60000 && covers(t); // 1 min of slack
+
     if (fresh(syncTokenCache)) return syncTokenCache;
     const r = await chrome.storage.local.get(['cloudSyncToken']);
     if (fresh(r.cloudSyncToken)) { syncTokenCache = r.cloudSyncToken; return syncTokenCache; }
@@ -87,16 +96,16 @@ function syncLaunchFlow(interactive) {
             const token = frag.get('access_token');
             if (!token) { reject(new Error('No access token returned')); return; }
 
-            // Refuse a token that cannot do the one job we need it for, rather
-            // than caching it and failing later with a Drive 403.
+            // Refuse a token that cannot do the jobs we need it for, rather than
+            // caching it and failing later with a Drive 403.
             const granted = (frag.get('scope') || '').split(' ');
-            if (scopes.includes(DRIVE_SCOPE) && !granted.includes(DRIVE_SCOPE)) {
+            if (requiredScopes().some(s => !granted.includes(s))) {
                 reject(new Error('SCOPE_DENIED'));
                 return;
             }
 
             const expiresIn = parseInt(frag.get('expires_in'), 10) || 3600;
-            resolve({ token, expiresAt: Date.now() + expiresIn * 1000 });
+            resolve({ token, expiresAt: Date.now() + expiresIn * 1000, scopes: granted });
         });
     });
 }
@@ -416,11 +425,99 @@ async function syncSignOut() {
     return { success: true };
 }
 
+// ---------- Sharing a capture ----------
+
+// Files land in one folder in the user's own Drive, so they can find and delete
+// them without us. drive.file only ever shows us what this extension created,
+// so this query cannot see anything else they own.
+async function driveShareFolderId() {
+    const q = encodeURIComponent(
+        `name='${SHARE_FOLDER}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id)`);
+    const found = (await res.json()).files || [];
+    if (found.length) return found[0].id;
+
+    const made = await driveFetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: SHARE_FOLDER, mimeType: 'application/vnd.google-apps.folder' })
+    });
+    return (await made.json()).id;
+}
+
+// Drive wants multipart/related: a JSON part, then the bytes. A Blob can hold
+// both, which keeps a large recording out of a base64 string.
+async function driveUploadShared(blob, name, folderId) {
+    const boundary = 'qa_share_' + Date.now();
+    const meta = JSON.stringify({ name, parents: [folderId] });
+    const body = new Blob([
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`,
+        `--${boundary}\r\nContent-Type: ${blob.type || 'application/octet-stream'}\r\n\r\n`,
+        blob,
+        `\r\n--${boundary}--`
+    ]);
+
+    const res = await driveFetch(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',
+        { method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
+    return res.json();
+}
+
+// A link nobody can open is not a share - but the grant is on this one file, it
+// is read-only, and allowFileDiscovery keeps it out of Drive search and out of
+// Google's index. The folder above it is never shared, so a link to one capture
+// is never a door to the rest.
+async function driveMakeLinkReadable(fileId) {
+    await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'reader', type: 'anyone', allowFileDiscovery: false })
+    });
+}
+
+async function driveShareBlob(blob, name, interactive = true) {
+    const meta = await syncGetMeta();
+    if (!meta.signedIn) throw new Error('Sign in to Google in Settings first');
+
+    syncAllowPrompt = !!interactive;
+    try {
+        const folderId = await driveShareFolderId();
+        const file = await driveUploadShared(blob, name, folderId);
+        await driveMakeLinkReadable(file.id);
+        return { id: file.id, url: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view` };
+    } catch (err) {
+        throw new Error(syncExplain(err));
+    } finally {
+        syncAllowPrompt = false;
+    }
+}
+
+// Deleting a capture must revoke its link. Trashing alone does not reliably do
+// it: a file sitting in the owner's trash can still answer a link it already
+// granted. Take the grant away first - that kills the link the moment it lands -
+// then trash the file, so the owner keeps thirty days to change their mind.
+async function driveTrashFile(fileId) {
+    const res = await driveFetch(
+        `https://www.googleapis.com/drive/v3/files/${fileId}/permissions?fields=permissions(id,type)`);
+    const perms = (await res.json()).permissions || [];
+
+    for (const p of perms.filter(p => p.type === 'anyone')) {
+        await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions/${p.id}`,
+            { method: 'DELETE' });
+    }
+
+    await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: true })
+    });
+}
+
 // One wording for each failure, wherever it surfaces.
 function syncExplain(err) {
     const code = String((err && err.message) || err);
     if (code === 'SESSION_EXPIRED') return 'Google session expired - press Sync Now to reconnect';
-    if (code === 'SCOPE_DENIED') return 'Google Drive access was not granted. Sign out, sign in again, and tick the Google Drive permission.';
+    if (code === 'SCOPE_DENIED') return 'Google Drive access was not granted. Sign out, sign in again, and tick every Google Drive permission.';
     return code;
 }
 
@@ -430,5 +527,7 @@ syncExportTarget.CloudSync = {
     syncSchedulePush,
     syncSignIn,
     syncSignOut,
-    syncGetMeta
+    syncGetMeta,
+    driveShareBlob,
+    driveTrashFile
 };

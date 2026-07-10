@@ -223,7 +223,9 @@ function cardHtml(it) {
                 <span>${fmtSize(it.size)}</span>
             </div>
             <div class="acts">
-                <button data-open="${esc(it.id)}" title="Preview"><i class="fas fa-eye"></i></button>
+                ${it.cloudUrl
+            ? `<button class="copy-share-link" data-url="${esc(it.cloudUrl)}" title="Copy the share link"><i class="fas fa-share-nodes"></i></button>`
+            : ''}
                 <button data-edit="${esc(it.id)}" title="Open in editor"><i class="fas fa-pen"></i></button>
                 <button data-dl="${esc(it.id)}" title="Download"><i class="fas fa-download"></i></button>
                 <button data-md="${esc(it.id)}" title="Copy bug report"><i class="fas fa-file-lines"></i></button>
@@ -299,10 +301,16 @@ async function openInEditor(id) {
 }
 
 async function remove(id) {
-    if (!confirm('Delete this capture?')) return;
-    await CapStore.remove(id);
+    const it = items.find(i => i.id === id);
+    const yes = await ask({
+        title: 'Delete this capture?',
+        text: 'It is removed from this device.',
+        warn: (it && it.cloudUrl) ? 'The link you shared stops working.' : ''
+    });
+    if (!yes) return;
+    const res = await chrome.runtime.sendMessage({ action: 'deleteCapture', id }).catch(() => null);
     picked.delete(id);
-    toast('Deleted');
+    toast(res && res.revoked === false ? 'Deleted here, but the shared link is still live' : 'Deleted');
     load();
 }
 
@@ -410,6 +418,50 @@ async function openPreview(id) {
     $('overlay').classList.add('open');
 }
 
+// The browser's confirm() wears the browser's face and names the extension like
+// a stranger. This one belongs to the gallery, and it resolves to a boolean the
+// same way confirm() does.
+function ask({ title, text, warn = '', okText = 'Delete' }) {
+    const box = document.getElementById('confirmBox');
+    if (!box) return Promise.resolve(true);
+
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmText').textContent = text;
+    const warnEl = document.getElementById('confirmWarn');
+    warnEl.textContent = warn;
+    warnEl.style.display = warn ? '' : 'none';
+    document.getElementById('confirmOk').textContent = okText;
+
+    box.classList.add('open');
+
+    return new Promise((resolve) => {
+        const done = (answer) => {
+            box.classList.remove('open');
+            document.removeEventListener('keydown', onKey);
+            resolve(answer);
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') done(false);
+            if (e.key === 'Enter') done(true);
+        };
+        document.getElementById('confirmOk').onclick = () => done(true);
+        document.getElementById('confirmCancel').onclick = () => done(false);
+        box.onclick = (e) => { if (e.target === box) done(false); };   // click the backdrop
+        document.addEventListener('keydown', onKey);
+    });
+}
+
+// The detail panel is re-rendered whenever a capture is previewed, so this is
+// bound to the document rather than to a node that will not survive it.
+document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('.copy-share-link');
+    if (!a) return;
+    e.preventDefault();
+    navigator.clipboard.writeText(a.dataset.url)
+        .then(() => toast('Link copied'))
+        .catch(() => toast('Could not copy — the link is next to this button'));
+});
+
 function sideHtml(it) {
     if (!it.ctx) {
         return `<div class="sec-title"><i class="fas fa-circle-info"></i> Context</div>
@@ -430,7 +482,10 @@ function sideHtml(it) {
             <dt>Viewport</dt><dd>${esc(c.viewport) || '&mdash;'}</dd>
             <dt>Captured</dt><dd>${new Date(it.createdAt).toLocaleString()}</dd>
             <dt>Size</dt><dd>${fmtSize(it.size)}</dd>
-            ${it.cloudUrl ? `<dt>Shared</dt><dd><a href="${esc(it.cloudUrl)}" target="_blank" rel="noopener">Open link</a></dd>` : ''}
+            ${it.cloudUrl ? `<dt>Shared</dt><dd>
+                <a href="${esc(it.cloudUrl)}" target="_blank" rel="noopener">Open link</a>
+                &nbsp;·&nbsp;
+                <a href="#" class="copy-share-link" data-url="${esc(it.cloudUrl)}">Copy link</a></dd>` : ''}
         </dl>`;
 
     // Every log the page emitted, not only errors: a warning right before the
@@ -492,7 +547,16 @@ $('refreshBtn').addEventListener('click', load);
 
 $('clearBtn').addEventListener('click', async () => {
     if (!items.length) return;
-    if (!confirm(`Delete all ${items.length} captures? This cannot be undone.`)) return;
+    const sharedAll = items.filter(i => i.cloudUrl).length;
+    const yes = await ask({
+        title: 'Delete every capture?',
+        text: `All ${items.length} captures are removed from this device.`,
+        warn: sharedAll
+            ? `${sharedAll} shared link${sharedAll > 1 ? 's' : ''} stop working. This cannot be undone.`
+            : 'This cannot be undone.',
+        okText: 'Delete all'
+    });
+    if (!yes) return;
     await CapStore.clear();
     toast('Library cleared');
     load();
@@ -506,10 +570,20 @@ $('selectAll').addEventListener('change', () => {
 $('bulkCancel').addEventListener('click', () => { picked.clear(); render(); });
 
 $('bulkDelete').addEventListener('click', async () => {
-    if (!confirm(`Delete ${picked.size} capture(s)?`)) return;
+    const sharedCount = items.filter(i => picked.has(i.id) && i.cloudUrl).length;
+    const yes = await ask({
+        title: `Delete ${picked.size} capture${picked.size > 1 ? 's' : ''}?`,
+        text: 'They are removed from this device.',
+        warn: sharedCount ? `${sharedCount} shared link${sharedCount > 1 ? 's' : ''} stop working.` : ''
+    });
+    if (!yes) return;
     const n = picked.size;
-    for (const id of picked) await CapStore.remove(id);
-    toast(`${n} deleted`);
+    let stuck = 0;
+    for (const id of picked) {
+        const res = await chrome.runtime.sendMessage({ action: 'deleteCapture', id }).catch(() => null);
+        if (res && res.revoked === false) stuck++;
+    }
+    toast(stuck ? `${n} deleted, ${stuck} link(s) still live` : `${n} deleted`);
     picked.clear();
     load();
 });
