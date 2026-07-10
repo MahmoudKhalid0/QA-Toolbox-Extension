@@ -357,10 +357,18 @@ export async function jiraCreateMeta(cfg, projectKey) {
         get(`/rest/api/3/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes`)
     ]);
 
-    // Team-managed projects answer /createmeta/{key}/issuetypes; some sites and
-    // roles get a 403 there but can still read the project's own issueTypes.
-    let issueTypes = ((types && types.values) || []).filter(t => !t.subtask);
+    // The endpoint answers { startAt, maxResults, total, issueTypes: [...] }.
+    // Reading `values` here meant the real answer was never used, and every
+    // request quietly took the fallback below - whose list comes from the
+    // project's issue type scheme and can name types that createmeta refuses
+    // with a 410. `values` stays as tolerance for sites that page it.
+    const declared = (types && (types.issueTypes || types.values)) || [];
+    let issueTypes = declared.filter(t => !t.subtask);
+
+    // Some sites and roles get a 403 on createmeta but can still read the
+    // project's own issueTypes. Worth trying, worth knowing it happened.
     if (!issueTypes.length && project && Array.isArray(project.issueTypes)) {
+        errors.push('createmeta/issuetypes gave nothing; using the project issue type scheme');
         issueTypes = project.issueTypes.filter(t => !t.subtask);
     }
 
@@ -385,16 +393,35 @@ export async function jiraCreateMeta(cfg, projectKey) {
 // Every field Jira's own create screen exposes for this project and issue type,
 // with its type and its allowed values — the exact analogue of Azure's
 // workitemtypes/{type}/fields?$expand=allowedValues. Nothing is chosen for you.
+// An empty field list and a refused request are not the same answer, and the
+// form cannot tell them apart once both arrive as [].
+function metaError(status, detail) {
+    const err = new Error(status
+        ? `Jira createmeta refused (HTTP ${status})${detail ? ': ' + detail : ''}`
+        : `Could not reach Jira: ${detail}`);
+    err.status = status;
+    // 410 Gone / 404 mean the endpoint itself is unavailable, not that this
+    // project is. That is the one failure the form can work around.
+    err.gone = status === 410 || status === 404;
+    return err;
+}
+
 export async function jiraCreateFields(cfg, projectKey, issueTypeId) {
     if (!projectKey || !issueTypeId) return [];
     const auth = { Authorization: jiraAuth(cfg), Accept: 'application/json' };
-    const res = await fetch(
-        `${cfg.baseUrl}/rest/api/3/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes/${encodeURIComponent(issueTypeId)}?maxResults=200`,
-        { headers: auth }
-    );
+
+    let res;
+    try {
+        res = await fetch(
+            `${cfg.baseUrl}/rest/api/3/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes/${encodeURIComponent(issueTypeId)}?maxResults=200`,
+            { headers: auth }
+        );
+    } catch (e) {
+        throw metaError(0, e.message);
+    }
     if (!res.ok) {
-        console.error('createmeta fields:', res.status, await res.text().catch(() => ''));
-        return [];
+        const detail = await res.text().catch(() => '');
+        throw metaError(res.status, detail.slice(0, 200));
     }
     const body = await res.json();
 
@@ -430,6 +457,21 @@ export async function jiraCreateFields(cfg, projectKey, issueTypeId) {
                 options: (f.allowedValues || []).map(jiraOption)
             };
         });
+}
+
+// Exactly the kinds jiraCreateBug knows how to put in a payload. Anything else
+// is rendered nowhere and sent never: a text box that guarantees an HTTP 400 is
+// worse than a field that simply is not there.
+const JIRA_WRITABLE_KINDS = new Set([
+    'user', 'option', 'priority', 'resolution', 'component', 'version',
+    'securitylevel', 'issuetype', 'group', 'number', 'string', 'date', 'datetime'
+]);
+
+export function jiraFieldSupported(f) {
+    if (!f) return false;
+    if (f.id === 'issuelinks') return true;      // handled by its own call
+    if (f.id === 'labels') return true;          // array<string>, sent bare
+    return JIRA_WRITABLE_KINDS.has(f.kind);
 }
 
 function jiraOption(v) {
@@ -546,14 +588,23 @@ export async function jiraCreateBug(cfg, data) {
         summary: data.title,
         description: doc
     };
+    // Fields the create screen does not carry. Jira rejects the whole request if
+    // they ride along with it, so they are applied once the issue exists.
+    const after = {};
+    const deferred = new Set((data.extraMeta || []).filter(f => f.postCreate).map(f => f.id));
+
     // Jira Cloud has no Severity field out of the box; Priority is the standard
     // equivalent. An explicit pick (sent by id below) always wins over the
     // level the AI inferred, which can only be matched by name.
     const PRIORITY = { High: 'Highest', Medium: 'Medium', Low: 'Low' };
+    const priorityField = (data.extraMeta || []).find(f => f.id === 'priority');
     const pickedPriority = data.extra && data.extra.priority;
-    if (!pickedPriority) {
+    if (!pickedPriority && priorityField) {
         const inferred = data.severity && PRIORITY[data.severity];
-        if (inferred) fields.priority = { name: inferred };
+        if (inferred) {
+            const target = priorityField.postCreate ? after : fields;
+            target.priority = { name: inferred };
+        }
     }
 
     // Each extra field is shaped by its own schema, because Jira rejects the
@@ -566,6 +617,7 @@ export async function jiraCreateBug(cfg, data) {
         const wrap = (v) => {
             switch (f.kind) {
                 case 'user': return { accountId: v };
+                case 'group': return { name: String(v) };
                 case 'option':
                 case 'priority':
                 case 'resolution':
@@ -577,14 +629,17 @@ export async function jiraCreateBug(cfg, data) {
                 case 'string':
                 case 'date':
                 case 'datetime': return v;
-                default: return { id: String(v) };
+                // unreachable: jiraFieldSupported keeps these out of the form
+                default: return v;
             }
         };
 
         if (f.id === 'labels') { fields.labels = [].concat(raw); continue; }
         if (f.id === 'issuelinks') continue;                    // linked after creation
         if (f.kind === 'string' && !f.array && f.id === 'environment') { fields[f.id] = textToAdf(raw); continue; }
-        fields[f.id] = f.array ? [].concat(raw).map(wrap) : wrap(Array.isArray(raw) ? raw[0] : raw);
+
+        const target = deferred.has(f.id) ? after : fields;
+        target[f.id] = f.array ? [].concat(raw).map(wrap) : wrap(Array.isArray(raw) ? raw[0] : raw);
     }
 
     const post = (f) => fetch(`${cfg.baseUrl}/rest/api/3/issue`, {
@@ -595,12 +650,31 @@ export async function jiraCreateBug(cfg, data) {
 
     let res = await post(fields);
     if (!res.ok && fields.priority) {
-        // some sites hide Priority on the create screen; the bug matters more
+        // Belt and braces: createmeta should already have deferred Priority, but
+        // a site can refuse it for reasons createmeta does not report.
         const { priority, ...rest } = fields;
         res = await post(rest);
+        if (res.ok) after.priority = fields.priority;
     }
     await must(res, 'Issue creation');
     const issue = await res.json();
+
+    const warnings = [];
+
+    // Fields the create screen refused to carry. The edit screen almost always
+    // does. A bug with no priority is still a bug; a 400 is nothing at all.
+    if (Object.keys(after).length) {
+        try {
+            const upd = await fetch(`${cfg.baseUrl}/rest/api/3/issue/${issue.key}`, {
+                method: 'PUT',
+                headers: { Authorization: jiraAuth(cfg), 'Content-Type': 'application/json', Accept: 'application/json' },
+                body: JSON.stringify({ fields: after })
+            });
+            if (!upd.ok) throw new Error(`HTTP ${upd.status}: ${(await upd.text().catch(() => '')).slice(0, 200)}`);
+        } catch (e) {
+            warnings.push(`Could not set ${Object.keys(after).join(', ')}: ${e.message}`);
+        }
+    }
 
     // Links cannot ride along with the create call.
     const links = (data.extra || {}).issuelinks;
@@ -645,7 +719,7 @@ export async function jiraCreateBug(cfg, data) {
         console.error('Attachment upload failed:', e);   // the issue exists; say so
     }
 
-    return { key: issue.key, url: `${cfg.baseUrl}/browse/${issue.key}` };
+    return { key: issue.key, url: `${cfg.baseUrl}/browse/${issue.key}`, warnings };
 }
 
 // ── unified ─────────────────────────────────────────────────────────────────

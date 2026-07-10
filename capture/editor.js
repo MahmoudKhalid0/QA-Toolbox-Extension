@@ -1,5 +1,5 @@
 import { uploadFileToSupabase, saveToHistory, isCloudConfigured } from './supabase-service.js';
-import { getBugConfig, saveBugConfig, azureOrgs, jiraProjects, jiraCreateMeta, jiraCreateFields, jiraFieldOptions, jiraLinkTypes, jiraIssuePicker, jiraCreateBug, azureFieldOptions, contextHtml } from './trackers.js';
+import { getBugConfig, saveBugConfig, azureOrgs, jiraProjects, jiraCreateMeta, jiraCreateFields, jiraFieldSupported, jiraFieldOptions, jiraLinkTypes, jiraIssuePicker, jiraCreateBug, azureFieldOptions, contextHtml } from './trackers.js';
 
 // Helper for custom modals (replaces alert/confirm)
 function showCustomModal({ title, message, showInput = false, inputValue = '', primaryText = 'Confirm', secondaryText = 'Cancel' }) {
@@ -2064,6 +2064,10 @@ bugProject.addEventListener('change', async () => {
         bugParentList.innerHTML = '';
         bugArea.value = '';
         bugIteration.value = '';
+        // The field list belongs to a project. Without one there is nothing to add.
+        addFieldBtn.disabled = true;
+        const lbl = document.getElementById('addFieldLabel');
+        if (lbl) lbl.textContent = 'Select a project first';
         return;
     }
 
@@ -2087,6 +2091,15 @@ bugProject.addEventListener('change', async () => {
     }
 });
 
+// An empty dropdown with no explanation is the shape every bug in this file
+// took. These loaders feed optional lists, so a console warning is proportionate
+// for two of them - but the status has to reach someone.
+function azWarn(res, what) {
+    const why = (res.status === 401 || res.status === 403) ? 'Azure refused the PAT' : `HTTP ${res.status}`;
+    console.warn(`[QA Toolkit] ${what}: ${why}`);
+    return why;
+}
+
 async function loadBugFieldOptions(org, project, authHeader) {
     const encodedOrg = encodeURIComponent(org);
     const encodedProject = encodeURIComponent(project);
@@ -2096,14 +2109,22 @@ async function loadBugFieldOptions(org, project, authHeader) {
             `https://dev.azure.com/${encodedOrg}/${encodedProject}/_apis/wit/workitemtypes/Bug/fields?$expand=allowedValues&api-version=7.0`,
             { headers: { 'Authorization': authHeader } }
         );
-        if (!resp.ok) return;
+        // This one decides which fields exist and what they may contain. Losing
+        // it silently is how you end up filing a bug against nothing.
+        if (!resp.ok) {
+            showToast(`Could not read this project's fields: ${azWarn(resp, 'Bug field options')}`);
+            return;
+        }
 
         const data = await resp.json();
         const fields = data.value || [];
         allAdoFields = fields;
 
-        // Enable add field button
+        // A greyed-out button that says "Add New Field" invites the question this
+        // one answers on its own.
         addFieldBtn.disabled = false;
+        const addFieldLabel = document.getElementById('addFieldLabel');
+        if (addFieldLabel) addFieldLabel.textContent = 'Add New Field';
 
         // Find Severity field
         const severityField = fields.find(f =>
@@ -2353,7 +2374,7 @@ async function loadWorkItems(org, project, authHeader) {
             })
         }
     );
-    if (!resp.ok) return;
+    if (!resp.ok) { azWarn(resp, 'Work item list'); return; }
 
     const wiqlData = await resp.json();
     const ids = (wiqlData.workItems || []).slice(0, 100).map(w => w.id);
@@ -2385,7 +2406,7 @@ async function loadProjectTags(org, project, authHeader) {
             `https://dev.azure.com/${encodedOrg}/${encodedProject}/_apis/wit/tags?api-version=7.0`,
             { headers: { 'Authorization': authHeader } }
         );
-        if (!resp.ok) return;
+        if (!resp.ok) { azWarn(resp, 'Project tags'); return; }
         const data = await resp.json();
         allProjectTags = (data.value || []).map(t => t.name).sort();
     } catch (e) {
@@ -2701,7 +2722,16 @@ async function searchParentsDynamically(query) {
             }
         );
 
-        if (!resp.ok) return;
+        if (!resp.ok) {
+            // "No results" and "Azure said no" must not look the same.
+            const why = resp.status === 401 || resp.status === 403
+                ? 'Azure refused the PAT'
+                : `Azure returned HTTP ${resp.status}`;
+            bugParentResults.innerHTML =
+                `<div class="multi-select-item" style="opacity:.6;cursor:default;">${why}</div>`;
+            bugParentResults.classList.add('show');
+            return;
+        }
         const wiqlData = await resp.json();
         const ids = (wiqlData.workItems || []).slice(0, 10).map(w => w.id);
 
@@ -2880,25 +2910,32 @@ function renderAttachmentList() {
 
 }
 
-// Open modal
-reportBugBtn.addEventListener('click', () => {
-    chrome.storage.sync.get(['azurePat'], (settings) => {
-        if (!settings.azurePat) {
-            showToast('Please configure Azure DevOps PAT in settings first');
-            chrome.runtime.openOptionsPage();
-            return;
-        }
-        // Ensure video is added to attachments if it exists
-        if (window.pendingVideo && !selectedFiles.includes(window.pendingVideo)) {
-            selectedFiles.push(window.pendingVideo);
-            renderAttachmentList();
-        }
-        bugModal.classList.add('show');
-        delete bugSeverity.dataset.userSet;      // a new bug, a fresh judgement
-        bugOrg.focus();
-        Promise.resolve(window.bugTargetReady).then(() => loadLastFormValues());
-        renderTagPills();
-    });
+// Open modal. The form serves two trackers; it may not demand the credentials of
+// the one you are not using. Ask for whichever the form is actually pointed at.
+reportBugBtn.addEventListener('click', async () => {
+    const cfg = await getBugConfig();
+    const target = (document.getElementById('bugTarget') || {}).value || cfg.provider || 'azure';
+
+    const missing = target === 'jira'
+        ? (!cfg.jira.baseUrl || !cfg.jira.email || !cfg.jira.token) && 'Connect Jira in Settings first'
+        : !(cfg.azure.pat || '').trim() && 'Connect Azure DevOps in Settings first';
+
+    if (missing) {
+        showToast(missing);
+        chrome.runtime.openOptionsPage();
+        return;
+    }
+
+    // Ensure video is added to attachments if it exists
+    if (window.pendingVideo && !selectedFiles.includes(window.pendingVideo)) {
+        selectedFiles.push(window.pendingVideo);
+        renderAttachmentList();
+    }
+    bugModal.classList.add('show');
+    delete bugSeverity.dataset.userSet;      // a new bug, a fresh judgement
+    bugOrg.focus();
+    Promise.resolve(window.bugTargetReady).then(() => loadLastFormValues());
+    renderTagPills();
 });
 
 // ========= Dynamic Fields Implementation =========
@@ -3112,7 +3149,9 @@ submitBugBtn.addEventListener('click', async () => {
             dynamicFields: collectDynamicFields()
         });
 
-        showToast('Bug created successfully! ID: ' + result.id);
+        const lost = result._failedUploads || [];
+        if (lost.length) showToast(`Bug ${result.id} created, but ${lost.length} attachment(s) failed: ${lost.join('; ')}`);
+        else showToast('Bug created successfully! ID: ' + result.id);
 
         // Open the bug in a new tab if URL is available
         if (result._links && result._links.html && result._links.html.href) {
@@ -3155,14 +3194,18 @@ async function createAzureDevOpsBug(data) {
 
 
     // Upload other attachments
+    // A bug filed without the screenshot the tester attached is a bug nobody can
+    // reproduce. Carry on filing it, but never let the loss pass unmentioned.
     const otherAttachmentUrls = [];
+    const failedUploads = [];
     if (data.attachments && data.attachments.length > 0) {
         for (const file of data.attachments) {
             try {
                 const url = await uploadFileAttachment(encodedOrg, encodedProject, authHeader, file);
                 otherAttachmentUrls.push({ url, name: file.name });
             } catch (e) {
-                console.error("Failed to upload attachment:", file.name, e);
+                console.error('Failed to upload attachment:', file.name, e);
+                failedUploads.push(e.message || file.name);
             }
         }
     }
@@ -3260,6 +3303,8 @@ async function createAzureDevOpsBug(data) {
         );
     }
 
+    // The bug exists either way; the tester still has to know what did not.
+    bugResult._failedUploads = failedUploads;
     return bugResult;
 }
 
@@ -3281,7 +3326,10 @@ async function processInlineImages(html, encodedOrg, encodedProject, authHeader)
             // Replace src with the uploaded URL
             img.src = attachmentUrl;
         } catch (e) {
-            console.error("Failed to upload inline image:", e);
+            console.error('Failed to upload inline image:', e);
+            // The image is gone from the description; leave a mark where it was
+            // rather than a broken data: URL Azure will strip anyway.
+            img.replaceWith(doc.createTextNode(`[image could not be uploaded: ${e.message || 'unknown error'}]`));
         }
     }
     return doc.body.innerHTML;
@@ -3304,11 +3352,20 @@ async function uploadAttachment(encodedOrg, encodedProject, authHeader, dataUrl,
     );
 
     if (!uploadResponse.ok) {
-        throw new Error('Failed to upload attachment');
+        throw new Error(await azureUploadError(uploadResponse, fileName));
     }
 
     const result = await uploadResponse.json();
     return result.url;
+}
+
+// "Failed to upload" reads the same for a wrong PAT, a file over the size cap,
+// and a dropped connection. Say which.
+async function azureUploadError(res, name) {
+    const detail = (await res.text().catch(() => '')).slice(0, 200);
+    if (res.status === 401 || res.status === 403) return `${name}: Azure refused the PAT (HTTP ${res.status})`;
+    if (res.status === 413) return `${name}: too large for Azure`;
+    return `${name}: upload failed (HTTP ${res.status})${detail ? ' - ' + detail : ''}`;
 }
 
 async function uploadFileAttachment(encodedOrg, encodedProject, authHeader, file) {
@@ -3325,7 +3382,7 @@ async function uploadFileAttachment(encodedOrg, encodedProject, authHeader, file
     );
 
     if (!uploadResponse.ok) {
-        throw new Error('Failed to upload file attachment: ' + file.name);
+        throw new Error(await azureUploadError(uploadResponse, file.name));
     }
 
     const result = await uploadResponse.json();
@@ -3877,6 +3934,21 @@ ${bullets(r.actualResult)}`.trim();
         }
     }
 
+    // The fields every Jira bug has, for when createmeta cannot tell us which
+    // fields this project has. Their values are still fetched, never listed here.
+    function standardJiraFields(meta) {
+        const f = (id, name, kind, extra) => Object.assign({
+            id, name, kind, required: false, array: false, autoCompleteUrl: '', options: []
+        }, extra || {});
+
+        return [
+            f('issuelinks', 'Linked Issues', 'any', { required: true, array: true }),
+            f('assignee', 'Assignee', 'user', { required: true }),
+            f('priority', 'Priority', 'priority', { options: meta.priorities || [], postCreate: true }),
+            f('labels', 'Labels', 'string', { array: true })
+        ];
+    }
+
     // Every Jira dropdown and every optional field comes from that project's
     // own configuration - never from a list written here.
     async function fillJiraMeta(projectKey) {
@@ -3901,10 +3973,29 @@ ${bullets(r.actualResult)}`.trim();
         }
         for (const k of Object.keys(jiraInputs)) delete jiraInputs[k];
 
-        [jiraFields, jiraLinkTypeList] = await Promise.all([
-            jiraCreateFields(cfg.jira, projectKey, meta.bugTypeId).catch(() => []),
-            jiraLinkTypes(cfg.jira).catch(() => [])
-        ]);
+        // Link types only decorate the issuelinks picker; losing them costs a
+        // dropdown, not the form. createmeta losing is a different matter.
+        jiraLinkTypeList = await jiraLinkTypes(cfg.jira).catch(() => []);
+
+        try {
+            jiraFields = await jiraCreateFields(cfg.jira, projectKey, meta.bugTypeId);
+        } catch (err) {
+            if (!err.gone) { showToast(err.message); return; }
+            // The endpoint is gone, not this project. Every value below still
+            // comes from Jira - only the list of which fields exist is ours.
+            showToast('Jira no longer exposes this project\'s create screen. Showing the standard fields.');
+            jiraFields = standardJiraFields(meta);
+        }
+
+        // Jira exposes field types we have no way to serialise (`any`, `team`,
+        // `issuerestriction`...). Offering them means offering an HTTP 400.
+        const unusable = jiraFields.filter(f => !jiraFieldSupported(f));
+        jiraFields = jiraFields.filter(jiraFieldSupported);
+
+        const blocking = unusable.filter(f => f.required);
+        if (blocking.length) {
+            showToast(`This project requires ${blocking.map(f => f.name).join(', ')}, which this form cannot fill. Create the bug in Jira.`);
+        }
 
         // Fields this team always fills, whether or not Jira insists on them.
         // Marking them required renders them up front and blocks an empty submit.
@@ -3923,7 +4014,10 @@ ${bullets(r.actualResult)}`.trim();
                 array: false,
                 kind: 'priority',
                 autoCompleteUrl: '',
-                options: meta.priorities
+                options: meta.priorities,
+                // createmeta left it off the create screen, so Jira will refuse
+                // it there. It is set right after the issue exists.
+                postCreate: true
             });
         }
 
@@ -4096,7 +4190,8 @@ ${bullets(r.actualResult)}`.trim();
                 extraMeta: jiraFields
             });
 
-            showToast(`Created ${issue.key}`);
+            const warn = (issue.warnings || []);
+            showToast(warn.length ? `Created ${issue.key} — ${warn.join('; ')}` : `Created ${issue.key}`);
             window.open(issue.url, '_blank');
             document.getElementById('bugModal').classList.remove('show');
         } catch (err) {
