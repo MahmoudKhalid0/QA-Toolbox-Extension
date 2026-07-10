@@ -475,15 +475,28 @@ async function driveMakeLinkReadable(fileId) {
     });
 }
 
-async function driveShareBlob(blob, name, interactive = true) {
+// Replacing the bytes of a file everyone already has a link to beats minting a
+// second file: the link keeps working, and it shows what you just drew.
+async function driveReplaceShared(fileId, blob) {
+    const res = await driveFetch(
+        `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&fields=id,webViewLink`,
+        { method: 'PATCH', headers: { 'Content-Type': blob.type || 'application/octet-stream' }, body: blob });
+    return res.json();
+}
+
+async function driveShareBlob(blob, name, interactive = true, replaceFileId = null) {
     const meta = await syncGetMeta();
     if (!meta.signedIn) throw new Error('Sign in to Google in Settings first');
 
     syncAllowPrompt = !!interactive;
     try {
-        const folderId = await driveShareFolderId();
-        const file = await driveUploadShared(blob, name, folderId);
-        await driveMakeLinkReadable(file.id);
+        const file = replaceFileId
+            ? await driveReplaceShared(replaceFileId, blob)
+            : await driveUploadShared(blob, name, await driveShareFolderId());
+
+        // A replaced file keeps the grant it already had.
+        if (!replaceFileId) await driveMakeLinkReadable(file.id);
+
         return { id: file.id, url: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view` };
     } catch (err) {
         throw new Error(syncExplain(err));

@@ -188,6 +188,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (!patched) {
           await CapStore.save({ id: request.id, type: request.type || 'image', title: request.title || 'Capture', blob, ctx: request.ctx || null });
         }
+
+        // The editor reopens from storage.local, not from the library, so every
+        // annotation was lost the moment the tab closed. Drive is never touched
+        // here: that is the cloud button's job, not the download's.
+        await chrome.storage.local.set({ [request.id]: request.dataUrl });
+
         sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });

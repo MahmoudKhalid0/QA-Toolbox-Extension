@@ -440,7 +440,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             try {
                 let rec = await CapStore.get(request.id);
                 if (!rec || !rec.blob) throw new Error('That capture is no longer stored on this device');
-                if (rec.cloudUrl) return sendResponse({ success: true, url: rec.cloudUrl, existing: true });
+
+                // Already shared and unchanged: the editor asks for the link, not an upload.
+                if (rec.cloudUrl && !request.replace) {
+                    return sendResponse({ success: true, url: rec.cloudUrl, existing: true });
+                }
 
                 // A recording never passes through capLibrarySave, so the title the
                 // user confirmed reaches the record only from here.
@@ -459,7 +463,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const safe = String(rec.title || '').replace(ILLEGAL, '-').replace(/\s+/g, ' ').trim();
                 const name = `${(safe || 'Capture').slice(0, 60)} ${stamp}.${ext}`;
 
-                const { id, url } = await CloudSync.driveShareBlob(rec.blob, name, true);
+                // Upload exactly what the editor is showing. Prefer the canvas
+                // the button sent over the stored blob, so a just-made edit can
+                // never be missed by a race with the library write.
+                const blob = request.dataUrl ? await CapStore.dataUrlToBlob(request.dataUrl) : rec.blob;
+                const reuseId = request.replace ? rec.cloudFileId : null;
+                const { id, url } = await CloudSync.driveShareBlob(blob, name, true, reuseId);
                 await CapStore.patch(request.id, { cloudUrl: url, cloudFileId: id, sharedAt: Date.now() });
                 sendResponse({ success: true, url });
             } catch (err) {

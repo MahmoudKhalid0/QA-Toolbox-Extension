@@ -180,6 +180,37 @@ let currentHandle = null; // 'nw', 'ne', 'sw', 'se', 'r'
 let objects = [];
 let history = [];
 let redoStack = [];
+
+// Pixels are heavy and rarely change; a reference to them is neither. Each
+// distinct data URL is kept once here, and a history entry names it by index.
+const assets = [];
+const assetIndex = new Map();
+
+function assetId(src) {
+    if (src == null) return null;
+    if (assetIndex.has(src)) return assetIndex.get(src);
+    assets.push(src);
+    assetIndex.set(src, assets.length - 1);
+    return assets.length - 1;
+}
+const assetSrc = (id) => (id == null ? null : assets[id]);
+
+// An Image element cannot be serialised, and its bytes live in `assets`.
+function snapshotObjects() {
+    return objects.map((o) => {
+        if (o.type !== 'image') return o;
+        const { imgElement, imgData, ...rest } = o;
+        return { ...rest, asset: assetId(imgData) };
+    });
+}
+
+function reviveObjects(saved) {
+    return (saved || []).map((o) => {
+        if (o.type !== 'image') return o;
+        const { asset, ...rest } = o;
+        return { ...rest, imgData: assetSrc(asset) };
+    });
+}
 let selectedObjectId = null;
 let baseImage = null;
 let cropArea = null; // {x, y, w, h}
@@ -188,7 +219,10 @@ let isResizingCrop = false;
 let cropHandle = null;
 let selectedFiles = [];
 window.pendingVideo = null;
-let isUploaded = false;
+// The link, when there is one. `isUploaded` answered a question nobody asked -
+// what matters is whether Drive is showing what the canvas is showing, and for
+// that you need the link and the state that produced it.
+let shareUrl = null;
 
 const HANDLE_SIZE = 8;
 let hasMoved = false; // Track if current drag/resize actually changed anything
@@ -216,13 +250,12 @@ function setMode(mode) {
 async function initEditor() {
     toggleLoader(true, "Loading Data...");
 
-    // 1. Check uploaded state ASAP
+    // 1. Recover the link, if this capture was shared before
     if (captureId) {
-        chrome.storage.local.get([`uploaded_${captureId}`], (res) => {
-            if (res[`uploaded_${captureId}`]) {
-                isUploaded = true;
-                applyUploadedUI();
-            }
+        chrome.storage.local.get([`cloudUrl_${captureId}`, `cloudHash_${captureId}`], (res) => {
+            shareUrl = res[`cloudUrl_${captureId}`] || null;
+            sharedImage = res[`cloudHash_${captureId}`] || null;
+            updateShareButton();
         });
     }
 
@@ -259,11 +292,10 @@ async function initEditor() {
     } else if (captureId || sessionStorage.getItem('currentScreenshot')) {
         setMode('image');
         const idToGet = captureId || 'currentScreenshot';
-        chrome.storage.local.get([idToGet, 'cropArea', `uploaded_${idToGet}`], (result) => {
-            // Also update uploaded state if found here (some race condition safety)
-            if (result[`uploaded_${idToGet}`]) {
-                isUploaded = true;
-                applyUploadedUI();
+        chrome.storage.local.get([idToGet, 'cropArea', `cloudUrl_${idToGet}`], (result) => {
+            if (result[`cloudUrl_${idToGet}`]) {
+                shareUrl = result[`cloudUrl_${idToGet}`];
+                updateShareButton();
             }
 
             const data = result[idToGet] || sessionStorage.getItem('currentScreenshot');
@@ -319,16 +351,7 @@ async function initEditor() {
     }
 }
 
-// Once shared, the button's job changes: it hands the link back. Disabling it
-// would leave the one thing the user came for behind a closed door.
-function applyUploadedUI() {
-    if (cloudUploadBtn) {
-        cloudUploadBtn.disabled = false;
-        cloudUploadBtn.style.opacity = '';
-        cloudUploadBtn.innerHTML = '<i class="fas fa-link"></i>';
-        cloudUploadBtn.title = 'Copy the share link';
-    }
-}
+
 
 // Start initialization
 initEditor();
@@ -559,9 +582,10 @@ function drawHandle(hx, hy) {
 }
 
 function updateUndoRedoButtons() {
-    // Disable undo/redo during crop selection
+    // Undo cancels an in-progress crop; switching the button off meant that
+    // branch of its own handler could never be reached.
     if (currentTool === 'crop') {
-        undoBtn.disabled = true;
+        undoBtn.disabled = false;
         redoBtn.disabled = true;
         return;
     }
@@ -581,25 +605,47 @@ function restoreImages() {
     });
 }
 
-function saveHistory(isManualAction = true) {
-    if (isManualAction) {
-        isUploaded = false;
-        if (cloudUploadBtn) {
-            cloudUploadBtn.disabled = false;
-            cloudUploadBtn.style.opacity = '1';
-            cloudUploadBtn.innerHTML = '<i class="fas fa-cloud-upload-alt"></i>';
-            cloudUploadBtn.title = "Save to Cloud";
-            if (captureId) {
-                chrome.storage.local.remove([`uploaded_${captureId}`]);
-            }
-        }
-    }
-    // Filter out overlay images - they are not part of undo/redo history
-    const shapesOnly = objects.filter(obj => obj.type !== 'image');
+// What Drive holds, as a fingerprint of its pixels. The history state string
+// cannot serve: reopening a capture bakes yesterday's annotations into the base
+// image, so the same picture describes itself with a different object list.
+let sharedImage = null;
 
+// Selection bounds are painted onto the canvas, and are nobody's edit.
+function imageFingerprint() {
+    const wasSelected = selectedObjectId;
+    if (wasSelected) { selectedObjectId = null; render(); }
+
+    const url = canvas.toDataURL('image/png');
+    let h = 0;
+    for (let i = 0; i < url.length; i += 61) h = (h * 31 + url.charCodeAt(i)) >>> 0;
+
+    if (wasSelected) { selectedObjectId = wasSelected; render(); }
+    return url.length + ':' + h;
+}
+
+function updateShareButton() {
+    if (!cloudUploadBtn) return;
+    cloudUploadBtn.disabled = false;
+    cloudUploadBtn.style.opacity = '1';
+
+    // The button answers one question: is Drive showing what the canvas is
+    // showing? Not "have you touched anything since".
+    if (!shareUrl) {
+        cloudUploadBtn.innerHTML = '<i class="fas fa-cloud-upload-alt"></i>';
+        cloudUploadBtn.title = 'Share on Google Drive';
+    } else if (sharedImage === imageFingerprint()) {
+        cloudUploadBtn.innerHTML = '<i class="fas fa-link"></i>';
+        cloudUploadBtn.title = 'Copy the share link';
+    } else {
+        cloudUploadBtn.innerHTML = '<i class="fas fa-cloud-arrow-up"></i>';
+        cloudUploadBtn.title = 'Update the shared image - the link stays the same';
+    }
+}
+
+function saveHistory(isManualAction = true) {
     const newState = JSON.stringify({
-        objects: shapesOnly,  // Only save shapes, not overlay images
-        baseImage: baseImage ? baseImage.src : null
+        objects: snapshotObjects(),
+        base: assetId(baseImage ? baseImage.src : null)
     });
 
     // Don't save if it's the same as the last state
@@ -611,9 +657,10 @@ function saveHistory(isManualAction = true) {
     redoStack = [];  // Clear redo stack on new actions
     if (history.length > 30) history.shift();
     updateUndoRedoButtons();
+    updateShareButton();
 }
 
-undoBtn.addEventListener('click', () => {
+function doUndo() {
     // If crop tool is active, first "Undo" just cancels the tool/selection
     if (currentTool === 'crop') {
         cropArea = null;
@@ -630,57 +677,62 @@ undoBtn.addEventListener('click', () => {
         redoStack.push(history.pop());
         const state = JSON.parse(history[history.length - 1]);
 
-        // Restore shapes only (overlay images are managed separately)
-        const shapesOnly = state.objects || [];
-
-        // Keep overlay images from current state
-        const overlayImages = objects.filter(obj => obj.type === 'image');
-        objects = [...shapesOnly, ...overlayImages];
-
-        cropArea = state.cropArea || null;
+        objects = reviveObjects(state.objects);
+        cropArea = null;   // a crop lives in baseImage, not in a selection box
 
         // Ensure tools are deactivated when moving back in history
         currentTool = null;
         setActiveBtn(null);
 
-        restoreBaseImage(state.baseImage, () => {
+        restoreBaseImage(assetSrc(state.base), () => {
             if (currentReqId !== restoreRequestId) return;
             restoreImages();
             selectedObjectId = null;
             render();
             updateUndoRedoButtons();
+            updateShareButton();
         });
     }
-});
+}
 
-redoBtn.addEventListener('click', () => {
+function doRedo() {
     if (redoStack.length > 0) {
         const currentReqId = ++restoreRequestId;
         const next = redoStack.pop();
         history.push(next);
         const state = JSON.parse(next);
 
-        // Restore shapes only (overlay images are managed separately)
-        const shapesOnly = state.objects || [];
-
-        // Keep overlay images from current state
-        const overlayImages = objects.filter(obj => obj.type === 'image');
-        objects = [...shapesOnly, ...overlayImages];
-
-        cropArea = state.cropArea || null;
+        objects = reviveObjects(state.objects);
+        cropArea = null;   // a crop lives in baseImage, not in a selection box
 
         // Deactivate any active tool and UI state
         currentTool = null;
         setActiveBtn(null);
 
-        restoreBaseImage(state.baseImage, () => {
+        restoreBaseImage(assetSrc(state.base), () => {
             if (currentReqId !== restoreRequestId) return;
             restoreImages();
             selectedObjectId = null;
             render();
             updateUndoRedoButtons();
+            updateShareButton();
         });
     }
+}
+
+undoBtn.addEventListener('click', doUndo);
+redoBtn.addEventListener('click', doRedo);
+
+// The first thing a hand reaches for. Ctrl+Y and Ctrl+Shift+Z both redo, because
+// half the world learned one and half the other.
+window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || isEditing) return;
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); doRedo(); }
 });
 
 function restoreBaseImage(src, callback) {
@@ -808,7 +860,7 @@ imageInput.addEventListener('change', (e) => {
             });
             selectedObjectId = id;
             setActiveBtn(uploadBtn);  // Activate upload button when image is selected
-            saveHistory();  // Shapes will be saved, overlay images excluded automatically
+            saveHistory();
             render();
         };
         img.src = event.target.result;
@@ -886,16 +938,16 @@ pencilBtn.addEventListener('click', () => {
 });
 
 // Update selected object styles
-colorPicker.addEventListener('input', () => {
-    if (selectedObjectId) {
-        const obj = objects.find(o => o.id === selectedObjectId);
-        if (obj) {
-            obj.color = colorPicker.value;
-            render();
-            saveHistory();
-        }
-    }
-});
+// `input` fires on every shade the cursor crosses. Paint each one, but a drag
+// through the wheel is one edit, and `change` is where it ends.
+const applyColour = () => {
+    if (!selectedObjectId) return null;
+    const obj = objects.find(o => o.id === selectedObjectId);
+    if (obj) { obj.color = colorPicker.value; render(); }
+    return obj;
+};
+colorPicker.addEventListener('input', applyColour);
+colorPicker.addEventListener('change', () => { if (applyColour()) saveHistory(); });
 
 lineWidthInput.addEventListener('input', () => {
     // Validate to prevent negative, zero, or values above 20
@@ -916,10 +968,12 @@ lineWidthInput.addEventListener('input', () => {
                 obj.fontSize = obj.lineWidth * 5;
             }
             render();
-            saveHistory();
         }
     }
 });
+
+// Typing 12 passes through 1 on the way. One entry, when the value settles.
+lineWidthInput.addEventListener('change', () => { if (selectedObjectId) saveHistory(); });
 
 // Global Mouse Events
 canvas.addEventListener('mousemove', (e) => {
@@ -1476,6 +1530,10 @@ function deleteSelected() {
 
 deleteBtn.addEventListener('click', deleteSelected);
 
+// Holding an arrow repeats the keydown; each repeat used to cost a history slot,
+// and thirty of them buried the original capture. One nudge is recorded on keyup.
+let arrowMovePending = false;
+
 window.addEventListener('keydown', (e) => {
     if (isEditing) return; // Don't handle keys while typing text
 
@@ -1541,6 +1599,13 @@ window.addEventListener('keydown', (e) => {
         }
 
         render();
+        arrowMovePending = true;   // recorded on keyup, once
+    }
+});
+
+window.addEventListener('keyup', (e) => {
+    if (arrowMovePending && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        arrowMovePending = false;
         saveHistory();
     }
 });
@@ -1969,16 +2034,15 @@ if (cloudUploadBtn) {
     cloudUploadBtn.addEventListener('click', async () => {
         const id = captureId || 'currentScreenshot';
 
-        if (isUploaded) {
-            const r = await chrome.storage.local.get([`cloudUrl_${id}`]);
-            if (r[`cloudUrl_${id}`]) {
-                await navigator.clipboard.writeText(r[`cloudUrl_${id}`]).catch(() => { });
-                showToast('Link copied again');
-                return;
-            }
+        // Shared, and Drive already shows this. Hand back the link.
+        if (shareUrl && sharedImage === imageFingerprint()) {
+            await navigator.clipboard.writeText(shareUrl).catch(() => { });
+            showToast('Link copied');
+            return;
         }
 
-        const title = await showCustomModal({
+        const updating = !!shareUrl;
+        const title = updating ? pageTitle : await showCustomModal({
             title: 'Share this capture',
             message: 'Name it, so you can find it in Drive later:',
             showInput: true,
@@ -1988,25 +2052,32 @@ if (cloudUploadBtn) {
         if (title === false) return;
 
         try {
-            toggleLoader(true, 'Uploading to Drive…');
+            toggleLoader(true, updating ? 'Updating the shared image…' : 'Uploading to Drive…');
             selectedObjectId = null; render();   // no selection handles in the shared image
 
             // Write what is on the canvas back to the library, so the link shows
             // the annotations rather than the untouched screenshot.
             if (!isVideoSession) {
                 const dataUrl = canvas.toDataURL('image/png');
-                await chrome.runtime.sendMessage({ action: 'capLibrarySave', id, dataUrl, title, type: 'image' });
+                await chrome.runtime.sendMessage({ action: 'capLibrarySave', id, dataUrl, title, type: 'image', skipCloud: true });
             }
 
-            const res = await chrome.runtime.sendMessage({ action: 'shareCapture', id, title });
+            // `replace` keeps the same Drive file, so the link a colleague already
+            // has keeps working and starts showing the new version. The canvas
+            // rides along so the upload is exactly what is on screen.
+            const dataUrl = isVideoSession ? null : canvas.toDataURL('image/png');
+            const res = await chrome.runtime.sendMessage({ action: 'shareCapture', id, title, replace: updating, dataUrl });
             if (!res || !res.success) throw new Error((res && res.error) || 'no response from the extension');
 
-            await chrome.storage.local.set({ [`uploaded_${id}`]: true, [`cloudUrl_${id}`]: res.url });
-            isUploaded = true;
-            applyUploadedUI();
+            shareUrl = res.url;
+            sharedImage = imageFingerprint();
+            // Persist it, or the button forgets after a reload and offers to update
+            // a file it has already been told is identical.
+            await chrome.storage.local.set({ [`cloudUrl_${id}`]: res.url, [`cloudHash_${id}`]: sharedImage });
+            updateShareButton();
 
             await navigator.clipboard.writeText(res.url).catch(() => { });
-            showToast(res.existing ? 'Already shared — link copied' : 'Link copied to clipboard');
+            showToast(updating ? 'Updated - same link' : 'Link copied to clipboard');
         } catch (err) {
             console.error('Share failed:', err);
             showToast('Could not share: ' + (err.message || err));
