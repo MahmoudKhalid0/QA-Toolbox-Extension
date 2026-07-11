@@ -106,6 +106,11 @@ const circleBtn = document.getElementById('circleBtn');
 const textBtn = document.getElementById('textBtn');
 const colorPicker = document.getElementById('colorPicker');
 const lineWidthInput = document.getElementById('lineWidth');
+// Carries across editor sessions (a fresh tab per capture, otherwise), not
+// just across tool switches within one - a page refresh used to snap this
+// straight back to the hardcoded default.
+const savedLineWidth = localStorage.getItem('qaLineWidth');
+if (savedLineWidth) lineWidthInput.value = savedLineWidth;
 const saveBtn = document.getElementById('saveBtn');
 const undoBtn = document.getElementById('undoBtn');
 const redoBtn = document.getElementById('redoBtn');
@@ -928,17 +933,14 @@ document.addEventListener('click', () => {
 rectBtn.addEventListener('click', () => {
     currentTool = 'rect';
     setActiveBtn(rectBtn);
-    lineWidthInput.value = 3; // Default for shapes
 });
 circleBtn.addEventListener('click', () => {
     currentTool = 'circle';
     setActiveBtn(circleBtn);
-    lineWidthInput.value = 3; // Default for shapes
 });
 textBtn.addEventListener('click', () => {
     currentTool = 'text';
     setActiveBtn(textBtn);
-    lineWidthInput.value = 10; // Default width for text
 });
 
 cropBtn.addEventListener('click', () => {
@@ -1052,19 +1054,16 @@ confirmCropBtn.addEventListener('click', () => {
 lineBtn.addEventListener('click', () => {
     currentTool = 'line';
     setActiveBtn(lineBtn);
-    lineWidthInput.value = 3;
 });
 
 arrowBtn.addEventListener('click', () => {
     currentTool = 'arrow';
     setActiveBtn(arrowBtn);
-    lineWidthInput.value = 3;
 });
 
 pencilBtn.addEventListener('click', () => {
     currentTool = 'pencil';
     setActiveBtn(pencilBtn);
-    lineWidthInput.value = 3;
 });
 
 blurBtn.addEventListener('click', () => {
@@ -1133,6 +1132,7 @@ lineWidthInput.addEventListener('input', () => {
         lineWidthInput.value = 20;
         value = 20;
     }
+    localStorage.setItem('qaLineWidth', value);
 
     if (selectedObjectId) {
         const obj = objects.find(o => o.id === selectedObjectId);

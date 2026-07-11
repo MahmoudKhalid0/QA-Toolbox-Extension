@@ -125,7 +125,7 @@ function showRecordingControl() {
                 gap: 6px;
                 transition: transform 0.2s, background 0.2s;
             }
-            .stop-btn:hover { background: #ff6b81; transform: scale(1.05); }
+            .stop-btn:hover { background: #ff6b81; }
             .stop-btn:active { transform: scale(0.95); }
             .pause-btn {
                 background: rgba(255, 255, 255, 0.08);
@@ -141,7 +141,7 @@ function showRecordingControl() {
                 gap: 6px;
                 transition: transform 0.2s, background 0.2s;
             }
-            .pause-btn:hover { background: rgba(255, 255, 255, 0.18); transform: scale(1.05); }
+            .pause-btn:hover { background: rgba(255, 255, 255, 0.18); }
             .pause-btn:active { transform: scale(0.95); }
             .discard-btn {
                 background: transparent;
@@ -171,7 +171,7 @@ function showRecordingControl() {
                 justify-content: center;
                 transition: transform 0.2s, background 0.2s, border-color 0.2s;
             }
-            .point-btn:hover { background: rgba(255, 255, 255, 0.18); transform: scale(1.05); }
+            .point-btn:hover { background: rgba(255, 255, 255, 0.18); }
             .point-btn.active { background: rgba(139, 92, 246, 0.35); border-color: #8b5cf6; color: #d8c8ff; }
             .point-menu {
                 position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
