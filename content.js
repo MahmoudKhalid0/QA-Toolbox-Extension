@@ -2735,8 +2735,12 @@ function qaOpenPanel(titleHtml, tool) {
             #qa-result-panel .qa-img-selectall { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #cbd5e1; cursor: pointer; }
             #qa-result-panel .qa-img-dl-btn { border: none; border-radius: 8px; padding: 7px 12px; font-size: 11.5px; font-weight: 600; cursor: pointer; color: #fff; background: linear-gradient(135deg, #10b981, #14b8a6); white-space: nowrap; }
             #qa-result-panel .qa-img-dl-btn:disabled { opacity: .4; cursor: not-allowed; }
-            #qa-result-panel .qa-img-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-            #qa-result-panel .qa-img-card { position: relative; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 6px; }
+            #qa-result-panel .qa-body { overflow-x: hidden; }
+            #qa-result-panel .qa-img-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+            /* min-width:0 lets a grid column shrink below its content's
+               natural width - without it the nowrap filename label forces
+               each column wider than 1fr, overflowing the panel sideways. */
+            #qa-result-panel .qa-img-card { position: relative; min-width: 0; box-sizing: border-box; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 6px; }
             #qa-result-panel .qa-img-thumb { height: 72px; display: flex; align-items: center; justify-content: center; background: repeating-conic-gradient(rgba(255,255,255,0.06) 0% 25%, transparent 0% 50%) 50% / 14px 14px; border-radius: 6px; overflow: hidden; }
             #qa-result-panel .qa-img-thumb img, #qa-result-panel .qa-img-thumb svg { max-width: 100%; max-height: 100%; object-fit: contain; }
             #qa-result-panel .qa-img-label { font-size: 9.5px; color: #94a3b8; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: ltr; text-align: center; }
