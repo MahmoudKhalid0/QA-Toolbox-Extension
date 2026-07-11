@@ -195,8 +195,17 @@ async function captureScreenshot(streamId) {
     }
 }
 
+function loadImage(src) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+    });
+}
+
 async function stitchFullPage(data) {
-    const { screenshots, totalHeight, pageWidth, viewportHeight } = data;
+    const { screenshots, totalHeight, pageWidth, viewportHeight, contextDataUrl, elementX, elementY } = data;
     console.log('Offscreen: Stitching', screenshots.length, 'screenshots');
 
     try {
@@ -209,40 +218,52 @@ async function stitchFullPage(data) {
 
         for (let i = 0; i < screenshots.length; i++) {
             const screenshot = screenshots[i];
-            const img = new Image();
-            img.src = screenshot.dataUrl;
+            const img = await loadImage(screenshot.dataUrl);
+            const scrollY = screenshot.scrollY;
 
-            await new Promise((resolve) => {
-                img.onload = () => {
-                    const scrollY = screenshot.scrollY;
+            if (i === 0) {
+                // First slice: Draw everything
+                ctx.drawImage(img, 0, 0);
+                maxYReached = viewportHeight;
+            } else {
+                // Subsequent slices: Only draw the "new" pixels to avoid overwriting
+                // fixed elements (like sidebar/header) that were hidden in this slice.
+                if (scrollY + viewportHeight > maxYReached) {
+                    const newPixelsHeight = (scrollY + viewportHeight) - maxYReached;
+                    const sourceY = viewportHeight - newPixelsHeight;
 
-                    if (i === 0) {
-                        // First slice: Draw everything
-                        ctx.drawImage(img, 0, 0);
-                        maxYReached = viewportHeight;
-                    } else {
-                        // Subsequent slices: Only draw the "new" pixels to avoid overwriting 
-                        // fixed elements (like sidebar/header) that were hidden in this slice.
-                        if (scrollY + viewportHeight > maxYReached) {
-                            const newPixelsHeight = (scrollY + viewportHeight) - maxYReached;
-                            const sourceY = viewportHeight - newPixelsHeight;
+                    // Draw only the bottom portion that hasn't been covered yet
+                    ctx.drawImage(
+                        img,
+                        0, sourceY, pageWidth, newPixelsHeight, // Source rect
+                        0, maxYReached, pageWidth, newPixelsHeight // Dest rect
+                    );
 
-                            // Draw only the bottom portion that hasn't been covered yet
-                            ctx.drawImage(
-                                img,
-                                0, sourceY, pageWidth, newPixelsHeight, // Source rect
-                                0, maxYReached, pageWidth, newPixelsHeight // Dest rect
-                            );
-
-                            maxYReached = scrollY + viewportHeight;
-                        }
-                    }
-                    resolve();
-                };
-            });
+                    maxYReached = scrollY + viewportHeight;
+                }
+            }
         }
 
-        const fullImageDataUrl = canvas.toDataURL('image/png');
+        let fullImageDataUrl;
+
+        if (contextDataUrl) {
+            // A modal capture: `canvas` above is the modal's OWN full content,
+            // stitched in isolation. Paste it onto a plain screenshot of the
+            // page exactly as it looked (sidebar, nav, dimmed backdrop) at the
+            // spot the modal actually sits, growing the canvas downward if the
+            // modal's full content is taller than what fit in that one shot.
+            const contextImg = await loadImage(contextDataUrl);
+            const finalCanvas = document.createElement('canvas');
+            finalCanvas.width = Math.max(contextImg.naturalWidth, elementX + pageWidth);
+            finalCanvas.height = Math.max(contextImg.naturalHeight, elementY + totalHeight);
+            const fctx = finalCanvas.getContext('2d');
+            fctx.drawImage(contextImg, 0, 0);
+            fctx.drawImage(canvas, elementX, elementY);
+            fullImageDataUrl = finalCanvas.toDataURL('image/png');
+        } else {
+            fullImageDataUrl = canvas.toDataURL('image/png');
+        }
+
         console.log('Offscreen: Stitching complete');
 
         chrome.runtime.sendMessage({
