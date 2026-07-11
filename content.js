@@ -75,13 +75,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         runPerformance();
         sendResponse({ success: true });
     }
+    if (request.action === 'runImagesFinder') {
+        runImagesFinder();
+        sendResponse({ success: true });
+    }
+    if (request.action === 'countPageImages') {
+        // Read-only: just the number, for the popup's badge - no panel, no
+        // qaCancelAllTools, nothing that disturbs whatever tool (if any) is
+        // already running on the page.
+        try { sendResponse({ count: collectPageImages().length }); }
+        catch (e) { sendResponse({ count: 0 }); }
+    }
     if (request.action === 'openResponsive') {
         openResponsiveOverlay();
-        sendResponse({ success: true });
+        // Unlike the other panels, this one builds itself inside an async
+        // chrome.storage.local.get callback - #qa-rv doesn't exist yet the
+        // instant openResponsiveOverlay() returns, so checking for it here
+        // would always (wrongly) report closed. The listener already
+        // returns true below, so the channel stays open for this.
+        setTimeout(() => sendResponse({ success: true, open: !!document.getElementById('qa-rv') }), 150);
     }
     if (request.action === 'openStorage') {
         openStoragePanel();
-        sendResponse({ success: true });
+        sendResponse({ success: true, open: !!document.getElementById('qa-storage') });
     }
     if (request.action === 'openMeasure') {
         openMeasureTool();
@@ -90,15 +106,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'measureStatus') { sendResponse({ open: !!liState }); }
     if (request.action === 'openTextMatch') {
         openTextMatchPanel();
-        sendResponse({ success: true });
+        sendResponse({ success: true, open: !!document.getElementById('qa-tm') });
     }
     if (request.action === 'openApiExport') {
         openApiExportPanel();
-        sendResponse({ success: true });
+        sendResponse({ success: true, open: !!document.getElementById('qa-ax') });
     }
     if (request.action === 'openTimeMachine') {
         openTimeMachinePanel();
-        sendResponse({ success: true });
+        sendResponse({ success: true, open: !!document.getElementById('qa-tmx') });
     }
     if (request.action === 'arStart') { arArm(request.seconds); sendResponse({ success: true }); }
     if (request.action === 'arStop') { arArm(0); sendResponse({ success: true }); }
@@ -926,8 +942,10 @@ const INSPECTOR_VALUE_KEYWORDS = [
 ];
 
 function startInspectMode(onPick) {
-    stopInspectMode();
+    qaCancelAllTools(); // stopInspectMode() + closeMeasureTool() + qaClosePanel()
     closeInspectorPanel();
+    closeXPathFinderPanel();
+    closeImageOcrPanel();
 
     const hl = document.createElement('div');
     hl.id = 'ff-insp-highlight';
@@ -2588,14 +2606,39 @@ function qaClosePanel() {
     const p = document.getElementById('qa-result-panel');
     if (p) p.remove();
     if (qaScanCtrl) { try { qaScanCtrl.abort(); } catch (e) { } }
-    if (qaActiveTool) { qaToolDone(qaActiveTool); qaActiveTool = null; } // unlock the card
+    if (qaActiveTool) {
+        try { chrome.runtime.sendMessage({ action: 'toolPanelClosed', tool: qaActiveTool }); } catch (e) { }
+        qaToolDone(qaActiveTool); // unlock the card's "scanning" state too, in case it's still mid-scan
+        qaActiveTool = null;
+    }
+}
+
+// Only one tool should ever be live on the page at once - every one of these
+// registers its own document-level listeners and/or floating UI, and two
+// running together fight each other for clicks and screen space. Every
+// tool-opening function calls this first, regardless of family; each single
+// call below already no-ops on its own if that particular tool wasn't open
+// (either via its own guard, like stopInspectMode's `if (!inspectState)
+// return`, or because getElementById finds nothing to remove).
+function qaCancelAllTools() {
+    stopInspectMode();          // Element Inspector / XPath Finder / AI Locator / OCR picking
+    closeMeasureTool();         // Measure
+    qaClosePanel();             // Link Health / Performance / Page Images
+    const storage = document.getElementById('qa-storage'); if (storage) storage.remove();
+    // closeResponsiveOverlay() unconditionally resets overflow/sends a DNR
+    // message even when nothing was open - only call it when #qa-rv is real.
+    if (document.getElementById('qa-rv')) closeResponsiveOverlay();
+    closeTextMatchPanel();      // Text Match
+    closeApiExportPanel();      // API Data Export
+    closeTimeMachinePanel();    // Time Machine
 }
 
 // Open the floating panel; returns the .qa-body element to fill.
 function qaOpenPanel(titleHtml, tool) {
-    qaClosePanel();
+    qaCancelAllTools();
     qaScanCtrl = new AbortController();
     qaActiveTool = tool || null;
+    if (qaActiveTool) { try { chrome.runtime.sendMessage({ action: 'toolPanelOpened', tool: qaActiveTool }); } catch (e) { } }
     const panel = document.createElement('div');
     panel.id = 'qa-result-panel';
     panel.innerHTML = `
@@ -2684,6 +2727,23 @@ function qaOpenPanel(titleHtml, tool) {
             #qa-result-panel .pf-slow-dur { color: #fca5a5; font-weight: 700; font-family: Consolas, monospace; }
             #qa-result-panel .pf-slow-type { color: #a5b4fc; } #qa-result-panel .pf-slow-sz { color: #94a3b8; margin-left: auto; }
             #qa-result-panel .pf-slow-url { font-size: 10px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; direction: ltr; }
+            /* Page Images */
+            #qa-result-panel .qa-img-toolbar { display: flex; gap: 6px; margin-bottom: 8px; }
+            #qa-result-panel .qa-img-search { flex: 1; min-width: 0; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #fff; padding: 7px 9px; font-size: 11.5px; outline: none; }
+            #qa-result-panel .qa-img-type { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #fff; padding: 7px 6px; font-size: 11.5px; outline: none; }
+            #qa-result-panel .qa-img-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
+            #qa-result-panel .qa-img-selectall { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #cbd5e1; cursor: pointer; }
+            #qa-result-panel .qa-img-dl-btn { border: none; border-radius: 8px; padding: 7px 12px; font-size: 11.5px; font-weight: 600; cursor: pointer; color: #fff; background: linear-gradient(135deg, #10b981, #14b8a6); white-space: nowrap; }
+            #qa-result-panel .qa-img-dl-btn:disabled { opacity: .4; cursor: not-allowed; }
+            #qa-result-panel .qa-img-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+            #qa-result-panel .qa-img-card { position: relative; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 6px; }
+            #qa-result-panel .qa-img-thumb { height: 72px; display: flex; align-items: center; justify-content: center; background: repeating-conic-gradient(rgba(255,255,255,0.06) 0% 25%, transparent 0% 50%) 50% / 14px 14px; border-radius: 6px; overflow: hidden; }
+            #qa-result-panel .qa-img-thumb img, #qa-result-panel .qa-img-thumb svg { max-width: 100%; max-height: 100%; object-fit: contain; }
+            #qa-result-panel .qa-img-label { font-size: 9.5px; color: #94a3b8; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: ltr; text-align: center; }
+            #qa-result-panel .qa-img-check { position: absolute; top: 4px; left: 4px; z-index: 1; }
+            #qa-result-panel .qa-img-get { position: absolute; top: 4px; right: 4px; z-index: 1; background: rgba(0,0,0,0.5); border: none; color: #fff; width: 22px; height: 22px; border-radius: 6px; cursor: pointer; font-size: 10px; }
+            #qa-result-panel .qa-img-get:hover { background: rgba(16,185,129,0.7); }
+            #qa-result-panel .qa-img-get:disabled { opacity: .5; cursor: wait; }
         </style>
         <div class="qa-head">
             <span class="qa-title">${titleHtml}</span>
@@ -2750,7 +2810,10 @@ async function runLinkHealth() {
     try {
         await runLinkHealthInner(body);
     } finally {
-        if (!qaAborted()) { qaToolDone('links'); qaActiveTool = null; }
+        // qaActiveTool stays set here - it now also tracks "the panel is open"
+        // for the popup card's .active state, cleared only when qaClosePanel()
+        // actually removes the panel, not just when the scan finishes.
+        if (!qaAborted()) qaToolDone('links');
     }
 }
 
@@ -3060,7 +3123,8 @@ async function runPerformance() {
         perfLast = m;
         perfRender(body, m);
     } finally {
-        if (!qaAborted()) { qaToolDone('perf'); qaActiveTool = null; }
+        // qaActiveTool stays set - see the same note in runLinkHealth().
+        if (!qaAborted()) qaToolDone('perf');
     }
 }
 
@@ -3124,6 +3188,193 @@ function perfRender(body, m) {
             body.querySelector('#pf-back').addEventListener('click', () => perfRender(body, perfLast));
         });
     });
+}
+
+// ---- Page Images (finds every <img> and inline <svg>, preview + download) ----
+async function runImagesFinder() {
+    const body = qaOpenPanel('&#128247; Page Images', 'images');
+    const panelEl = body.closest('#qa-result-panel');
+    if (panelEl) panelEl.style.width = '440px'; // a 2-column thumbnail grid needs more room than the 380px default
+    try {
+        const items = collectPageImages();
+        if (qaAborted()) return;
+        imagesRender(body, items);
+        try { chrome.runtime.sendMessage({ action: 'toolResultCount', tool: 'images', count: items.length }); } catch (e) { }
+    } finally {
+        // qaActiveTool stays set - see the same note in runLinkHealth().
+        if (!qaAborted()) qaToolDone('images');
+    }
+}
+
+// Same-origin dedup key per item - a URL for <img>, the serialized markup
+// for <svg> (two icons with identical paths but no src to compare by).
+function collectPageImages() {
+    const seen = new Set();
+    const items = [];
+
+    document.querySelectorAll('img').forEach((el) => {
+        if (el.closest('#qa-result-panel')) return; // this panel's own thumbnails, not page content
+        const src = getImageSrcFromElement(el);
+        if (!src || seen.has(src)) return;
+        const w = el.naturalWidth || el.width || 0, h = el.naturalHeight || el.height || 0;
+        if (w > 0 && h > 0 && (w < 8 || h < 8)) return; // tracking pixels, not real images
+        seen.add(src);
+        // A data: URI has no filename tail worth showing - the raw base64
+        // dump is meaningless as a label either way.
+        const label = src.startsWith('data:') ? `data:${(src.split(';')[0].split(':')[1] || 'image')} (inline)` : src;
+        items.push({ kind: 'img', el, src, label, w, h });
+    });
+
+    document.querySelectorAll('svg').forEach((el) => {
+        if (el.closest('#qa-result-panel')) return; // this panel's own thumbnails, not page content
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) return; // not actually rendered
+        let xml;
+        try { xml = new XMLSerializer().serializeToString(el); } catch (e) { return; }
+        if (seen.has(xml)) return;
+        seen.add(xml);
+        items.push({ kind: 'svg', el, xml, label: '<svg…>', w: Math.round(rect.width), h: Math.round(rect.height) });
+    });
+
+    return items;
+}
+
+// A Blob straight from the page (page cookies/session, canvas fallback) -
+// getImageBase64 already solves this for the OCR tool; reused as-is rather
+// than writing a second fetch/CORS/canvas dance.
+async function imageItemToBlob(item) {
+    if (item.kind === 'svg') {
+        const xml = item.xml.startsWith('<?xml') ? item.xml : `<?xml version="1.0" encoding="UTF-8"?>\n${item.xml}`;
+        return { blob: new Blob([xml], { type: 'image/svg+xml' }), ext: 'svg' };
+    }
+    const res = await getImageBase64(item.el, item.src);
+    if (!res) return null;
+    const blob = await (await fetch(`data:${res.mediaType};base64,${res.data}`)).blob();
+    const ext = (res.mediaType.split('/')[1] || 'png').replace('jpeg', 'jpg');
+    return { blob, ext };
+}
+
+function imageItemFilename(item, index) {
+    if (item.kind === 'svg') return `image-${index + 1}.svg`;
+    // A data: URI's "pathname" (per the URL spec) IS the whole base64 payload -
+    // splitting it on '/' like a normal path grabs a meaningless fragment of
+    // the image's own bytes instead of a filename.
+    if (item.src.startsWith('data:')) return `image-${index + 1}.png`;
+    try {
+        const u = new URL(item.src, location.href);
+        const base = (u.pathname.split('/').pop() || `image-${index + 1}`).split('?')[0];
+        return base.includes('.') ? base : `${base || 'image-' + (index + 1)}.png`;
+    } catch (e) { return `image-${index + 1}.png`; }
+}
+
+function downloadBlob(blob, filename) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+
+function imagesRender(body, items) {
+    const picked = new Set();
+
+    if (!items.length) {
+        body.innerHTML = '<div class="qa-empty">No images found on this page.</div>';
+        return;
+    }
+
+    body.innerHTML = `
+        <div class="qa-img-toolbar">
+            <input type="text" id="qi-search" class="qa-img-search" placeholder="Filter by URL…">
+            <select id="qi-type" class="qa-img-type">
+                <option value="all">All types</option>
+                <option value="img">Images</option>
+                <option value="svg">SVG</option>
+            </select>
+        </div>
+        <div class="qa-img-bar">
+            <label class="qa-img-selectall"><input type="checkbox" id="qi-selectall"> Select all (<span id="qi-count">0</span>/${items.length})</label>
+            <button class="qa-img-dl-btn" id="qi-download" disabled><i class="fas fa-download"></i> Download</button>
+        </div>
+        <div class="qa-img-grid" id="qi-grid"></div>
+    `;
+
+    const grid = body.querySelector('#qi-grid');
+    const countEl = body.querySelector('#qi-count');
+    const selectAllEl = body.querySelector('#qi-selectall');
+    const downloadBtn = body.querySelector('#qi-download');
+
+    const syncBar = () => {
+        countEl.textContent = String(picked.size);
+        downloadBtn.disabled = picked.size === 0;
+        selectAllEl.checked = picked.size > 0 && picked.size === grid.querySelectorAll('.qa-img-card').length;
+    };
+
+    const cardHtml = (item, i) => `
+        <div class="qa-img-card" data-i="${i}">
+            <label class="qa-img-check"><input type="checkbox" data-i="${i}"></label>
+            <button class="qa-img-get" data-i="${i}" title="Download this one"><i class="fas fa-download"></i></button>
+            <div class="qa-img-thumb">${item.kind === 'svg' ? item.xml : `<img src="${qaEsc(item.src)}" loading="lazy">`}</div>
+            <div class="qa-img-label" title="${qaEsc(item.label)}">${item.kind === 'svg' ? '&lt;svg&gt;' : qaEsc(item.label.split('/').pop().split('?')[0] || item.label)}</div>
+        </div>`;
+
+    function paint() {
+        const q = (body.querySelector('#qi-search').value || '').toLowerCase();
+        const type = body.querySelector('#qi-type').value;
+        grid.innerHTML = items.map((it, i) => ({ it, i }))
+            .filter(({ it }) => type === 'all' || it.kind === type)
+            .filter(({ it }) => !q || it.label.toLowerCase().includes(q))
+            .map(({ it, i }) => cardHtml(it, i)).join('') || '<div class="qa-empty">No matches.</div>';
+
+        grid.querySelectorAll('.qa-img-check input').forEach((cb) => {
+            const i = Number(cb.dataset.i);
+            cb.checked = picked.has(i);
+            cb.addEventListener('change', () => {
+                if (cb.checked) picked.add(i); else picked.delete(i);
+                syncBar();
+            });
+        });
+        grid.querySelectorAll('.qa-img-get').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const i = Number(btn.dataset.i);
+                btn.disabled = true;
+                const result = await imageItemToBlob(items[i]).catch(() => null);
+                btn.disabled = false;
+                if (!result) { alert('Could not download this image (blocked by the site)'); return; }
+                downloadBlob(result.blob, imageItemFilename(items[i], i).replace(/\.[a-zA-Z0-9]+$/, '') + '.' + result.ext);
+            });
+        });
+        syncBar();
+    }
+
+    body.querySelector('#qi-search').addEventListener('input', paint);
+    body.querySelector('#qi-type').addEventListener('change', paint);
+
+    selectAllEl.addEventListener('change', () => {
+        const visibleIs = [...grid.querySelectorAll('.qa-img-card')].map((c) => Number(c.dataset.i));
+        if (selectAllEl.checked) visibleIs.forEach((i) => picked.add(i));
+        else visibleIs.forEach((i) => picked.delete(i));
+        paint();
+    });
+
+    downloadBtn.addEventListener('click', async () => {
+        const ids = [...picked];
+        downloadBtn.disabled = true;
+        for (let n = 0; n < ids.length; n++) {
+            downloadBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${n + 1}/${ids.length}…`;
+            const i = ids[n];
+            const result = await imageItemToBlob(items[i]).catch(() => null);
+            if (result) downloadBlob(result.blob, imageItemFilename(items[i], i).replace(/\.[a-zA-Z0-9]+$/, '') + '.' + result.ext);
+            // Give the browser's own download queue a moment to keep up (same
+            // delay the capture gallery's bulk download already relies on).
+            await new Promise((r) => setTimeout(r, 250));
+        }
+        downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download';
+        downloadBtn.disabled = picked.size === 0;
+    });
+
+    paint();
 }
 
 // Custom on-page confirm dialog (replaces the browser's window.confirm).
@@ -3246,6 +3497,7 @@ try {
 
 function openStoragePanel() {
     const old = document.getElementById('qa-storage'); if (old) { old.remove(); return; }
+    qaCancelAllTools();
     const panel = document.createElement('div');
     panel.id = 'qa-storage';
     panel.innerHTML = `
@@ -3623,6 +3875,7 @@ function rvActiveTab() { return rvState.tabs.find(t => t.id === rvState.active) 
 
 function openResponsiveOverlay() {
     const old = document.getElementById('qa-rv'); if (old) old.remove();
+    qaCancelAllTools();
     chrome.storage.local.get(RV_STORE, (res) => {
         const saved = res && res[RV_STORE];
         rvState = saved && saved.tabs && saved.tabs.length ? Object.assign(rvDefaultState(), saved) : rvDefaultState();
@@ -6232,6 +6485,7 @@ const LI_IC = (() => {
 
 function openMeasureTool() {
     if (liState) { closeMeasureTool(); return; } // card acts as a toggle
+    qaCancelAllTools(); // stopInspectMode() + closeMeasureTool() (already null here) + qaClosePanel()
     liState = { hoverEl: null, anchor: null, target: null };
     liInjectStyles();
     liBuildToolbar();
@@ -6678,6 +6932,7 @@ function closeTextMatchPanel() {
 
 function openTextMatchPanel() {
     if (document.getElementById('qa-tm')) { closeTextMatchPanel(); return; } // toggle
+    qaCancelAllTools();
 
     const style = document.createElement('style');
     style.id = 'qa-tm-style';
@@ -7378,6 +7633,7 @@ let axLastRows = null;
 
 function openApiExportPanel() {
     if (document.getElementById('qa-ax')) { closeApiExportPanel(); return; }
+    qaCancelAllTools();
     const style = document.createElement('style');
     style.id = 'qa-ax-style';
     style.textContent = `
@@ -7527,6 +7783,7 @@ function closeTimeMachinePanel() { const p = document.getElementById('qa-tmx'); 
 
 function openTimeMachinePanel() {
     if (document.getElementById('qa-tmx')) { closeTimeMachinePanel(); return; }
+    qaCancelAllTools();
     const style = document.createElement('style');
     style.id = 'qa-tmx-style';
     style.textContent = `

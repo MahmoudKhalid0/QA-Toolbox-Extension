@@ -359,6 +359,30 @@
         .tool-scan { display: none; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: #a5b4fc; margin-top: 6px; }
         .tool-card.scanning .tool-scan { display: flex; }
 
+        /* Count badge next to a tool's name (e.g. "Page Images (35)") */
+        .tool-count-badge {
+            display: inline-flex; align-items: center; justify-content: center;
+            min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px;
+            background: #ef4444; color: #fff; font-size: 10px; font-weight: 700;
+            border-radius: 999px; vertical-align: middle;
+        }
+
+        /* A tool whose on-page panel is currently open - same highlight +
+           status label the Inspector's picking-mode options already use.
+           An expanded accordion card (Inspector, Auto Refresh) gets the same
+           highlight too, via .open - just without the "open" text badge,
+           since its chevron already shows that. */
+        .tool-card.active, .tool-card.open {
+            background: rgba(139, 92, 246, 0.22);
+            border-color: rgba(139, 92, 246, 0.7);
+            box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.4) inset;
+        }
+        .tool-card.active .tool-card-go { display: none; }
+        .tool-card.active::after {
+            content: 'open'; margin-left: auto; flex-shrink: 0;
+            font-size: 10px; font-weight: 600; color: #c4b5fd;
+        }
+
         /* Results modal (Security / Link Health) */
         .res-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); z-index: 100; display: flex; align-items: flex-end; }
         .res-modal.hidden { display: none; }
@@ -1621,6 +1645,18 @@
                         <h4>Performance</h4>
                         <p>Measure load speed &amp; Core Web Vitals (LCP, FCP, TTFB), with AI optimization tips</p>
                         <div class="tool-scan"><i class="fas fa-spinner fa-spin"></i> Measuring performance…</div>
+                    </div>
+                    <i class="fas fa-play tool-card-go"></i>
+                </button>
+
+                <button class="tool-card" id="imagesToolBtn" title="Find every image on this page">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #10b981, #14b8a6);">
+                        <i class="fas fa-images"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>Page Images <span class="tool-count-badge" id="imagesCountBadge" style="display:none;">0</span></h4>
+                        <p>Find every image &amp; icon on the page &mdash; preview, filter, and download one or all</p>
+                        <div class="tool-scan"><i class="fas fa-spinner fa-spin"></i> Finding images…</div>
                     </div>
                     <i class="fas fa-play tool-card-go"></i>
                 </button>

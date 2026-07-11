@@ -245,6 +245,23 @@ function switchTab(name) {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
     document.querySelectorAll('.tab-page').forEach(p => p.classList.toggle('hidden', p.id !== 'tab-' + name));
     try { localStorage.setItem('qaToolboxActiveTab', name); } catch (e) { }
+    if (name === 'tools') qaRefreshImagesBadge();
+}
+
+// Shows how many images are on the page the moment the Tools tab is visible
+// - a read-only count, not the full "Page Images" scan/panel, so it never
+// waits for (or requires) the user to click the tool first.
+async function qaRefreshImagesBadge() {
+    const badge = document.getElementById('imagesCountBadge');
+    if (!badge) return;
+    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!t || !t.url || /^(chrome|chrome-extension|about|edge|file):/i.test(t.url)) return;
+    await ensureContentScript(t.id);
+    chrome.tabs.sendMessage(t.id, { action: 'countPageImages' }, (resp) => {
+        if (chrome.runtime.lastError || !resp) return;
+        badge.textContent = String(resp.count);
+        badge.style.display = resp.count > 0 ? '' : 'none';
+    });
 }
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -369,11 +386,66 @@ function toggleToolSection(cardId, panelId) {
 // Highlight which inspect tool is currently picking; cleared when picking ends
 const INSPECT_TOOL_IDS = ['inspectBtn', 'xpathBtn', 'aiXpathBtn', 'ocrBtn'];
 let inspectStartingGuard = false;
-function markActiveTool(id) {
-    INSPECT_TOOL_IDS.forEach(t => {
+
+// Every tool across every family (picking-mode, panel-based, and the
+// "opens its own on-page panel" tools) - exactly one of these, or none, is
+// ever the single active/highlighted one at a time. Extend this list when a
+// new tool is added instead of wiring its own one-off clearing logic.
+const ALL_TOOL_BTN_IDS = [
+    'inspectBtn', 'xpathBtn', 'aiXpathBtn', 'ocrBtn', 'measureBtn',
+    'linksToolBtn', 'perfToolBtn', 'imagesToolBtn',
+    'storageToolBtn', 'responsiveToolBtn', 'textMatchToolBtn', 'apiExportToolBtn', 'timeMachineToolBtn'
+];
+
+// Which accordion (if any) must stay open for a given tool button - derived
+// from the actual DOM, so a sub-tool like Measure that lives INSIDE the
+// Inspector accordion keeps that accordion open instead of collapsing the
+// very panel it sits in. An accordion's own header card keeps itself open;
+// a tool that lives in no accordion returns null (collapse them all).
+function accordionCardToKeepFor(id) {
+    if (!id) return null;
+    const section = TOOL_SECTIONS.find(s => s.card === id);
+    if (section) return section.card;                 // the accordion header itself
+    const el = document.getElementById(id);
+    const panel = el && el.closest('.tool-options');  // a sub-option inside an accordion panel
+    if (!panel) return null;
+    return (TOOL_SECTIONS.find(s => s.panel === panel.id) || {}).card || null;
+}
+
+function collapseAccordionsExcept(keepCardId) {
+    TOOL_SECTIONS.forEach((s) => {
+        if (s.card === keepCardId) return;
+        document.getElementById(s.card)?.classList.remove('open');
+        document.getElementById(s.panel)?.classList.add('hidden');
+    });
+}
+
+// Marks exactly one tool (by button id) as the active one, clearing every
+// other tool AND collapsing whichever accordion the active tool doesn't
+// belong to. Pass null/undefined to mean "nothing is active".
+function qaSetOnlyActive(id) {
+    ALL_TOOL_BTN_IDS.forEach((t) => {
         const el = document.getElementById(t);
         if (el) el.classList.toggle('active', t === id);
     });
+    collapseAccordionsExcept(accordionCardToKeepFor(id));
+}
+
+// Safety net, independent of any single handler remembering to call
+// qaSetOnlyActive(): the instant ANY tool card/option is clicked, clear
+// every OTHER tool immediately (capture phase, before the async round trip
+// to content.js even starts) - several tools (Storage, Responsive Viewer,
+// Text Match, API Export, Time Machine) had no active-state wiring at all
+// until now precisely because this used to be done by hand, tool by tool.
+document.getElementById('tab-tools')?.addEventListener('click', (e) => {
+    const card = e.target.closest('.tool-card, .tool-option');
+    if (!card || !card.id) return;
+    ALL_TOOL_BTN_IDS.forEach((t) => { if (t !== card.id) document.getElementById(t)?.classList.remove('active'); });
+    collapseAccordionsExcept(accordionCardToKeepFor(card.id));
+}, true);
+
+function markActiveTool(id) {
+    qaSetOnlyActive(id);
     // Ignore the immediate "ended" that fires from the content script's internal reset
     inspectStartingGuard = true;
     setTimeout(() => { inspectStartingGuard = false; }, 500);
@@ -457,8 +529,9 @@ document.getElementById('storageToolBtn').addEventListener('click', async () => 
         showToastMessage('Open a website first', 'error'); return;
     }
     await ensureContentScript(t.id);
-    chrome.tabs.sendMessage(t.id, { action: 'openStorage' }, () => {
-        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    chrome.tabs.sendMessage(t.id, { action: 'openStorage' }, (resp) => {
+        if (chrome.runtime.lastError) { showToastMessage('Could not open here (reload the page)', 'error'); return; }
+        qaSetOnlyActive(resp && resp.open ? 'storageToolBtn' : null);
     });
 });
 
@@ -470,8 +543,9 @@ document.getElementById('responsiveToolBtn').addEventListener('click', async () 
         showToastMessage('Open a website first', 'error'); return;
     }
     await ensureContentScript(t.id);
-    chrome.tabs.sendMessage(t.id, { action: 'openResponsive' }, () => {
-        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    chrome.tabs.sendMessage(t.id, { action: 'openResponsive' }, (resp) => {
+        if (chrome.runtime.lastError) { showToastMessage('Could not open here (reload the page)', 'error'); return; }
+        qaSetOnlyActive(resp && resp.open ? 'responsiveToolBtn' : null);
     });
 });
 
@@ -482,8 +556,9 @@ document.getElementById('textMatchToolBtn').addEventListener('click', async () =
         showToastMessage('Open a website first', 'error'); return;
     }
     await ensureContentScript(t.id);
-    chrome.tabs.sendMessage(t.id, { action: 'openTextMatch' }, () => {
-        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    chrome.tabs.sendMessage(t.id, { action: 'openTextMatch' }, (resp) => {
+        if (chrome.runtime.lastError) { showToastMessage('Could not open here (reload the page)', 'error'); return; }
+        qaSetOnlyActive(resp && resp.open ? 'textMatchToolBtn' : null);
     });
 });
 
@@ -494,8 +569,9 @@ document.getElementById('apiExportToolBtn').addEventListener('click', async () =
         showToastMessage('Open a website first', 'error'); return;
     }
     await ensureContentScript(t.id);
-    chrome.tabs.sendMessage(t.id, { action: 'openApiExport' }, () => {
-        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    chrome.tabs.sendMessage(t.id, { action: 'openApiExport' }, (resp) => {
+        if (chrome.runtime.lastError) { showToastMessage('Could not open here (reload the page)', 'error'); return; }
+        qaSetOnlyActive(resp && resp.open ? 'apiExportToolBtn' : null);
     });
 });
 
@@ -505,8 +581,9 @@ document.getElementById('timeMachineToolBtn').addEventListener('click', async ()
         showToastMessage('Open a website first', 'error'); return;
     }
     await ensureContentScript(t.id);
-    chrome.tabs.sendMessage(t.id, { action: 'openTimeMachine' }, () => {
-        if (chrome.runtime.lastError) showToastMessage('Could not open here (reload the page)', 'error');
+    chrome.tabs.sendMessage(t.id, { action: 'openTimeMachine' }, (resp) => {
+        if (chrome.runtime.lastError) { showToastMessage('Could not open here (reload the page)', 'error'); return; }
+        qaSetOnlyActive(resp && resp.open ? 'timeMachineToolBtn' : null);
     });
 });
 
@@ -521,6 +598,22 @@ document.getElementById('linksToolBtn').addEventListener('click', async () => {
     card.classList.add('scanning');
     await ensureContentScript(t.id);
     chrome.tabs.sendMessage(t.id, { action: 'runLinkHealth' }, () => {
+        if (chrome.runtime.lastError) { card.classList.remove('scanning'); showToastMessage('Could not run on this page (reload it)', 'error'); }
+        // otherwise keep "scanning" until content.js reports it finished (toolScanDone)
+    });
+});
+
+// ── Page Images card → runs in the page (content.js finds img/svg, shows the panel) ──
+document.getElementById('imagesToolBtn').addEventListener('click', async () => {
+    const card = document.getElementById('imagesToolBtn');
+    if (card.classList.contains('scanning')) return;
+    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!t || !t.url || /^(chrome|chrome-extension|about|edge|file):/i.test(t.url)) {
+        showToastMessage('Open a website first', 'error'); return;
+    }
+    card.classList.add('scanning');
+    await ensureContentScript(t.id);
+    chrome.tabs.sendMessage(t.id, { action: 'runImagesFinder' }, () => {
         if (chrome.runtime.lastError) { card.classList.remove('scanning'); showToastMessage('Could not run on this page (reload it)', 'error'); }
         // otherwise keep "scanning" until content.js reports it finished (toolScanDone)
     });
@@ -583,7 +676,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
     await ensureContentScript(tab.id);
     chrome.tabs.sendMessage(tab.id, { action: 'openMeasure' }, (resp) => {
         if (chrome.runtime.lastError) { showToastMessage('Could not open here (reload the page)', 'error'); return; }
-        document.getElementById('measureBtn').classList.toggle('active', !!(resp && resp.open));
+        qaSetOnlyActive(resp && resp.open ? 'measureBtn' : null);
     });
 });
 
@@ -1536,13 +1629,22 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// content.js reports when an on-page tool (Link Health / Performance) finishes,
-// so the card stays in its "scanning" state (and unclickable) until then.
+// content.js reports on the lifecycle of on-page tools (Link Health /
+// Performance / Page Images): when a scan finishes, when its panel opens,
+// and when that panel closes - each drives a different bit of card UI.
+const QA_TOOL_BTN_IDS = { links: 'linksToolBtn', perf: 'perfToolBtn', images: 'imagesToolBtn' };
 chrome.runtime.onMessage.addListener((req) => {
-    if (req && req.action === 'toolScanDone') {
-        const id = { links: 'linksToolBtn', perf: 'perfToolBtn' }[req.tool] || 'linksToolBtn';
-        const c = document.getElementById(id);
+    if (!req || !req.action) return;
+    const c = document.getElementById(QA_TOOL_BTN_IDS[req.tool]);
+    if (req.action === 'toolScanDone') {
         if (c) c.classList.remove('scanning');
+    } else if (req.action === 'toolPanelOpened') {
+        qaSetOnlyActive(QA_TOOL_BTN_IDS[req.tool]);
+    } else if (req.action === 'toolPanelClosed') {
+        if (c) c.classList.remove('active');
+    } else if (req.action === 'toolResultCount') {
+        const badge = document.getElementById(req.tool + 'CountBadge');
+        if (badge) { badge.textContent = String(req.count); badge.style.display = req.count > 0 ? '' : 'none'; }
     }
 });
 
