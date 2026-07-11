@@ -2431,7 +2431,38 @@ ensureCloudPullAlarm();          // and after every service-worker restart
 
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === CLOUD_PULL_ALARM) CloudSync.syncNow(false);
+    if (alarm.name === TEMP_MAIL_ALARM) updateTempMailUnread();
 });
+
+// ── Temp Mail unread count ──────────────────────────────────────────────────
+// Keeps the Mail tab's unread badge live even while the popup is closed, by
+// polling api.mail.tm on a timer and storing the count. Deliberately does NOT
+// touch the toolbar action badge - that belongs to the recording timer.
+const TEMP_MAIL_ALARM = 'tempMailCheck';
+function ensureTempMailAlarm() {
+    chrome.alarms.get(TEMP_MAIL_ALARM, (existing) => {
+        if (!existing) chrome.alarms.create(TEMP_MAIL_ALARM, { periodInMinutes: 1 });
+    });
+}
+chrome.runtime.onStartup.addListener(ensureTempMailAlarm);
+chrome.runtime.onInstalled.addListener(ensureTempMailAlarm);
+ensureTempMailAlarm();
+
+function updateTempMailUnread() {
+    chrome.storage.local.get(['tmToken'], async (r) => {
+        if (!r.tmToken) return; // user never opened the Mail tab; nothing to poll
+        try {
+            const res = await fetch('https://api.mail.tm/messages', {
+                headers: { 'Authorization': `Bearer ${r.tmToken}` }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            const unread = (data['hydra:member'] || []).filter((m) => !m.seen).length;
+            chrome.storage.local.set({ tmUnreadCount: unread });
+        } catch (e) { /* offline / token expired - leave the last count */ }
+    });
+}
+updateTempMailUnread();
 
 // The timer alone means up to a full minute of staleness right when someone
 // opens a panel to go look at something - pull the instant a page opens too.

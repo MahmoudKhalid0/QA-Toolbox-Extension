@@ -1515,6 +1515,10 @@
                 <i class="fas fa-bug"></i> Debug
                 <span id="dbgTabBadge" class="dbg-tab-badge" style="display:none;"></span>
             </button>
+            <button class="tab-btn" data-tab="mail">
+                <i class="fas fa-envelope"></i> Mail
+                <span id="mailTabBadge" class="dbg-tab-badge" style="display:none;"></span>
+            </button>
         </div>
 
         <div class="content">
@@ -1783,6 +1787,62 @@
                     <div class="dbg-list" id="netList"></div>
                 </div>
             </div>
+
+            <!-- Temp Mail tab (ported from a standalone extension, rebranded) -->
+            <div class="tab-page hidden" id="tab-mail">
+                <style>
+                    #tab-mail { --tm-accent: #6366f1; --tm-accent2: #8b5cf6; }
+                    #tab-mail .tm-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 16px; margin-bottom: 14px; }
+                    #tab-mail .tm-label { font-size: 10.5px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: #94a3b8; margin-bottom: 8px; }
+                    #tab-mail .tm-addr-row { display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 10px 12px; }
+                    #tab-mail #tm-address { flex: 1; min-width: 0; font-family: Consolas, monospace; font-size: 13.5px; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: ltr; }
+                    #tab-mail .tm-icon-btn { flex-shrink: 0; background: rgba(255,255,255,0.08); border: none; color: #cbd5e1; width: 32px; height: 32px; border-radius: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .2s; }
+                    #tab-mail .tm-icon-btn:hover { background: rgba(99,102,241,0.4); color: #fff; }
+                    #tab-mail .tm-new-btn { width: 100%; margin-top: 12px; border: none; border-radius: 11px; padding: 11px; font-size: 13px; font-weight: 600; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--tm-accent), var(--tm-accent2)); display: flex; align-items: center; justify-content: center; gap: 8px; }
+                    #tab-mail .tm-new-btn:hover { filter: brightness(1.1); }
+                    #tab-mail .tm-inbox-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 2px 10px; }
+                    #tab-mail .tm-inbox-head h2 { font-size: 14px; color: #fff; margin: 0; display: flex; align-items: center; gap: 8px; }
+                    #tab-mail .tm-inbox-actions { display: flex; align-items: center; gap: 8px; }
+                    #tab-mail .tm-unread { background: var(--tm-accent); color: #fff; border-radius: 999px; min-width: 20px; height: 20px; padding: 0 6px; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+                    #tab-mail .tm-refresh { background: rgba(255,255,255,0.08); border: none; color: #cbd5e1; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+                    #tab-mail .tm-refresh:hover { background: rgba(99,102,241,0.4); color: #fff; }
+                    #tab-mail .tm-list { display: flex; flex-direction: column; gap: 8px; }
+                    #tab-mail .tm-msg { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); border-left: 3px solid transparent; border-radius: 12px; padding: 11px 13px; cursor: pointer; transition: all .18s; }
+                    #tab-mail .tm-msg:hover { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.4); }
+                    #tab-mail .tm-msg.new { border-left-color: var(--tm-accent); background: rgba(99,102,241,0.07); }
+                    #tab-mail .tm-msg.rtl { direction: rtl; text-align: right; }
+                    #tab-mail .tm-msg-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+                    #tab-mail .tm-from { font-size: 12.5px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                    #tab-mail .tm-time { font-size: 10px; color: #64748b; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+                    #tab-mail .tm-subj { font-size: 12.5px; color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                    #tab-mail .tm-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-top: 3px; }
+                    #tab-mail .tm-intro { font-size: 11px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; flex: 1; min-width: 0; }
+                    #tab-mail .tm-dl { flex-shrink: 0; background: rgba(255,255,255,0.06); border: none; color: #94a3b8; width: 26px; height: 26px; border-radius: 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+                    #tab-mail .tm-dl:hover { background: rgba(16,185,129,0.5); color: #fff; }
+                    #tab-mail .tm-empty { text-align: center; color: #64748b; padding: 30px 12px; font-size: 13px; }
+                    #tab-mail .tm-empty i { font-size: 30px; opacity: .5; display: block; margin-bottom: 12px; }
+                    #tab-mail .tm-spinner { width: 26px; height: 26px; border: 3px solid rgba(255,255,255,0.12); border-top-color: var(--tm-accent); border-radius: 50%; animation: ai-spin 0.8s linear infinite; margin: 0 auto 12px; }
+                </style>
+                <div class="tm-card">
+                    <div class="tm-label">Your temporary email</div>
+                    <div class="tm-addr-row">
+                        <span id="tm-address">Generating…</span>
+                        <button id="tm-copy-btn" class="tm-icon-btn" title="Copy address"><i class="fas fa-copy"></i></button>
+                    </div>
+                    <button id="tm-new-btn" class="tm-new-btn"><i class="fas fa-rotate"></i> Generate new email</button>
+                </div>
+
+                <div class="tm-inbox-head">
+                    <h2><i class="fas fa-inbox"></i> Inbox</h2>
+                    <div class="tm-inbox-actions">
+                        <span id="tm-unread" class="tm-unread">0</span>
+                        <button id="tm-refresh-btn" class="tm-refresh" title="Refresh"><i class="fas fa-arrows-rotate"></i></button>
+                    </div>
+                </div>
+                <div id="tm-list" class="tm-list">
+                    <div class="tm-empty"><div class="tm-spinner"></div>Waiting for emails…</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1846,6 +1906,7 @@
 
     <script src="db.js"></script>
     <script src="popup.js"></script>
+    <script src="tempmail.js"></script>
 </body>
 
 </html>

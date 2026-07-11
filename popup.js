@@ -270,7 +270,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 try {
     const savedTab = localStorage.getItem('qaToolboxActiveTab');
-    if (savedTab === 'tools' || savedTab === 'debug') switchTab(savedTab);
+    if (savedTab === 'tools' || savedTab === 'debug' || savedTab === 'mail') switchTab(savedTab);
 } catch (e) { }
 
 // The side panel stays open across tab switches - keep the smart filter and

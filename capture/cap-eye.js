@@ -60,10 +60,16 @@
     background: #17151f; border: 1px solid #2a2738; border-radius: 12px;
     box-shadow: 0 14px 40px rgba(0,0,0,.6); display: none;
     font: 13px/1.4 -apple-system, "Segoe UI", sans-serif; color: #e5e7eb;
+    /* An RTL host page (e.g. an Arabic site) inherits its direction into
+       this shadow tree and flips every row to icon-on-the-right,
+       right-aligned. Pin LTR so the items always read icon-then-label,
+       aligned from the left, whatever the page's direction is. */
+    direction: ltr; text-align: left;
   }
   .menu.open { display: block; }
   .mi {
-    display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+    display: flex; align-items: center; justify-content: flex-start;
+    gap: 10px; padding: 9px 10px;
     border-radius: 8px; cursor: pointer; white-space: nowrap;
   }
   .mi:hover { background: rgba(245,158,11,.16); color: #fff; }
