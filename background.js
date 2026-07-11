@@ -4,6 +4,10 @@ importScripts('config.js');
 importScripts('sync.js');
 importScripts('capture/cap-store.js');
 importScripts('capture/cap-background.js');
+importScripts('session-cookie-jar.js');   // pure cookie-jar logic
+importScripts('session-isolation.js');    // per-tab session isolation via chrome.debugger
+importScripts('session-swap.js');         // quick login switch (Snapshot & Swap, no debugger)
+if (self.SessionIsolation) self.SessionIsolation.loadFromStorage();
 
 // Clicking the toolbar icon opens the side panel (the extension's main surface)
 if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
@@ -2463,6 +2467,68 @@ function updateTempMailUnread() {
     });
 }
 updateTempMailUnread();
+
+// ── Session isolation (chrome.debugger engine) - popup message bridge ───────
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    const SI = self.SessionIsolation;
+    if (!request || !request.action || !SI) return false;
+    switch (request.action) {
+        case 'isoListSessions':
+            sendResponse({ sessions: SI.listSessions() });
+            return true;
+        case 'isoCreateSession':
+            sendResponse({ id: SI.createSession(request.name, request.color) });
+            return true;
+        case 'isoDeleteSession':
+            SI.deleteSession(request.id);
+            sendResponse({ ok: true });
+            return true;
+        case 'isoClearJar':
+            SI.clearJar(request.id);
+            sendResponse({ ok: true });
+            return true;
+        case 'isoOpenTab':
+            SI.openIsolatedTab(request.sessionId, request.url).then(sendResponse);
+            return true;   // async
+        case 'isoIsolateActive':
+            SI.isolateExistingTab(request.tabId, request.sessionId).then(sendResponse);
+            return true;   // async
+        case 'isoStop':
+            SI.stopIsolation(request.tabId).then(() => sendResponse({ ok: true }));
+            return true;
+        case 'isoTabStatus':
+            sendResponse({ isolated: SI.isTabIsolated(request.tabId), sessionId: SI.sessionOfTab(request.tabId) });
+            return true;
+        case 'isoDebugState':
+            sendResponse(SI.debugState ? SI.debugState() : {});
+            return true;
+    }
+    return false;
+});
+
+// ── Quick login switch (Snapshot & Swap, no debugger) - popup message bridge ─
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    const SW = self.SessionSwap;
+    if (!request || !request.action || !SW) return false;
+    switch (request.action) {
+        case 'swapList':
+            SW.listFor(request.url).then((snaps) => sendResponse({ snaps }));
+            return true;   // async
+        case 'swapSave':
+            SW.saveCurrent(request.tab || (sender && sender.tab), request.name).then(sendResponse);
+            return true;
+        case 'swapRestore':
+            SW.restore(request.tab || (sender && sender.tab), request.id).then(sendResponse);
+            return true;
+        case 'swapDelete':
+            SW.remove(request.url, request.id).then(() => sendResponse({ ok: true }));
+            return true;
+        case 'swapRename':
+            SW.rename(request.url, request.id, request.name).then(() => sendResponse({ ok: true }));
+            return true;
+    }
+    return false;
+});
 
 // The timer alone means up to a full minute of staleness right when someone
 // opens a panel to go look at something - pull the instant a page opens too.

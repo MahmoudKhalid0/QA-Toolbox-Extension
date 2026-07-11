@@ -29,6 +29,13 @@ chrome.runtime.sendMessage({ action: 'recordingPageLoaded' }, () => {
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    // A saved login was added/removed elsewhere (popup or right-click) - refresh
+    // the floating button so the "Switch login" list is up to date immediately.
+    if (request.action === 'swapChanged') {
+        initFloatingButton();
+        sendResponse && sendResponse({ ok: true });
+        return;
+    }
     if (request.action === 'startRecording') {
         // Store appendToProfileId if provided
         currentAppendToProfileId = request.appendToProfileId || null;
@@ -231,6 +238,7 @@ try {
 
 // Floating Button Support
 let matchingProfiles = [];
+let matchingLogins = [];       // saved logins (Snapshot & Swap) for this site
 const fabAiFillEnabled = true; // the "AI Fill" option is always available in the FAB
 let lastCheckUrl = '';
 let fabInitTimeout = null;
@@ -254,7 +262,17 @@ async function initFloatingButton() {
             chrome.runtime.sendMessage({ action: 'getMatchingProfiles', url: currentUrl }, (profRes) => {
                 if (chrome.runtime.lastError) return;
                 matchingProfiles = (profRes && profRes.profiles) || [];
+                // Build the button now so its items always match the current
+                // profiles (never block this on the swap-list round-trip).
                 createFloatingButton();
+                // Then pull this site's saved logins and re-render only if they changed.
+                chrome.runtime.sendMessage({ action: 'swapList', url: currentUrl }, (swRes) => {
+                    void chrome.runtime.lastError;
+                    const next = (swRes && swRes.snaps) || [];
+                    const changed = next.map((s) => s.id).join(',') !== matchingLogins.map((s) => s.id).join(',');
+                    matchingLogins = next;
+                    if (changed) createFloatingButton();
+                });
             });
         });
     }, 100);
@@ -5337,6 +5355,41 @@ function showFabAiStatus(state, message) {
     }
 }
 
+// Styled name dialog for "Save current login" from the FAB (no ugly
+// window.prompt). Returns a Promise<string|null>: the trimmed name, or null.
+function qaSwapNamePrompt() {
+    return new Promise((resolve) => {
+        const prev = document.getElementById('qa-swap-name-ov');
+        if (prev) prev.remove();
+        const done = (val) => { document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(val); };
+        const ov = document.createElement('div');
+        ov.id = 'qa-swap-name-ov';
+        ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(2,6,23,.66);backdrop-filter:blur(2px);font-family:Segoe UI,-apple-system,Roboto,sans-serif;direction:ltr;';
+        const box = document.createElement('div');
+        box.style.cssText = 'width:320px;max-width:86vw;background:#131a2b;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,.55);';
+        box.innerHTML =
+            '<div style="display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700;color:#fff;margin-bottom:15px;">' +
+            '<span style="width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;font-size:15px;">💾</span>' +
+            'Save this login as</div>' +
+            '<input id="qa-swap-name-in" type="text" placeholder="e.g. Admin" autocomplete="off" ' +
+            'style="width:100%;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);border-radius:10px;color:#fff;padding:12px;font-size:14px;outline:none;margin-bottom:18px;">' +
+            '<div style="display:flex;gap:9px;justify-content:flex-end;">' +
+            '<button id="qa-swap-cancel" style="border:none;border-radius:10px;padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer;background:rgba(255,255,255,.1);color:#cbd5e1;">Cancel</button>' +
+            '<button id="qa-swap-ok" style="border:none;border-radius:10px;padding:10px 20px;font-size:13px;font-weight:700;cursor:pointer;background:linear-gradient(135deg,#10b981,#059669);color:#fff;">Save</button>' +
+            '</div>';
+        ov.appendChild(box);
+        (document.body || document.documentElement).appendChild(ov);
+        const input = box.querySelector('#qa-swap-name-in');
+        const ok = () => done((input.value || '').trim() || null);
+        const onKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } else if (e.key === 'Escape') { e.preventDefault(); done(null); } };
+        box.querySelector('#qa-swap-ok').addEventListener('click', ok);
+        box.querySelector('#qa-swap-cancel').addEventListener('click', () => done(null));
+        ov.addEventListener('mousedown', (e) => { if (e.target === ov) done(null); });
+        document.addEventListener('keydown', onKey, true);
+        setTimeout(() => input.focus(), 30);
+    });
+}
+
 function createFloatingButton() {
     // 1. Style Setup
     if (!document.getElementById('ff-fab-styles')) {
@@ -5384,8 +5437,11 @@ function createFloatingButton() {
             flex-direction: column;
             gap: 2px;
             animation: ff-slide-up 0.3s ease-out;
-            max-height: 400px;
+            /* Cap to the viewport (menu grows upward from bottom:180px) so a long
+               list stays fully scrollable instead of clipping off the top. */
+            max-height: calc(100vh - 200px);
             overflow-y: auto;
+            overscroll-behavior: contain;
         }
         @keyframes ff-slide-up {
             from { opacity: 0; transform: translateY(20px); }
@@ -5448,6 +5504,20 @@ function createFloatingButton() {
             text-overflow: ellipsis;
             max-width: 240px;
         }
+        /* Per-section scroll: a long login/profile list scrolls on its own so it
+           never pushes the other sections out of reach. */
+        .ff-swap-list, .ff-menu-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            max-height: 170px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+        }
+        .ff-swap-list::-webkit-scrollbar, .ff-menu-list::-webkit-scrollbar,
+        #ff-floating-menu::-webkit-scrollbar { width: 7px; }
+        .ff-swap-list::-webkit-scrollbar-thumb, .ff-menu-list::-webkit-scrollbar-thumb,
+        #ff-floating-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 4px; }
     `;
         document.head.appendChild(style);
     }
@@ -5487,6 +5557,39 @@ function createFloatingButton() {
         document.body.appendChild(menu);
 
         menu.addEventListener('click', async (e) => {
+            // Save the current logged-in session under a name
+            if (e.target.closest('#ff-menu-swap-save')) {
+                menu.style.display = 'none';
+                const name = await qaSwapNamePrompt();
+                if (!name) return;
+                showFabAiStatus('loading', `Saving "${name}"…`);
+                chrome.runtime.sendMessage({ action: 'swapSave', name }, (resp) => {
+                    if (chrome.runtime.lastError || !resp || !resp.ok) {
+                        showFabAiStatus('error', 'Could not save this login');
+                    } else {
+                        showFabAiStatus('success', `Saved "${name}"`);
+                        initFloatingButton();   // refresh the list in the menu
+                    }
+                });
+                return;
+            }
+            // Switch to a saved login (Snapshot & Swap) - the page reloads.
+            // Skip the "current" one (marked no-click) so it can't be re-clicked.
+            const swapItem = e.target.closest('.ff-swap-item');
+            if (swapItem && swapItem.classList.contains('no-click')) return;
+            if (swapItem) {
+                menu.style.display = 'none';
+                const id = swapItem.dataset.swapId;
+                showFabAiStatus('loading', 'Switching login…');
+                chrome.runtime.sendMessage({ action: 'swapRestore', id }, (resp) => {
+                    if (chrome.runtime.lastError || !resp || !resp.ok) {
+                        showFabAiStatus('error', (resp && resp.error) || 'Could not switch');
+                    }
+                    // on success the tab reloads, so no toast needed
+                });
+                return;
+            }
+
             // Open the current page in a private/incognito window
             if (e.target.closest('#ff-menu-incognito')) {
                 menu.style.display = 'none';
@@ -5559,9 +5662,41 @@ function createFloatingButton() {
     }
 
     const renderMenuItems = (filter = '') => {
+        const escHtml = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        const truncateName = (name) => (!name ? '' : (name.length > 30 ? name.substring(0, 30) + '...' : name));
+
+        // === Switch login group (Snapshot & Swap) - shown first, most used ===
+        let menuHtml = `<div class="ff-menu-header">Switch login</div>`;
+        menuHtml += `
+            <div class="ff-menu-item ff-action" id="ff-menu-swap-save" title="Save the current logged-in session">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#10b981" style="flex-shrink:0;" aria-hidden="true"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10v4z"/></svg>
+                <span style="font-weight:600;">Save current login</span>
+            </div>`;
+        if (matchingLogins.length) menuHtml += `<div class="ff-swap-list">`;
+        matchingLogins.forEach((s) => {
+            if (s.active) {
+                // The login currently in use - shown as CURRENT and not clickable
+                // (so you don't re-switch to yourself by accident).
+                menuHtml += `
+                    <div class="ff-menu-item ff-swap-item ff-active no-click" title="You're using this login now" style="cursor:default;">
+                        <i class="fas fa-circle-check" style="color:#10b981;"></i>
+                        <span style="font-weight:600;">${escHtml(truncateName(s.name))}</span>
+                        <span style="margin-left:auto;flex-shrink:0;font-size:9px;font-weight:700;letter-spacing:.5px;color:#10b981;background:rgba(16,185,129,.15);padding:2px 7px;border-radius:20px;max-width:none;">CURRENT</span>
+                    </div>`;
+            } else {
+                menuHtml += `
+                    <div class="ff-menu-item ff-swap-item" data-swap-id="${escHtml(s.id)}" title="Switch to ${escHtml(s.name)}">
+                        <i class="fas fa-user" style="color:#10b981;"></i>
+                        <span>${escHtml(truncateName(s.name))}</span>
+                    </div>`;
+            }
+        });
+        if (matchingLogins.length) menuHtml += `</div>`;   // close .ff-swap-list
+        menuHtml += `<div class="ff-menu-divider"></div>`;
+
         // Standalone "AI Fill" option at the very top (independent of profiles)
         // === Tools group (page utilities) - shown first ===
-        let menuHtml = `<div class="ff-menu-header">Tools</div>`;
+        menuHtml += `<div class="ff-menu-header">Tools</div>`;
         menuHtml += `
             <div class="ff-menu-item ff-action" id="ff-menu-incognito" title="Open this page in a private window (clean session)">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="#94a3b8" style="flex-shrink:0;" aria-hidden="true"><path d="M2 11l1.5-5A2 2 0 0 1 5.4 4.6h13.2a2 2 0 0 1 1.9 1.4L22 11v1H2v-1zm6 2.5A2.5 2.5 0 1 0 8 18a2.5 2.5 0 0 0 0-4.5zm8 0a2.5 2.5 0 1 0 0 4.5 2.5 2.5 0 0 0 0-4.5z"/></svg>
@@ -5598,12 +5733,7 @@ function createFloatingButton() {
                     </div>
                 </div>`;
         }
-        menuHtml += `<div class="ff-menu-list" style="max-height: 400px; overflow-y: auto;">`;
-
-        const truncateName = (name) => {
-            if (!name) return '';
-            return name.length > 30 ? name.substring(0, 30) + '...' : name;
-        };
+        menuHtml += `<div class="ff-menu-list">`;
 
         const filteredProfiles = matchingProfiles.filter(p =>
             p.name.toLowerCase().includes(filter.toLowerCase()) ||

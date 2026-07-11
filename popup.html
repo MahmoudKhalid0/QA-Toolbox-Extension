@@ -1506,7 +1506,7 @@
 
         <div class="tab-bar">
             <button class="tab-btn active" data-tab="profiles">
-                <i class="fas fa-keyboard"></i> Form Filler
+                <i class="fas fa-keyboard"></i>Filler
             </button>
             <button class="tab-btn" data-tab="tools">
                 <i class="fas fa-toolbox"></i> Tools
@@ -1518,6 +1518,9 @@
             <button class="tab-btn" data-tab="mail">
                 <i class="fas fa-envelope"></i> Mail
                 <span id="mailTabBadge" class="dbg-tab-badge" style="display:none;"></span>
+            </button>
+            <button class="tab-btn" data-tab="sessions">
+                <i class="fas fa-user-group"></i> Sessions
             </button>
         </div>
 
@@ -1845,6 +1848,104 @@
                     <div class="tm-empty"><div class="tm-spinner"></div>Waiting for emails…</div>
                 </div>
             </div>
+
+            <!-- Session Isolation tab: run two logged-in users in one window -->
+            <div class="tab-page hidden" id="tab-sessions">
+                <style>
+                    #tab-sessions { --se-accent: #6366f1; }
+                    #tab-sessions .se-intro { font-size: 12px; color: #94a3b8; line-height: 1.6; margin: 2px 2px 12px; }
+                    #tab-sessions .se-note { display: flex; gap: 8px; background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 10px; padding: 9px 11px; font-size: 11px; color: #fcd34d; line-height: 1.5; margin-bottom: 14px; }
+                    #tab-sessions .se-note i { margin-top: 1px; }
+                    #tab-sessions .se-url-row { margin-bottom: 12px; }
+                    #tab-sessions .se-url-label { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: #94a3b8; margin-bottom: 6px; }
+                    #tab-sessions #se-url { width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; color: #fff; padding: 10px 12px; font-size: 13px; outline: none; direction: ltr; }
+                    #tab-sessions #se-url:focus { border-color: #6366f1; }
+                    #tab-sessions .se-row { display: flex; gap: 8px; margin-bottom: 12px; }
+                    #tab-sessions #se-name { flex: 1; min-width: 0; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; color: #fff; padding: 9px 12px; font-size: 13px; outline: none; }
+                    #tab-sessions .se-add { border: none; border-radius: 10px; padding: 9px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: #fff; background: linear-gradient(135deg, #6366f1, #8b5cf6); white-space: nowrap; }
+                    #tab-sessions .se-add:hover { filter: brightness(1.1); }
+                    #tab-sessions .se-list { display: flex; flex-direction: column; gap: 10px; }
+                    #tab-sessions .se-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px 13px; }
+                    #tab-sessions .se-card-top { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+                    #tab-sessions .se-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+                    #tab-sessions .se-cname { font-size: 13.5px; font-weight: 700; color: #fff; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                    #tab-sessions .se-count { font-size: 10.5px; color: #64748b; flex-shrink: 0; }
+                    #tab-sessions .se-del { background: rgba(255,255,255,0.06); border: none; color: #94a3b8; width: 26px; height: 26px; border-radius: 7px; cursor: pointer; flex-shrink: 0; }
+                    #tab-sessions .se-del:hover { background: rgba(239,68,68,0.4); color: #fff; }
+                    #tab-sessions .se-actions { display: flex; gap: 7px; }
+                    #tab-sessions .se-btn { flex: 1; border: none; border-radius: 9px; padding: 8px; font-size: 11.5px; font-weight: 600; cursor: pointer; color: #cbd5e1; background: rgba(255,255,255,0.07); display: flex; align-items: center; justify-content: center; gap: 6px; }
+                    #tab-sessions .se-btn:hover { background: rgba(99,102,241,0.35); color: #fff; }
+                    #tab-sessions .se-btn.primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; }
+                    #tab-sessions .se-empty { text-align: center; color: #64748b; padding: 26px 12px; font-size: 13px; }
+                    #tab-sessions .se-empty i { font-size: 28px; opacity: .5; display: block; margin-bottom: 10px; }
+
+                    /* ── Quick login switch (Snapshot & Swap) ── */
+                    #tab-sessions .sw-site { font-size: 11px; color: #64748b; margin: 0 2px 10px; word-break: break-all; }
+                    #tab-sessions .sw-site b { color: #a5b4fc; font-weight: 700; }
+                    #tab-sessions .sw-save { width: 100%; box-sizing: border-box; border: none; border-radius: 11px; padding: 11px; font-size: 13px; font-weight: 700; cursor: pointer; color: #fff; background: linear-gradient(135deg, #10b981, #059669); display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 12px; }
+                    #tab-sessions .sw-save:hover { filter: brightness(1.08); }
+                    #tab-sessions .sw-save:disabled { opacity: .5; cursor: not-allowed; }
+                    #tab-sessions .sw-list { display: flex; flex-direction: column; gap: 8px; }
+                    #tab-sessions .sw-card { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 10px 12px; }
+                    #tab-sessions .sw-ico { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #10b981, #059669); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 13px; flex-shrink: 0; }
+                    #tab-sessions .sw-meta { flex: 1; min-width: 0; }
+                    #tab-sessions .sw-name { font-size: 13px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                    #tab-sessions .sw-sub { font-size: 10.5px; color: #64748b; }
+                    #tab-sessions .sw-go { border: none; border-radius: 8px; padding: 7px 13px; font-size: 12px; font-weight: 700; cursor: pointer; color: #fff; background: linear-gradient(135deg, #6366f1, #8b5cf6); flex-shrink: 0; }
+                    #tab-sessions .sw-go:hover { filter: brightness(1.1); }
+                    #tab-sessions .sw-card.sw-current { border-color: rgba(16,185,129,0.4); background: rgba(16,185,129,0.06); }
+                    #tab-sessions .sw-badge { flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: .5px; color: #10b981; background: rgba(16,185,129,0.15); padding: 5px 11px; border-radius: 20px; }
+                    #tab-sessions .sw-x { background: rgba(255,255,255,0.06); border: none; color: #94a3b8; width: 28px; height: 28px; border-radius: 7px; cursor: pointer; flex-shrink: 0; }
+                    #tab-sessions .sw-x:hover { background: rgba(239,68,68,0.4); color: #fff; }
+                    #tab-sessions .sw-empty { text-align: center; color: #64748b; padding: 18px 12px; font-size: 12px; }
+                    #tab-sessions .sw-tip { display: flex; gap: 8px; background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.25); border-radius: 10px; padding: 9px 11px; font-size: 11px; color: #6ee7b7; line-height: 1.5; margin: 12px 0; }
+                    #tab-sessions .sw-tip i { margin-top: 1px; }
+
+                    /* ── custom prompt (replaces the browser's window.prompt) ── */
+                    #tab-sessions .sw-modal { position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; background: rgba(2,6,23,0.66); backdrop-filter: blur(2px); }
+                    #tab-sessions .sw-modal.show { display: flex; }
+                    #tab-sessions .sw-modal-box { width: 86%; max-width: 300px; background: #131a2b; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 18px; box-shadow: 0 20px 50px rgba(0,0,0,0.55); }
+                    #tab-sessions .sw-modal-title { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 14px; }
+                    #tab-sessions .sw-modal-title .sw-modal-ic { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, #10b981, #059669); display: flex; align-items: center; justify-content: center; font-size: 13px; }
+                    #tab-sessions .sw-modal-input { width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; color: #fff; padding: 11px 12px; font-size: 13.5px; outline: none; margin-bottom: 16px; }
+                    #tab-sessions .sw-modal-input:focus { border-color: #10b981; }
+                    #tab-sessions .sw-modal-actions { display: flex; gap: 9px; justify-content: flex-end; }
+                    #tab-sessions .sw-modal-btn { border: none; border-radius: 10px; padding: 9px 18px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+                    #tab-sessions .sw-modal-cancel { background: rgba(255,255,255,0.08); color: #cbd5e1; }
+                    #tab-sessions .sw-modal-cancel:hover { background: rgba(255,255,255,0.14); }
+                    #tab-sessions .sw-modal-ok { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
+                    #tab-sessions .sw-modal-ok:hover { filter: brightness(1.08); }
+                    #tab-sessions .se-divider { display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #64748b; font-size: 10.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
+                    #tab-sessions .se-divider::before, #tab-sessions .se-divider::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.1); }
+                    #tab-sessions .se-adv { border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; overflow: hidden; }
+                    #tab-sessions .se-adv-head { display: flex; align-items: center; gap: 9px; padding: 12px 13px; cursor: pointer; user-select: none; color: #cbd5e1; font-size: 12.5px; font-weight: 600; }
+                    #tab-sessions .se-adv-head i.fa-chevron-down { margin-left: auto; transition: transform .2s; font-size: 11px; color: #64748b; }
+                    #tab-sessions .se-adv.open .se-adv-head i.fa-chevron-down { transform: rotate(180deg); }
+                    #tab-sessions .se-adv-body { display: none; padding: 0 13px 13px; }
+                    #tab-sessions .se-adv.open .se-adv-body { display: block; }
+                </style>
+
+                <!-- ── PRIMARY: Quick login switch (no debugger) ── -->
+                <div class="se-intro" style="margin-bottom:8px;">Save each user's login once, then switch between them in one click &mdash; no retyping username/password, no "being debugged" bar.</div>
+                <div class="sw-site" id="sw-site">Current site: <b>&mdash;</b></div>
+                <button class="sw-save" id="sw-save"><i class="fas fa-floppy-disk"></i> Save current login</button>
+                <div id="sw-list" class="sw-list">
+                    <div class="sw-empty">No saved logins for this site yet.</div>
+                </div>
+                <div class="sw-tip"><i class="fas fa-lightbulb"></i><span>Tip: switch without opening this popup &mdash; open the extension's floating button on the page &rarr; <b>Switch login</b>.</span></div>
+
+                <!-- custom prompt for naming a saved login -->
+                <div class="sw-modal" id="sw-modal">
+                    <div class="sw-modal-box">
+                        <div class="sw-modal-title"><span class="sw-modal-ic"><i class="fas fa-floppy-disk"></i></span><span id="sw-modal-title">Save this login as</span></div>
+                        <input type="text" id="sw-modal-input" class="sw-modal-input" placeholder="e.g. Admin" autocomplete="off">
+                        <div class="sw-modal-actions">
+                            <button class="sw-modal-btn sw-modal-cancel" id="sw-modal-cancel">Cancel</button>
+                            <button class="sw-modal-btn sw-modal-ok" id="sw-modal-ok">Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1909,6 +2010,7 @@
     <script src="db.js"></script>
     <script src="popup.js"></script>
     <script src="tempmail.js"></script>
+    <script src="sessions.js"></script>
 </body>
 
 </html>

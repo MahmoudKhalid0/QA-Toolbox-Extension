@@ -19,7 +19,9 @@
         "contextMenus",
         "desktopCapture",
         "offscreen",
-        "unlimitedStorage"
+        "unlimitedStorage",
+        "debugger",
+        "tabGroups"
     ],
     "web_accessible_resources": [
         {
