@@ -205,7 +205,7 @@ function loadImage(src) {
 }
 
 async function stitchFullPage(data) {
-    const { screenshots, totalHeight, pageWidth, viewportHeight, contextDataUrl, elementX, elementY } = data;
+    const { screenshots, totalHeight, pageWidth, viewportHeight, viewportWidth, contextDataUrl, elementX, elementY } = data;
     console.log('Offscreen: Stitching', screenshots.length, 'screenshots');
 
     try {
@@ -221,33 +221,72 @@ async function stitchFullPage(data) {
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        let maxYReached = 0;
+        // A page wider than one viewport was captured as several horizontal
+        // tiles (full-page.js), each carrying its own scrollX. Group by that
+        // first - a normal page (the common case) is just one column at
+        // scrollX 0, and behaves exactly as the single-column stitch always did.
+        const columns = new Map();
+        for (const s of screenshots) {
+            const key = s.scrollX || 0;
+            if (!columns.has(key)) columns.set(key, []);
+            columns.get(key).push(s);
+        }
+        const colWidth = viewportWidth || pageWidth;
+        const sortedX = [...columns.keys()].sort((a, b) => a - b);
 
-        for (let i = 0; i < screenshots.length; i++) {
-            const screenshot = screenshots[i];
-            const img = await loadImage(screenshot.dataUrl);
-            const scrollY = screenshot.scrollY;
+        let maxXReached = 0;
+        for (let ci = 0; ci < sortedX.length; ci++) {
+            const scrollX = sortedX[ci];
+            const colShots = columns.get(scrollX);
 
-            if (i === 0) {
-                // First slice: Draw everything
-                ctx.drawImage(img, 0, 0);
-                maxYReached = viewportHeight;
-            } else {
-                // Subsequent slices: Only draw the "new" pixels to avoid overwriting
-                // fixed elements (like sidebar/header) that were hidden in this slice.
-                if (scrollY + viewportHeight > maxYReached) {
+            // Stitch this column's own rows in isolation first - identical
+            // top-to-bottom dedup logic the single-column case always used.
+            const colCanvas = document.createElement('canvas');
+            colCanvas.width = colWidth;
+            colCanvas.height = totalHeight;
+            const colCtx = colCanvas.getContext('2d');
+            colCtx.fillStyle = '#ffffff';
+            colCtx.fillRect(0, 0, colCanvas.width, colCanvas.height);
+
+            let maxYReached = 0;
+            for (let i = 0; i < colShots.length; i++) {
+                const img = await loadImage(colShots[i].dataUrl);
+                const scrollY = colShots[i].scrollY;
+
+                if (i === 0) {
+                    // First slice: Draw everything
+                    colCtx.drawImage(img, 0, 0);
+                    maxYReached = viewportHeight;
+                } else if (scrollY + viewportHeight > maxYReached) {
+                    // Subsequent slices: Only draw the "new" pixels to avoid overwriting
+                    // fixed elements (like sidebar/header) that were hidden in this slice.
                     const newPixelsHeight = (scrollY + viewportHeight) - maxYReached;
                     const sourceY = viewportHeight - newPixelsHeight;
-
-                    // Draw only the bottom portion that hasn't been covered yet
-                    ctx.drawImage(
+                    colCtx.drawImage(
                         img,
-                        0, sourceY, pageWidth, newPixelsHeight, // Source rect
-                        0, maxYReached, pageWidth, newPixelsHeight // Dest rect
+                        0, sourceY, colWidth, newPixelsHeight,
+                        0, maxYReached, colWidth, newPixelsHeight
                     );
-
                     maxYReached = scrollY + viewportHeight;
                 }
+            }
+
+            // Composite this finished column onto the full page canvas - the
+            // last column is clamped to the page's right edge and can overlap
+            // the one before it, same reasoning as the row overlap above, so
+            // only pixels further right than what's already been drawn count.
+            if (ci === 0) {
+                ctx.drawImage(colCanvas, scrollX, 0);
+                maxXReached = scrollX + colWidth;
+            } else if (scrollX + colWidth > maxXReached) {
+                const newPixelsWidth = (scrollX + colWidth) - maxXReached;
+                const sourceX = colWidth - newPixelsWidth;
+                ctx.drawImage(
+                    colCanvas,
+                    sourceX, 0, newPixelsWidth, totalHeight,
+                    maxXReached, 0, newPixelsWidth, totalHeight
+                );
+                maxXReached = scrollX + colWidth;
             }
         }
 

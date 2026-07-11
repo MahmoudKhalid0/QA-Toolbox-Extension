@@ -146,13 +146,23 @@
         // while its own content scrolls internally, so its box stays valid
         // for every slice and is used to crop each one down before stitching.
 
+        let viewportWidth;
         if (isWindow) {
             totalHeight = Math.max(
                 document.documentElement.scrollHeight,
                 document.body.scrollHeight
             );
             viewportHeight = window.innerHeight;
-            totalWidth = window.innerWidth;
+            viewportWidth = window.innerWidth;
+            // A page wider than the viewport (a table, a fixed-width layout)
+            // used to just get cropped to viewportWidth - competing tools
+            // capture the page's real full width, scrolling sideways the
+            // same way this already scrolls down.
+            totalWidth = Math.max(
+                document.documentElement.scrollWidth,
+                document.body.scrollWidth,
+                viewportWidth
+            );
             originalScrollY = window.scrollY;
             originalScrollX = window.scrollX;
         } else {
@@ -160,6 +170,7 @@
             totalHeight = scroller.scrollHeight;
             viewportHeight = elementRect.height;
             totalWidth = elementRect.width;
+            viewportWidth = elementRect.width;
             originalScrollY = scroller.scrollTop;
             originalScrollX = scroller.scrollLeft;
         }
@@ -187,87 +198,103 @@
         }
 
         const screenshots = [];
-        let currentY = 0;
         let captureCount = 0;
         const hiddenElements = [];
 
-        // 3. Capture Loop
-        while (currentY < totalHeight) {
-            const percent = Math.min(100, Math.round((currentY / totalHeight) * 100));
-            // Send progress to popup
-            chrome.runtime.sendMessage({ action: 'fullPageProgress', percent, status: 'Capturing...' });
+        // A scrollbar (native or custom) is just more pixels on screen as far
+        // as captureVisibleTab is concerned, so it gets baked into whichever
+        // slice happens to be showing it - and once slices land at different
+        // X/Y offsets in the final stitch, that bar shows up as a stray line
+        // wherever it was captured, not just at the true edge of the page.
+        // Hiding scrollbar RENDERING (not disabling scroll - horizontal
+        // tiling below still needs to actually scroll sideways) via injected
+        // CSS keeps every slice clean without touching layout or scroll range.
+        const scrollbarHideStyle = document.createElement('style');
+        scrollbarHideStyle.textContent = `
+            *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+        `;
+        document.documentElement.appendChild(scrollbarHideStyle);
 
-            // Scroll
-            if (isWindow) {
-                window.scrollTo(0, currentY);
-            } else {
-                scroller.scrollTop = currentY;
-            }
+        const numXTiles = isWindow ? Math.max(1, Math.ceil(totalWidth / viewportWidth)) : 1;
 
-            // Wait for render/lazy-load
-            await new Promise(r => setTimeout(r, 600));
+        // One column at a time: scroll down, capturing every row, at whatever
+        // X offset the caller has already scrolled to. Identical to the
+        // original single-column loop, just reusable per horizontal tile.
+        async function captureColumn(scrollXPx) {
+            let currentY = 0;
+            for (; ;) {
+                const percent = Math.min(100, Math.round(((scrollXPx / Math.max(1, totalWidth)) + (currentY / totalHeight) / numXTiles) * 100));
+                chrome.runtime.sendMessage({ action: 'fullPageProgress', percent, status: 'Capturing...' });
 
-            // Capture
-            try {
-                // No need to hide anything on page now as the progress UI is in the popup
+                if (isWindow) window.scrollTo(scrollXPx, currentY);
+                else scroller.scrollTop = currentY;
 
-                let dataUrl = await requestViewportCapture();
+                // Wait for render/lazy-load
+                await new Promise(r => setTimeout(r, 600));
 
-                // A modal doesn't move on screen while its own content scrolls -
-                // crop every slice down to its box before it ever reaches the
-                // stitching step, which otherwise has no way to tell "this PNG
-                // is the whole tab" from "this PNG is just the scrolled element".
-                if (!isWindow) {
-                    dataUrl = await cropDataUrl(dataUrl, elementRect);
-                }
+                try {
+                    let dataUrl = await requestViewportCapture();
 
-                // LOGIC: If this was the FIRST capture, hide fixed/sticky elements so they don't repeat
-                if (captureCount === 0) {
-                    try {
-                        const elementsToHide = document.querySelectorAll('*');
-                        for (const el of elementsToHide) {
-                            // Never hide the scroller itself or anything containing
-                            // it - a modal (and its wrapper chain) is almost always
-                            // position:fixed, and hiding it would blank out every
-                            // capture from here on.
-                            if (!isWindow && el.contains(scroller)) continue;
-                            const style = window.getComputedStyle(el);
-                            // Hide fixed/sticky elements to prevent duplication in subsequent slices
-                            if (style.position === 'fixed' || style.position === 'sticky') {
-                                hiddenElements.push({
-                                    element: el,
-                                    originalOpacity: el.style.opacity,
-                                    originalVisibility: el.style.visibility
-                                });
-                                el.style.opacity = '0';
-                                el.style.visibility = 'hidden';
-                            }
-                        }
-                    } catch (e) {
-                        console.error('Error hiding elements:', e);
+                    // A modal doesn't move on screen while its own content scrolls -
+                    // crop every slice down to its box before it ever reaches the
+                    // stitching step, which otherwise has no way to tell "this PNG
+                    // is the whole tab" from "this PNG is just the scrolled element".
+                    if (!isWindow) {
+                        dataUrl = await cropDataUrl(dataUrl, elementRect);
                     }
+
+                    // Hide fixed/sticky elements once, on the very first capture of
+                    // the whole grid - they don't move for any row OR column, so
+                    // every later slice (in every column) needs them gone too.
+                    if (captureCount === 0) {
+                        try {
+                            const elementsToHide = document.querySelectorAll('*');
+                            for (const el of elementsToHide) {
+                                // Never hide the scroller itself or anything containing
+                                // it - a modal (and its wrapper chain) is almost always
+                                // position:fixed, and hiding it would blank out every
+                                // capture from here on.
+                                if (!isWindow && el.contains(scroller)) continue;
+                                const style = window.getComputedStyle(el);
+                                if (style.position === 'fixed' || style.position === 'sticky') {
+                                    hiddenElements.push({
+                                        element: el,
+                                        originalOpacity: el.style.opacity,
+                                        originalVisibility: el.style.visibility
+                                    });
+                                    el.style.opacity = '0';
+                                    el.style.visibility = 'hidden';
+                                }
+                            }
+                        } catch (e) {
+                            console.error('Error hiding elements:', e);
+                        }
+                    }
+
+                    screenshots.push({ dataUrl, scrollX: Math.round(scrollXPx * dpr), scrollY: Math.round(currentY * dpr) });
+                    captureCount++;
+                } catch (err) {
+                    console.error('Capture chunk error:', err);
+                    throw err;
                 }
 
-                screenshots.push({ dataUrl, scrollY: Math.round(currentY * dpr) });
-                captureCount++;
-            } catch (err) {
-                console.error('Capture chunk error:', err);
-                throw err; // Stop if we can't capture
+                const nextY = currentY + viewportHeight;
+                if (nextY >= totalHeight) break;
+
+                const prevY = currentY;
+                currentY = Math.min(nextY, totalHeight - viewportHeight);
+                if (currentY < 0) currentY = 0;
+                if (currentY === prevY) break; // didn't actually move (e.g. already at bottom)
+
+                if (captureCount > 80) break; // safety break across the whole grid
             }
+        }
 
-            // Increment scroll
-            const nextY = currentY + viewportHeight;
-            if (nextY >= totalHeight) break; // Finished
-
-            // If we are about to overscroll, adjust to capture the exact bottom
-            currentY = Math.min(nextY, totalHeight - viewportHeight);
-            if (currentY < 0) currentY = 0;
-
-            // Special exit: if we didn't actually move (e.g. at bottom), break
-            if (captureCount > 0 && currentY === Math.round(screenshots[screenshots.length - 1].scrollY / dpr)) break;
-
-            // Safety Break
-            if (captureCount > 50) break;
+        // 3. Capture Loop - one pass per horizontal tile, each a full vertical scan.
+        for (let xi = 0; xi < numXTiles; xi++) {
+            const currentX = numXTiles === 1 ? 0 : Math.min(xi * viewportWidth, totalWidth - viewportWidth);
+            await captureColumn(currentX);
+            if (captureCount > 80) break;
         }
 
         // Send final progress
@@ -279,6 +306,9 @@
             item.element.style.opacity = item.originalOpacity;
             item.element.style.visibility = item.originalVisibility;
         }
+
+        // Restore scrollbar rendering
+        scrollbarHideStyle.remove();
 
         // Restore Scroll
         if (isWindow) window.scrollTo(originalScrollX, originalScrollY);
@@ -293,6 +323,7 @@
             screenshots: screenshots,
             totalHeight: Math.round(totalHeight * dpr),
             viewportHeight: Math.round(viewportHeight * dpr),
+            viewportWidth: Math.round(viewportWidth * dpr),
             pageWidth: Math.round(totalWidth * dpr),
             // Present only for a modal/overlay capture - offscreen.js composites
             // the finished modal image onto this at (elementX, elementY) so the
