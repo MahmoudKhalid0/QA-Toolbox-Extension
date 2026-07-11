@@ -454,7 +454,8 @@ export async function jiraCreateFields(cfg, projectKey, issueTypeId) {
                 autoCompleteUrl: f.autoCompleteUrl || '',
                 // Jira only inlines allowedValues for some fields; the rest hand
                 // you an autoCompleteUrl and expect you to ask.
-                options: (f.allowedValues || []).map(jiraOption)
+                options: (f.allowedValues || []).map(jiraOption),
+                defaultValue: f.hasDefaultValue ? f.defaultValue : undefined
             };
         });
 }

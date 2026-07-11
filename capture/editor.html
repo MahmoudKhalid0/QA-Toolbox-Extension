@@ -136,7 +136,7 @@
                     <span class="ai-hint" id="aiHint">Claude looks at the screenshot and the recorded logs, then fills the fields below.</span>
                 </div>
 
-                <div class="form-group">
+                <div class="form-group full-row">
                     <label for="bugTitle" class="required">Bug Title</label>
                     <input type="text" id="bugTitle" placeholder="What happened?">
                 </div>
@@ -145,7 +145,7 @@
                      description: it answers "what does this bug touch?" -->
                 <div id="jiraTopFields" class="jira-only" style="display:none;"></div>
 
-                <div class="form-group">
+                <div class="form-group full-row">
                     <label>Description & Repro Steps</label>
                     <div class="rich-text-container">
                         <div class="rich-text-toolbar">
@@ -186,6 +186,18 @@
                         </div>
                         <div id="bugDescription" contenteditable="true"
                              data-placeholder="Describe the bug. Paste or drop screenshots straight in."></div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Attachments</label>
+                    <div class="file-upload-container">
+                        <label for="bugAttachments" class="file-upload-label">
+                            <i class="fas fa-cloud-upload-alt"></i> Choose Files
+                        </label>
+                        <input type="file" id="bugAttachments" multiple accept="image/*,video/*" style="display: none;">
+                        <span class="file-upload-hint">or press Ctrl+V to paste a screenshot</span>
+                        <div id="bugAttachmentList" class="file-list"></div>
                     </div>
                 </div>
 
@@ -258,18 +270,10 @@
                     <input type="hidden" id="bugParent">
                 </div>
 
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="bugArea">Area Path</label>
-                        <input type="text" id="bugArea" readonly
-                            placeholder="Field is auto-filled when a parent is selected">
-                    </div>
-                    <div class="form-group">
-                        <label for="bugIteration">Iteration Path</label>
-                        <input type="text" id="bugIteration" readonly
-                            placeholder="Field is auto-filled when a parent is selected">
-                    </div>
-                </div>
+                <!-- Read-only, computed the instant a Parent Work Item is picked -
+                     nothing for the user to do here, so nothing to show them. -->
+                <input type="hidden" id="bugArea">
+                <input type="hidden" id="bugIteration">
 
                 <div class="form-group">
                     <label for="bugTags">Tags</label>
@@ -279,18 +283,6 @@
                         <div id="bugTagsResults" class="multi-select-content"></div>
                     </div>
                     <input type="hidden" id="bugTags">
-                </div>
-
-                <div class="form-group">
-                    <label>Attachments</label>
-                    <div class="file-upload-container">
-                        <label for="bugAttachments" class="file-upload-label">
-                            <i class="fas fa-cloud-upload-alt"></i> Choose Files
-                        </label>
-                        <input type="file" id="bugAttachments" multiple accept="image/*,video/*" style="display: none;">
-                        <span class="file-upload-hint">or press Ctrl+V to paste a screenshot</span>
-                        <div id="bugAttachmentList" class="file-list"></div>
-                    </div>
                 </div>
 
                 <div id="dynamicFieldsContainer" class="azure-only"></div>

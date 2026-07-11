@@ -162,6 +162,67 @@ chrome.runtime.sendMessage({ action: 'syncStatus' }).then((meta) => {
 const viewHistoryBtn = document.getElementById('viewHistoryBtn');
 const reportBugBtn = document.getElementById('reportBugBtn');
 const bugModal = document.getElementById('bugModal');
+
+// ── Two-per-row layout: auto-adjust when a field disappears ────────────────
+// A field can vanish for reasons that have nothing to do with layout - a
+// project with no "Direct Manager" custom field, no "Stage" field, a target
+// switch between Azure/Jira. Whatever field is left alone in a pair (or in
+// the outer two-column flow) should take the full row instead of leaving a
+// dead gap next to it. Driven by a MutationObserver instead of hunting down
+// every place in this file that toggles a field's display, so it keeps
+// working even for visibility changes added later.
+function reflowFormRow(row) {
+    const kids = [...row.querySelectorAll(':scope > .form-group')]
+        .filter(g => g.style.display !== 'none' && getComputedStyle(g).display !== 'none');
+    if (kids.length === 1) kids[0].style.gridColumn = '1 / -1';
+    else kids.forEach(k => { k.style.gridColumn = ''; });
+}
+
+function reflowModalBody(body) {
+    const FULL_WIDTH_SELECTOR = '.form-row, .full-row, .ai-assist, #jiraTopFields, ' +
+        '#dynamicFieldsContainer, #jiraFieldsContainer, .add-field-section';
+    let pending = null;
+    for (const el of body.children) {
+        if (el.style.display === 'none' || getComputedStyle(el).display === 'none') continue;
+        if (el.matches(FULL_WIDTH_SELECTOR)) {
+            if (el.classList.contains('form-row')) reflowFormRow(el);
+            el.style.gridColumn = '1 / -1';
+            pending = null;
+            continue;
+        }
+        if (pending) {
+            pending.style.gridColumn = '';
+            el.style.gridColumn = '';
+            pending = null;
+        } else {
+            pending = el;
+        }
+    }
+    if (pending) pending.style.gridColumn = '1 / -1';
+}
+
+(() => {
+    const body = document.querySelector('#bugModal .modal-body');
+    if (!body) return;
+    const watch = { attributes: true, attributeFilter: ['style', 'class'], subtree: true };
+    let queued = false;
+    const observer = new MutationObserver(() => {
+        if (queued) return;
+        queued = true;
+        requestAnimationFrame(() => {
+            queued = false;
+            // reflowModalBody sets style.gridColumn itself, which would
+            // otherwise re-trigger this same observer forever. Stop
+            // watching for the duration of our own writes, same as any
+            // self-mutating observer needs to.
+            observer.disconnect();
+            reflowModalBody(body);
+            observer.observe(body, watch);
+        });
+    });
+    observer.observe(body, watch);
+    requestAnimationFrame(() => reflowModalBody(body));
+})();
 const submitBugBtn = document.getElementById('submitBugBtn');
 const cancelBugBtn = document.getElementById('cancelBugBtn');
 const bugTitle = document.getElementById('bugTitle');
@@ -2136,11 +2197,15 @@ function saveLastFormValues() {
     values.selectedManagers = Array.from(selectedManagers);
     values.selectedTags = Array.from(selectedTags);
 
-    // Save dynamic fields
+    // Save dynamic fields (Azure)
     values.dynamicFields = collectDynamicFields().map(df => {
         const fieldMeta = allAdoFields.find(f => f.referenceName === df.refName);
         return { refName: df.refName, value: df.value, fieldMeta };
     });
+
+    // Save dynamic fields (Jira) - defined inside the bugTarget closure,
+    // reached the same way window.bugTargetReady is.
+    if (window.collectJiraDynamicFields) values.jiraDynamicFields = window.collectJiraDynamicFields();
 
     chrome.storage.local.set({ "bug_form_last_values": values });
 }
@@ -2203,16 +2268,39 @@ async function loadLastFormValues() {
                                 activeDynamicFields.clear();
                                 values.dynamicFields.forEach(df => {
                                     if (df.fieldMeta) {
-                                        addDynamicField(df.fieldMeta, df.value);
+                                        addDynamicField(df.fieldMeta, df.value, !!df.fieldMeta.alwaysRequired);
                                     }
                                 });
                             }
+                            // The saved draft may predate a field Azure now
+                            // always requires - fill that in. An OPTIONAL
+                            // field missing from the draft was removed on
+                            // purpose (that's what removing it means), so
+                            // only required fields get backfilled here.
+                            autoRenderAdoFields(true);
 
                             isInitializing = false;
                         }, 2000); // Wait 2s for all ADO lists
                     } else {
                         isInitializing = false;
                     }
+                }
+            }, 100);
+        } else if (!isAzure) {
+            // Jira's project (and its fields) load on their own via
+            // bugTargetReady/fillJiraProjects - there is no org/project
+            // dance to drive here, just a wait for that render to land
+            // before applying the same draft restore Azure's fields get.
+            let attempts = 0;
+            const checkFields = setInterval(() => {
+                attempts++;
+                const ready = window.jiraFieldsReady && window.jiraFieldsReady();
+                if (ready || attempts > 50) {
+                    clearInterval(checkFields);
+                    if (ready && values.jiraDynamicFields && window.restoreJiraDynamicFields) {
+                        window.restoreJiraDynamicFields(values.jiraDynamicFields);
+                    }
+                    isInitializing = false;
                 }
             }, 100);
         } else {
@@ -2419,6 +2507,12 @@ bugProject.addEventListener('change', async () => {
         return;
     }
 
+    // Custom fields belong to one project's process, not the next one - a field
+    // left over from the previous project would otherwise sit in the form next
+    // to fields for a process it has nothing to do with.
+    dynamicFieldsContainer.innerHTML = '';
+    activeDynamicFields.clear();
+
     try {
         const settings = await new Promise(resolve => chrome.storage.sync.get(['azurePat'], resolve));
         const pat = (settings.azurePat || '').trim();
@@ -2574,6 +2668,10 @@ async function loadBugFieldOptions(org, project, authHeader) {
             if (dmGroup) dmGroup.style.display = 'none';
             if (dmLabel) dmLabel.classList.remove('required');
         }
+
+        // Everything Azure's own "New Bug" form would show renders on its own
+        // from here - not just what the user manually adds via "Add New Field".
+        autoRenderAdoFields();
 
     } catch (e) {
         console.error("Failed to load bug field options", e);
@@ -3246,9 +3344,13 @@ function renderAttachmentList() {
         item.className = 'file-item';
         item.innerHTML = `
             <i class="fas ${file.type.startsWith('image/') ? 'fa-file-image' : 'fa-file-video'}"></i>
-            <span title="${file.name}">${file.name}</span>
+            <span class="file-name-view" title="Click to preview - ${file.name}">${file.name}</span>
+            <i class="fas fa-eye view-file" title="Preview this file"></i>
             <span class="remove-file" data-index="${index}">&times;</span>
         `;
+        const preview = () => window.open(URL.createObjectURL(file), '_blank');
+        item.querySelector('.file-name-view').onclick = preview;
+        item.querySelector('.view-file').onclick = preview;
         item.querySelector('.remove-file').onclick = () => {
             selectedFiles.splice(index, 1);
             renderAttachmentList();
@@ -3308,11 +3410,10 @@ document.addEventListener('click', (e) => {
     }
 });
 
-function renderAddFieldMenu(query = '') {
-    fieldList.innerHTML = '';
-
-    // Fields we already have static or active
-    const staticFields = [
+// Fields we already have static UI for - never candidates for the dynamic
+// list, auto-rendered or manually added.
+function adoStaticFields() {
+    return [
         'System.Title', 'System.Description', 'System.AssignedTo', 'System.Tags',
         'Microsoft.VSTS.Common.Severity', 'System.AreaPath', 'System.IterationPath',
         'Microsoft.VSTS.TCM.ReproSteps', 'Custom.DirectManager', stageFieldReferenceName,
@@ -3320,42 +3421,85 @@ function renderAddFieldMenu(query = '') {
         'System.ChangedDate', 'System.CreatedBy', 'System.ChangedBy', 'System.AuthorizedDate',
         'System.AuthorizedAs', 'System.Rev', 'System.Watermark', 'System.IsDeleted',
         'System.Reason', 'System.BoardColumn', 'System.BoardColumnDone', 'System.BoardLane',
-        'System.CommentCount', 'System.TeamProject'
+        'System.CommentCount', 'System.TeamProject',
+        // Azure marks these alwaysRequired at the data-integrity level, but no
+        // real Azure Boards form ever shows them for editing - they're the
+        // numeric/GUID mirror of AreaPath/IterationPath (already handled above
+        // and auto-filled from the Parent Work Item), computed server-side.
+        // Showing them as blank required text boxes duplicated a field the
+        // form already fills in on its own.
+        'System.AreaId', 'System.IterationId',
+        // Locked by Azure's workflow rules until the bug actually reaches the
+        // Resolved state - every bug this app files starts at New, so the
+        // real Azure form always shows it disabled/empty here, never open
+        // for input the way an ordinary field is.
+        'Microsoft.VSTS.Common.ResolvedReason'
     ];
+}
+
+// Azure's fields endpoint lists every field on the work item type (created
+// date, watermark, board column...), with no flag saying "this is on the
+// New Bug form". Custom fields, a known set of standard fields Azure shows
+// by default, and a name-pattern heuristic approximate that - and anything
+// Azure itself marks alwaysRequired must be on the form by definition, so
+// it counts regardless of the heuristic.
+function isLikelyAdoUiField(f) {
+    if (f.readOnly) return false;
+    if (adoStaticFields().includes(f.referenceName)) return false;
+    if (f.alwaysRequired) return true;
+
+    const refName = f.referenceName;
+    const name = (f.name || '').toLowerCase();
+    const isCustomField = refName.startsWith('Custom.');
+
+    const standardUIFields = [
+        'Microsoft.VSTS.Common.Priority',
+        'Microsoft.VSTS.Common.Activity',
+        'Microsoft.VSTS.Scheduling.StoryPoints',
+        'Microsoft.VSTS.Common.ValueArea',
+        'Microsoft.VSTS.Common.Risk',
+        'Microsoft.VSTS.Scheduling.RemainingWork',
+        'Microsoft.VSTS.Scheduling.CompletedWork',
+        'Microsoft.VSTS.Scheduling.OriginalEstimate'
+    ];
+    if (standardUIFields.includes(refName)) return true;
+
+    // Heuristic for other VSTS fields: If it contains "Stage", "Cause", "Manager", "Source" in name
+    const isLikelyUIField = refName.startsWith('Microsoft.VSTS.') &&
+        (name.includes('stage') || name.includes('cause') || name.includes('manager') || name.includes('source'));
+
+    return isCustomField || isLikelyUIField;
+}
+
+// Renders every field Azure's own create-screen would plausibly show, the
+// same way fillJiraMeta now renders every Jira createmeta field - not just
+// the ones the user manually adds. Safe to call repeatedly: addDynamicField
+// already no-ops for fields that are already active.
+// requiredOnly is for backfilling onto a restored draft: a field the user
+// removed on purpose has no remove button to tell "removed" from "never
+// added" apart, so a missing OPTIONAL field must stay missing. A missing
+// REQUIRED field is unambiguous - the user could never have removed it (no
+// remove button exists for those) - so it means Azure started requiring
+// something new since the draft was saved, and belongs back on the form.
+function autoRenderAdoFields(requiredOnly = false) {
+    allAdoFields
+        .filter(f => !activeDynamicFields.has(f.referenceName) && isLikelyAdoUiField(f) && (!requiredOnly || f.alwaysRequired))
+        // Required fields first - a field you must fill in before scrolling
+        // past it beats finding it at the bottom after the optional ones.
+        .sort((a, b) => (b.alwaysRequired ? 1 : 0) - (a.alwaysRequired ? 1 : 0))
+        .forEach(f => addDynamicField(f, f.defaultValue != null ? String(f.defaultValue) : '', !!f.alwaysRequired));
+}
+
+function renderAddFieldMenu(query = '') {
+    fieldList.innerHTML = '';
 
     const availableFields = allAdoFields.filter(f => {
-        const refName = f.referenceName;
-        const name = (f.name || '').toLowerCase();
-
-        // Skip hidden or already active fields
-        if (staticFields.includes(refName)) return false;
-        if (activeDynamicFields.has(refName)) return false;
-        if (f.readOnly) return false;
-
-        // Highly Restrictive Filtering: Only show what's likely on the form
-        const isCustomField = refName.startsWith('Custom.');
-
-        // Common standard fields usually in the UI
-        const standardUIFields = [
-            'Microsoft.VSTS.Common.Priority',
-            'Microsoft.VSTS.Common.Activity',
-            'Microsoft.VSTS.Scheduling.StoryPoints',
-            'Microsoft.VSTS.Common.ValueArea',
-            'Microsoft.VSTS.Common.ResolvedReason',
-            'Microsoft.VSTS.Common.Risk',
-            'Microsoft.VSTS.Scheduling.RemainingWork',
-            'Microsoft.VSTS.Scheduling.CompletedWork',
-            'Microsoft.VSTS.Scheduling.OriginalEstimate'
-        ];
-
-        // Heuristic for other VSTS fields: If it contains "Stage", "Cause", "Manager", "Source" in name
-        const isLikelyUIField = refName.startsWith('Microsoft.VSTS.') &&
-            (name.includes('stage') || name.includes('cause') || name.includes('manager') || name.includes('source'));
-
-        if (!isCustomField && !standardUIFields.includes(refName) && !isLikelyUIField) return false;
+        if (activeDynamicFields.has(f.referenceName)) return false;
+        if (!isLikelyAdoUiField(f)) return false;
 
         // Filter by query
-        if (query && !name.includes(query) && !refName.toLowerCase().includes(query)) return false;
+        const name = (f.name || '').toLowerCase();
+        if (query && !name.includes(query) && !f.referenceName.toLowerCase().includes(query)) return false;
 
         return true;
     }).sort((a, b) => a.name.localeCompare(b.name));
@@ -3370,14 +3514,14 @@ function renderAddFieldMenu(query = '') {
         btn.className = 'field-item-btn';
         btn.innerHTML = `<strong>${f.name}</strong><small>${f.referenceName}</small>`;
         btn.onclick = () => {
-            addDynamicField(f);
+            addDynamicField(f, '', !!f.alwaysRequired);
             addFieldMenu.classList.remove('show');
         };
         fieldList.appendChild(btn);
     });
 }
 
-function addDynamicField(field, savedValue = '') {
+function addDynamicField(field, savedValue = '', required = false) {
     if (activeDynamicFields.has(field.referenceName)) return;
     activeDynamicFields.add(field.referenceName);
 
@@ -3409,21 +3553,24 @@ function addDynamicField(field, savedValue = '') {
 
     wrapper.innerHTML = `
         <div class="dynamic-field-header">
-            <label>${field.name}</label>
-            <button type="button" class="remove-field-btn" title="Remove Field">
+            <label>${field.name}${required ? ' <span style="color:var(--accent-red);">*</span>' : ''}</label>
+            ${required ? '' : `<button type="button" class="remove-field-btn" title="Remove Field">
                 <i class="fas fa-trash"></i>
-            </button>
+            </button>`}
         </div>
         <div class="form-group" style="margin-bottom: 0;">
             ${inputHtml}
         </div>
     `;
 
-    wrapper.querySelector('.remove-field-btn').onclick = () => {
-        activeDynamicFields.delete(field.referenceName);
-        wrapper.remove();
-        saveLastFormValues();
-    };
+    const removeBtn = wrapper.querySelector('.remove-field-btn');
+    if (removeBtn) {
+        removeBtn.onclick = () => {
+            activeDynamicFields.delete(field.referenceName);
+            wrapper.remove();
+            saveLastFormValues();
+        };
+    }
 
     // Add listener to save values on change
     const input = wrapper.querySelector('.dynamic-input');
@@ -3514,9 +3661,11 @@ submitBugBtn.addEventListener('click', async () => {
         selectedFiles = [];
         renderAttachmentList();
 
-        // Reset dynamic fields
+        // Reset dynamic fields, then bring back whatever Azure's form always
+        // shows so the next bug starts the same way this one did.
         dynamicFieldsContainer.innerHTML = '';
         activeDynamicFields.clear();
+        autoRenderAdoFields();
 
         // Save state
         saveLastFormValues();
@@ -4039,7 +4188,7 @@ ${bullets(r.actualResult)}`.trim();
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const escAttr = (v) => escHtml(v).replace(/"/g, '&quot;');
 
-    function makePicker(root, { options = [], multi = true, allowNew = false, lookup = null, eager = false }) {
+    function makePicker(root, { options = [], multi = true, allowNew = false, lookup = null, eager = false, onChange = null }) {
         const pills = root.querySelector('.tags-pills-container');
         const search = root.querySelector('input[type=text]');
         const results = root.querySelector('.multi-select-content');
@@ -4063,6 +4212,7 @@ ${bullets(r.actualResult)}`.trim();
             const i = chosen.findIndex(c => String(c.id) === id);
             if (i >= 0) chosen.splice(i, 1);
             sync();
+            if (onChange) onChange();
         });
 
         const pick = (opt) => {
@@ -4072,6 +4222,7 @@ ${bullets(r.actualResult)}`.trim();
             sync();
             if (multi) { search.focus(); paint(); }
             else { results.classList.remove('show'); }
+            if (onChange) onChange();
         };
 
         // mousedown, not click: it fires before the input's blur hides the list
@@ -4143,11 +4294,28 @@ ${bullets(r.actualResult)}`.trim();
                 const first = results.querySelector('.multi-select-item');
                 if (first) first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
             }
-            if (e.key === 'Backspace' && !search.value && chosen.length) { chosen.pop(); sync(); }
+            if (e.key === 'Backspace' && !search.value && chosen.length) {
+                chosen.pop();
+                sync();
+                if (onChange) onChange();
+            }
         });
 
         sync();
-        return { values: () => chosen.map(c => c.id) };
+        return {
+            values: () => chosen.map(c => c.id),
+            // Full {id,name} pairs, not just ids - restoring a pill after a
+            // reload needs the display name too, and the id alone can't
+            // reconstruct it without re-asking Jira.
+            chosenFull: () => chosen.map(c => ({ id: c.id, name: c.name })),
+            // Restoring a saved draft is not a user pick: it must not re-fire
+            // onChange (which would just save straight back what was loaded).
+            setInitial: (items) => {
+                chosen.length = 0;
+                if (items) chosen.push(...items);
+                sync();
+            }
+        };
     }
 
     // ── dynamic Jira fields ─────────────────────────────────────────────────
@@ -4156,6 +4324,7 @@ ${bullets(r.actualResult)}`.trim();
     let jiraFields = [];
     let jiraLinkTypeList = [];
     const jiraInputs = {};      // fieldId -> read()
+    const jiraPickers = {};     // fieldId -> { chosenFull(), setInitial() }, for list-valued fields only
 
     const LIST_KINDS = new Set(['option', 'user', 'version', 'component',
         'priority', 'resolution', 'issuetype', 'securitylevel', 'group', 'project']);
@@ -4208,9 +4377,11 @@ ${bullets(r.actualResult)}`.trim();
                 ? jiraLinkTypeList.map(t => `<option value="${escAttr(t.id)}">${escHtml(t.name)}</option>`).join('')
                 : '<option value="">No link types</option>';
 
-            const picker = makePicker(wrap, { options: [], multi: true, lookup: (q) => jiraIssuePicker(cfg.jira, q) });
+            const picker = makePicker(wrap, { options: [], multi: true, lookup: (q) => jiraIssuePicker(cfg.jira, q), onChange: saveLastFormValues });
             jiraInputs.issuelinks = () => picker.values();
             jiraInputs.__linkType = () => typeSel.value;
+            jiraPickers.issuelinks = picker;
+            typeSel.addEventListener('change', saveLastFormValues);
 
         } else if (hasList(f)) {
             wrap.innerHTML = fieldShell(f, pickerHtml(`Search ${f.name.toLowerCase()}...`));
@@ -4224,29 +4395,39 @@ ${bullets(r.actualResult)}`.trim();
                     ? (q) => jiraFieldOptions(cfg.jira, f, q, projSel.value)
                     : null,
                 // a list with no query and no remote source should still open
-                eager: f.options.length > 0
+                eager: f.options.length > 0,
+                onChange: saveLastFormValues
             });
             jiraInputs[f.id] = () => (f.array || allowNew) ? picker.values() : (picker.values()[0] || '');
+            jiraPickers[f.id] = picker;
 
         } else if (f.kind === 'date' || f.kind === 'datetime') {
-            wrap.innerHTML = fieldShell(f, '<input type="date" class="dynamic-input">');
+            const dv = typeof f.defaultValue === 'string' ? f.defaultValue : '';
+            wrap.innerHTML = fieldShell(f, `<input type="date" class="dynamic-input" value="${escAttr(dv)}">`);
             jiraInputs[f.id] = () => wrap.querySelector('input[type=date]').value;
+            wrap.querySelector('input[type=date]').addEventListener('change', saveLastFormValues);
 
         } else if (f.kind === 'number') {
-            wrap.innerHTML = fieldShell(f, '<input type="number" class="dynamic-input">');
+            const dv = (typeof f.defaultValue === 'number') ? f.defaultValue : '';
+            wrap.innerHTML = fieldShell(f, `<input type="number" class="dynamic-input" value="${escAttr(dv)}">`);
             jiraInputs[f.id] = () => wrap.querySelector('input[type=number]').value;
+            wrap.querySelector('input[type=number]').addEventListener('input', saveLastFormValues);
 
         } else {
-            wrap.innerHTML = fieldShell(f, `<input type="text" class="dynamic-input" placeholder="${escAttr(f.name)}">`);
+            const dv = typeof f.defaultValue === 'string' ? f.defaultValue : '';
+            wrap.innerHTML = fieldShell(f, `<input type="text" class="dynamic-input" placeholder="${escAttr(f.name)}" value="${escAttr(dv)}">`);
             jiraInputs[f.id] = () => wrap.querySelector('input[type=text]').value;
+            wrap.querySelector('input[type=text]').addEventListener('input', saveLastFormValues);
         }
 
         const rm = wrap.querySelector('.remove-field-btn');
         if (rm) rm.addEventListener('click', () => {
             delete jiraInputs[f.id];
+            delete jiraPickers[f.id];
             if (f.id === 'issuelinks') delete jiraInputs.__linkType;
             wrap.remove();
             paintFieldMenu();
+            saveLastFormValues();
         });
         paintFieldMenu();
     }
@@ -4277,10 +4458,67 @@ ${bullets(r.actualResult)}`.trim();
             btn.onclick = () => {
                 renderJiraField(f);
                 document.getElementById('jiraAddFieldMenu').classList.remove('show');
+                saveLastFormValues();
             };
             list.appendChild(btn);
         }
     }
+
+    // ── persistence, matching Azure's dynamic fields exactly ────────────────
+    // Everything currently rendered, in a shape draft-restore can act on:
+    // list-valued fields keep {id,name} pairs (a pill needs the name to
+    // redraw, and the id alone can't get it back without asking Jira again),
+    // everything else keeps its raw input value.
+    function collectJiraDynamicFields() {
+        return jiraFields.filter(f => jiraInputs[f.id]).map(f => {
+            if (jiraPickers[f.id]) {
+                const entry = { id: f.id, list: jiraPickers[f.id].chosenFull() };
+                if (f.id === 'issuelinks' && jiraInputs.__linkType) entry.linkType = jiraInputs.__linkType();
+                return entry;
+            }
+            return { id: f.id, value: jiraInputs[f.id]() };
+        });
+    }
+
+    // requiredOnly mirrors autoRenderAdoFields(true): a field missing from an
+    // OPTIONAL draft entry was removed on purpose (no remove button exists
+    // for a required one, so its absence can only mean Jira added it since).
+    function restoreJiraDynamicFields(saved) {
+        if (!saved || !saved.length) return;
+        const savedMap = new Map(saved.map(s => [s.id, s]));
+
+        for (const f of jiraFields) {
+            if (!f.required && jiraInputs[f.id] && !savedMap.has(f.id)) {
+                const wrap = document.querySelector(`.dynamic-field-wrapper[data-field-id="${CSS.escape(f.id)}"]`);
+                if (wrap) wrap.remove();
+                delete jiraInputs[f.id];
+                delete jiraPickers[f.id];
+                if (f.id === 'issuelinks') delete jiraInputs.__linkType;
+            }
+        }
+        paintFieldMenu();
+
+        for (const [id, s] of savedMap) {
+            if (!jiraInputs[id]) continue;   // removed above, or never on this project's create screen
+            if (jiraPickers[id]) {
+                jiraPickers[id].setInitial(s.list || []);
+                if (id === 'issuelinks' && s.linkType) {
+                    const typeSel = document.querySelector('#jiraTopFields .link-type');
+                    if (typeSel) typeSel.value = s.linkType;
+                }
+            } else {
+                const wrap = document.querySelector(`.dynamic-field-wrapper[data-field-id="${CSS.escape(id)}"]`);
+                const input = wrap && wrap.querySelector('.dynamic-input');
+                if (input) input.value = s.value != null ? s.value : '';
+            }
+        }
+    }
+
+    // loadLastFormValues() lives outside this closure and has no other way to
+    // reach jiraInputs/jiraFields - same reason window.bugTargetReady exists.
+    window.collectJiraDynamicFields = collectJiraDynamicFields;
+    window.restoreJiraDynamicFields = restoreJiraDynamicFields;
+    window.jiraFieldsReady = () => Object.keys(jiraInputs).length > 0;
 
     // The fields every Jira bug has, for when createmeta cannot tell us which
     // fields this project has. Their values are still fetched, never listed here.
@@ -4370,13 +4608,18 @@ ${bullets(r.actualResult)}`.trim();
         }
 
         // Linked Issues sits directly under the title; everything else follows
-        // the description.
+        // the description. Every field Jira's own create screen shows renders
+        // automatically - not just the required ones - so this form starts
+        // matching what a user would see creating the bug directly in Jira.
+        // Optional fields keep their remove button; required ones don't.
         const links = jiraFields.find(f => f.id === 'issuelinks');
         if (links) await renderJiraField(links);
 
-        for (const f of jiraFields.filter(f => f.required && f.id !== 'issuelinks')) await renderJiraField(f);
-        const pri = jiraFields.find(f => f.id === 'priority' && !f.required);
-        if (pri) await renderJiraField(pri);
+        // Required fields first - a field you must fill in before scrolling
+        // past it beats finding it at the bottom after the optional ones.
+        const rest = jiraFields.filter(f => f.id !== 'issuelinks')
+            .sort((a, b) => (b.required ? 1 : 0) - (a.required ? 1 : 0));
+        for (const f of rest) await renderJiraField(f);
         paintFieldMenu();
     }
 
