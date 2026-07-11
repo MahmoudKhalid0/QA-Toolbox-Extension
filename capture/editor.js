@@ -171,11 +171,29 @@ const bugModal = document.getElementById('bugModal');
 // dead gap next to it. Driven by a MutationObserver instead of hunting down
 // every place in this file that toggles a field's display, so it keeps
 // working even for visibility changes added later.
+// Walks a 2-column grid's direct children in order and pairs them up; a
+// child left alone at the end of a run (odd count, or the very last visible
+// item) spans both columns instead of leaving empty space beside it. Used
+// both for the modal's own top-level flow and, separately, for each dynamic
+// field container - a project can easily add/remove one custom field and
+// leave THAT list odd, same problem, same fix.
+function reflowPairs(children) {
+    let pending = null;
+    for (const el of children) {
+        if (el.style.display === 'none' || getComputedStyle(el).display === 'none') continue;
+        if (pending) {
+            pending.style.gridColumn = '';
+            el.style.gridColumn = '';
+            pending = null;
+        } else {
+            pending = el;
+        }
+    }
+    if (pending) pending.style.gridColumn = '1 / -1';
+}
+
 function reflowFormRow(row) {
-    const kids = [...row.querySelectorAll(':scope > .form-group')]
-        .filter(g => g.style.display !== 'none' && getComputedStyle(g).display !== 'none');
-    if (kids.length === 1) kids[0].style.gridColumn = '1 / -1';
-    else kids.forEach(k => { k.style.gridColumn = ''; });
+    reflowPairs(row.querySelectorAll(':scope > .form-group'));
 }
 
 function reflowModalBody(body) {
@@ -199,12 +217,24 @@ function reflowModalBody(body) {
         }
     }
     if (pending) pending.style.gridColumn = '1 / -1';
+
+    // Each dynamic-field container is its own 2-column grid (see editor.css)
+    // with however many fields this project/issue type happens to expose -
+    // an odd one out here needs the exact same treatment.
+    const dynamicFieldsContainer = document.getElementById('dynamicFieldsContainer');
+    const jiraFieldsContainer = document.getElementById('jiraFieldsContainer');
+    if (dynamicFieldsContainer) reflowPairs(dynamicFieldsContainer.querySelectorAll(':scope > .dynamic-field-wrapper'));
+    if (jiraFieldsContainer) reflowPairs(jiraFieldsContainer.querySelectorAll(':scope > .dynamic-field-wrapper'));
 }
 
 (() => {
     const body = document.querySelector('#bugModal .modal-body');
     if (!body) return;
-    const watch = { attributes: true, attributeFilter: ['style', 'class'], subtree: true };
+    // childList: a field being added or removed (addDynamicField,
+    // renderJiraField, the remove-field button) doesn't touch any style or
+    // class attribute by itself - without watching childList too, the very
+    // case this exists for (a project's field count changing) never fires it.
+    const watch = { attributes: true, attributeFilter: ['style', 'class'], childList: true, subtree: true };
     let queued = false;
     const observer = new MutationObserver(() => {
         if (queued) return;
