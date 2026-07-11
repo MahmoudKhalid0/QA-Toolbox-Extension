@@ -2755,6 +2755,13 @@ function qaOpenPanel(titleHtml, tool) {
     panel.querySelector('#qa-close').addEventListener('click', qaClosePanel);
     qaAddMinimize(panel, panel.querySelector('.qa-head'), panel.querySelector('#qa-close'));
 
+    // Canvas apps (Figma, Miro, maps, games) listen for wheel events on the
+    // window to zoom/pan their surface - which hijacks scrolling inside this
+    // panel, so the list won't move. Stopping the wheel event from bubbling
+    // out of the panel lets the panel body scroll normally while the app
+    // never sees it. (The panel's own default scroll still happens.)
+    panel.addEventListener('wheel', (e) => { e.stopPropagation(); }, false);
+
     // Drag the panel by its header
     (function makeDraggable() {
         const head = panel.querySelector('.qa-head');
@@ -3191,10 +3198,17 @@ function perfRender(body, m) {
 }
 
 // ---- Page Images (finds every <img> and inline <svg>, preview + download) ----
+// FontAwesome isn't loaded inside the page, so panel titles that want an icon
+// (rather than an emoji) inline the SVG - matching how the Measure tool does it.
+const QA_IMAGES_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
 async function runImagesFinder() {
-    const body = qaOpenPanel('&#128247; Page Images', 'images');
+    const body = qaOpenPanel(QA_IMAGES_ICON + '<span>Page Images</span>', 'images');
     const panelEl = body.closest('#qa-result-panel');
     if (panelEl) panelEl.style.width = '440px'; // a 2-column thumbnail grid needs more room than the 380px default
+    body.innerHTML = '<div class="qa-empty"><i class="fas fa-spinner fa-spin"></i> Scanning the page for images…</div>';
+    // Let the panel + spinner paint before the (potentially heavy) DOM scan
+    // runs, instead of freezing on a blank panel while it works.
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
     try {
         const items = collectPageImages();
         if (qaAborted()) return;
@@ -3206,35 +3220,112 @@ async function runImagesFinder() {
     }
 }
 
-// Same-origin dedup key per item - a URL for <img>, the serialized markup
-// for <svg> (two icons with identical paths but no src to compare by).
+// Every element on the page, descending THROUGH shadow roots (web components
+// - which a plain document.querySelectorAll('*') never sees into, and modern
+// apps put a lot of their real UI, images included, inside). Capped so a
+// huge app can't spin forever.
+function qaAllElementsDeep(root, out, budget) {
+    out = out || [];
+    budget = budget || { n: 0 };
+    const els = root.querySelectorAll('*');
+    for (const el of els) {
+        if (budget.n++ > 60000) return out; // safety ceiling for enormous pages
+        out.push(el);
+        if (el.shadowRoot) qaAllElementsDeep(el.shadowRoot, out, budget);
+    }
+    return out;
+}
+
+// Finds real images from every source the page can hold them in - not just
+// <img> and inline <svg>, but also <img srcset>/<picture> (via currentSrc),
+// CSS background-image (on any element), and <canvas> - across the light DOM
+// AND every shadow root. NOTE: pixels drawn to a WebGL/2D canvas by an app
+// like Figma's design surface don't live in the DOM as discrete images and
+// can't be enumerated this way; the canvas itself is captured as one image.
 function collectPageImages() {
     const seen = new Set();
     const items = [];
+    const MAX = 500; // more than any human wants to scroll; keeps the grid usable
 
-    document.querySelectorAll('img').forEach((el) => {
-        if (el.closest('#qa-result-panel')) return; // this panel's own thumbnails, not page content
-        const src = getImageSrcFromElement(el);
-        if (!src || seen.has(src)) return;
-        const w = el.naturalWidth || el.width || 0, h = el.naturalHeight || el.height || 0;
-        if (w > 0 && h > 0 && (w < 8 || h < 8)) return; // tracking pixels, not real images
-        seen.add(src);
-        // A data: URI has no filename tail worth showing - the raw base64
-        // dump is meaningless as a label either way.
-        const label = src.startsWith('data:') ? `data:${(src.split(';')[0].split(':')[1] || 'image')} (inline)` : src;
-        items.push({ kind: 'img', el, src, label, w, h });
-    });
+    const labelFor = (src) => src.startsWith('data:')
+        ? `data:${(src.split(';')[0].split(':')[1] || 'image')} (inline)`
+        : src;
 
-    document.querySelectorAll('svg').forEach((el) => {
-        if (el.closest('#qa-result-panel')) return; // this panel's own thumbnails, not page content
+    const all = qaAllElementsDeep(document);
+
+    for (const el of all) {
+        if (items.length >= MAX) break;
+        // Never re-collect this panel's own thumbnails (closest() stays within
+        // the panel's own light-DOM tree, so shadow images aren't affected).
+        if (el.closest && el.closest('#qa-result-panel')) continue;
+        const tag = el.tagName;
+
+        // 1. <img> (currentSrc already resolves srcset / <picture> for us)
+        if (tag === 'IMG') {
+            const src = el.currentSrc || el.src;
+            if (src && !seen.has(src)) {
+                const w = el.naturalWidth || el.width || 0, h = el.naturalHeight || el.height || 0;
+                if (!(w > 0 && h > 0 && (w < 8 || h < 8))) { // skip tracking pixels
+                    seen.add(src);
+                    items.push({ kind: 'img', el, src, label: labelFor(src), w, h });
+                }
+            }
+        }
+
+        // 2. <canvas> - snapshot whatever is currently drawn. But NOT an app's
+        // whole rendering surface: a design/whiteboard/game/map app (Figma,
+        // Miro, etc.) paints everything onto one viewport-filling canvas, and
+        // grabbing that is (a) one giant useless "whole page" image, not the
+        // individual pictures the user sees - those are painted pixels, not
+        // DOM images anything can enumerate - and (b) a slow, memory-heavy
+        // toDataURL. Skip canvases that essentially cover the viewport; keep
+        // the small ones (charts, avatars, signature pads).
+        if (tag === 'CANVAS' && el.width > 8 && el.height > 8) {
+            const coversViewport = el.width >= window.innerWidth * 0.8 && el.height >= window.innerHeight * 0.8;
+            const tooBig = el.width * el.height > 1400 * 1400;
+            if (!coversViewport && !tooBig) {
+                let src = null;
+                try { src = el.toDataURL('image/png'); } catch (e) { /* tainted */ }
+                if (src && !seen.has(src)) {
+                    seen.add(src);
+                    items.push({ kind: 'img', el, src, label: 'canvas (rendered)', w: el.width, h: el.height });
+                }
+            }
+        }
+
+        // 3. CSS background-image on ANY element (icons, hero images, sprites)
+        try {
+            const bg = getComputedStyle(el).backgroundImage;
+            if (bg && bg !== 'none' && bg.includes('url(')) {
+                const re = /url\(["']?(.*?)["']?\)/g;
+                let m;
+                while ((m = re.exec(bg)) && items.length < MAX) {
+                    const u = m[1];
+                    if (!u || u.startsWith('data:image/svg') || seen.has(u)) continue;
+                    seen.add(u);
+                    const r = el.getBoundingClientRect();
+                    items.push({ kind: 'img', el, src: u, label: labelFor(u), w: Math.round(r.width), h: Math.round(r.height) });
+                }
+            }
+        } catch (e) { /* getComputedStyle can throw on detached nodes */ }
+    }
+
+    // 4. Top-level inline <svg> (skip <svg> nested inside another svg - the
+    // outer one already serializes it). Done in a second pass so the item
+    // cap above doesn't starve them out before raster images are counted.
+    for (const el of all) {
+        if (items.length >= MAX) break;
+        if (el.tagName !== 'svg') continue; // SVG elements report lowercase tagName
+        if (el.closest && el.closest('#qa-result-panel')) continue;
+        if (el.parentNode && el.parentNode.closest && el.parentNode.closest('svg')) continue;
         const rect = el.getBoundingClientRect();
-        if (rect.width < 4 || rect.height < 4) return; // not actually rendered
+        if (rect.width < 4 || rect.height < 4) continue; // not actually rendered
         let xml;
-        try { xml = new XMLSerializer().serializeToString(el); } catch (e) { return; }
-        if (seen.has(xml)) return;
+        try { xml = new XMLSerializer().serializeToString(el); } catch (e) { continue; }
+        if (seen.has(xml)) continue;
         seen.add(xml);
         items.push({ kind: 'svg', el, xml, label: '<svg…>', w: Math.round(rect.width), h: Math.round(rect.height) });
-    });
+    }
 
     return items;
 }
