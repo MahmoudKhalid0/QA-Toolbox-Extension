@@ -117,6 +117,13 @@ const cancelCropBtn = document.getElementById('cancelCropBtn');
 const headerCropControls = document.getElementById('headerCropControls');
 const lineBtn = document.getElementById('lineBtn');
 const deleteBtn = document.getElementById('deleteBtn');
+const blurBtn = document.getElementById('blurBtn');
+const stepBtn = document.getElementById('stepBtn');
+const fillToggleBtn = document.getElementById('fillToggleBtn');
+const opacitySlider = document.getElementById('opacitySlider');
+const opacityValue = document.getElementById('opacityValue');
+const colorPalette = document.getElementById('colorPalette');
+const STEP_RADIUS = 14;
 const mainShapeBtn = document.getElementById('mainShapeBtn');
 const shapesGroup = document.getElementById('shapesGroup');
 
@@ -209,9 +216,17 @@ const assetSrc = (id) => (id == null ? null : assets[id]);
 // An Image element cannot be serialised, and its bytes live in `assets`.
 function snapshotObjects() {
     return objects.map((o) => {
-        if (o.type !== 'image') return o;
-        const { imgElement, imgData, ...rest } = o;
-        return { ...rest, asset: assetId(imgData) };
+        if (o.type === 'image') {
+            const { imgElement, imgData, ...rest } = o;
+            return { ...rest, asset: assetId(imgData) };
+        }
+        // The pixelation cache holds a live <canvas> - never belongs in history
+        // JSON. Losing it on undo/redo just costs one recompute, not a bug.
+        if (o.type === 'blur' && o._pixelCache) {
+            const { _pixelCache, ...rest } = o;
+            return rest;
+        }
+        return o;
     });
 }
 
@@ -393,6 +408,61 @@ function drawArrow(ctx, fromX, fromY, toX, toY, width) {
     ctx.restore();
 }
 
+// Mosaic redaction, not a gaussian blur: a blur can sometimes be reversed or
+// guessed at; shrinking to a handful of blocks and stretching back up throws
+// the underlying detail away outright, which is the point for a redact tool.
+//
+// Takes the object (not just x/y/w/h) so the expensive part - getImageData
+// plus building/downscaling two offscreen canvases - can be cached on it.
+// render() runs on every mousemove, and while the crop tool is active a
+// requestAnimationFrame loop calls it continuously for the marching-ants
+// animation, so recomputing this from scratch every frame is very noticeable
+// lag the moment a blur object exists anywhere on the canvas.
+function pixelateRegion(obj) {
+    const { x, y, width: w, height: h } = obj;
+    const x1 = Math.round(Math.min(x, x + w));
+    const y1 = Math.round(Math.min(y, y + h));
+    const rw = Math.round(Math.abs(w));
+    const rh = Math.round(Math.abs(h));
+    if (rw < 1 || rh < 1) return;
+
+    // Clamp to the canvas - getImageData throws on an out-of-bounds rect.
+    const cx = Math.max(0, x1), cy = Math.max(0, y1);
+    const cw = Math.min(rw - (cx - x1), canvas.width - cx);
+    const ch = Math.min(rh - (cy - y1), canvas.height - cy);
+    if (cw < 1 || ch < 1) return;
+
+    const cache = obj._pixelCache;
+    if (!cache || cache.cx !== cx || cache.cy !== cy || cache.cw !== cw || cache.ch !== ch) {
+        const blocks = 12;   // roughly this many mosaic tiles across the longer side
+        const tile = Math.max(1, Math.round(Math.max(cw, ch) / blocks));
+        const smallW = Math.max(1, Math.round(cw / tile));
+        const smallH = Math.max(1, Math.round(ch / tile));
+
+        const src = ctx.getImageData(cx, cy, cw, ch);
+        const small = document.createElement('canvas');
+        small.width = smallW; small.height = smallH;
+        const sctx = small.getContext('2d');
+        const full = document.createElement('canvas');
+        full.width = cw; full.height = ch;
+        full.getContext('2d').putImageData(src, 0, 0);
+        // A single big downscale (e.g. 180px -> 12px) does not properly area-average
+        // in Chromium without this - it lands closer to nearest-neighbor sampling,
+        // which can miss a color entirely instead of blending it into the tile.
+        sctx.imageSmoothingEnabled = true;
+        sctx.imageSmoothingQuality = 'high';
+        sctx.drawImage(full, 0, 0, cw, ch, 0, 0, smallW, smallH);
+
+        obj._pixelCache = { cx, cy, cw, ch, smallW, smallH, canvas: small };
+    }
+
+    const c = obj._pixelCache;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(c.canvas, 0, 0, c.smallW, c.smallH, c.cx, c.cy, c.cw, c.ch);
+    ctx.restore();
+}
+
 function showToast(message) {
     toast.textContent = message;
     toast.classList.add('show');
@@ -409,9 +479,11 @@ function render() {
         ctx.lineWidth = obj.lineWidth;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
+        ctx.globalAlpha = obj.opacity ?? 1;
 
         if (obj.type === 'rect') {
-            ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
+            if (obj.fill) ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
+            else ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
         } else if (obj.type === 'line') {
             ctx.beginPath();
             ctx.moveTo(obj.x, obj.y);
@@ -420,7 +492,21 @@ function render() {
         } else if (obj.type === 'circle') {
             ctx.beginPath();
             ctx.arc(obj.x, obj.y, obj.radius, 0, 2 * Math.PI);
-            ctx.stroke();
+            if (obj.fill) ctx.fill();
+            else ctx.stroke();
+        } else if (obj.type === 'blur') {
+            pixelateRegion(obj);
+        } else if (obj.type === 'step') {
+            ctx.beginPath();
+            ctx.arc(obj.x, obj.y, obj.radius, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = `700 ${Math.round(obj.radius * 1.1)}px 'Outfit', sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(obj.number), obj.x, obj.y + 1);
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
         } else if (obj.type === 'text') {
             ctx.font = `${obj.fontSize}px 'Outfit', sans-serif`;
             ctx.textBaseline = 'top';
@@ -444,6 +530,7 @@ function render() {
             ctx.drawImage(obj.imgElement, obj.x, obj.y, obj.width, obj.height);
         }
 
+        ctx.globalAlpha = 1;   // selection outline is always fully opaque, regardless of the object's own opacity
         if (obj.id === selectedObjectId) drawSelectionBounds(obj);
     });
 
@@ -473,6 +560,21 @@ function render() {
                 }
                 ctx.stroke();
             }
+        } else if (currentObject.type === 'blur') {
+            // Pixelating on every mousemove while dragging would be wasteful -
+            // a dashed outline is preview enough; the real effect commits on mouseup.
+            // Two strokes, same trick as the crop selection: a solid white
+            // contour is invisible over a white/light region of the image, so
+            // pair it with a dark dashed line - one of the two always contrasts.
+            ctx.save();
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(currentObject.x, currentObject.y, currentObject.width, currentObject.height);
+            ctx.strokeStyle = '#111';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(currentObject.x, currentObject.y, currentObject.width, currentObject.height);
+            ctx.restore();
         }
     }
 
@@ -539,7 +641,7 @@ function drawSelectionBounds(obj) {
     ctx.setLineDash([5, 5]);
 
     let x, y, w, h;
-    if (obj.type === 'rect' || obj.type === 'image') {
+    if (obj.type === 'rect' || obj.type === 'image' || obj.type === 'blur') {
         x = obj.x; y = obj.y; w = obj.width; h = obj.height;
         ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
         // Draw Handles
@@ -554,6 +656,11 @@ function drawSelectionBounds(obj) {
         ctx.stroke();
         // Draw Radius Handle
         drawHandle(obj.x + obj.radius, obj.y);
+    } else if (obj.type === 'step') {
+        // Fixed size, no resize handle - just move or delete.
+        ctx.beginPath();
+        ctx.arc(obj.x, obj.y, obj.radius + 3, 0, 2 * Math.PI);
+        ctx.stroke();
     } else if (obj.type === 'text') {
         x = obj.x; y = obj.y;
         ctx.font = `${obj.fontSize}px 'Outfit', sans-serif`;
@@ -767,8 +874,8 @@ function restoreBaseImage(src, callback) {
 }
 
 function setActiveBtn(btn) {
-    const shapeTools = [rectBtn, circleBtn, arrowBtn, pencilBtn, lineBtn];
-    [rectBtn, circleBtn, textBtn, arrowBtn, pencilBtn, lineBtn, cropBtn, uploadBtn].forEach(b => b && b.classList.remove('active'));
+    const shapeTools = [rectBtn, circleBtn, arrowBtn, pencilBtn, lineBtn, blurBtn, stepBtn];
+    [rectBtn, circleBtn, textBtn, arrowBtn, pencilBtn, lineBtn, cropBtn, uploadBtn, blurBtn, stepBtn].forEach(b => b && b.classList.remove('active'));
 
     if (btn) {
         btn.classList.add('active');
@@ -948,6 +1055,16 @@ pencilBtn.addEventListener('click', () => {
     lineWidthInput.value = 3;
 });
 
+blurBtn.addEventListener('click', () => {
+    currentTool = 'blur';
+    setActiveBtn(blurBtn);
+});
+
+stepBtn.addEventListener('click', () => {
+    currentTool = 'step';
+    setActiveBtn(stepBtn);
+});
+
 // Update selected object styles
 // `input` fires on every shade the cursor crosses. Paint each one, but a drag
 // through the wheel is one edit, and `change` is where it ends.
@@ -959,6 +1076,40 @@ const applyColour = () => {
 };
 colorPicker.addEventListener('input', applyColour);
 colorPicker.addEventListener('change', () => { if (applyColour()) saveHistory(); });
+
+// Quick presets: same effect as picking the shade from the native picker.
+colorPalette.addEventListener('click', (e) => {
+    const swatch = e.target.closest('.swatch');
+    if (!swatch) return;
+    colorPicker.value = swatch.dataset.color;
+    colorPicker.dispatchEvent(new Event('input'));
+    colorPicker.dispatchEvent(new Event('change'));
+});
+
+// Fill only makes sense for rect/circle, but the toggle itself is just state -
+// new shapes read it at creation time, same as color/width.
+fillToggleBtn.addEventListener('click', () => {
+    fillToggleBtn.classList.toggle('active');
+    if (selectedObjectId) {
+        const obj = objects.find(o => o.id === selectedObjectId);
+        if (obj && (obj.type === 'rect' || obj.type === 'circle')) {
+            obj.fill = fillToggleBtn.classList.contains('active');
+            render();
+            saveHistory();
+        }
+    }
+});
+
+opacitySlider.addEventListener('input', () => {
+    opacityValue.textContent = opacitySlider.value + '%';
+    if (selectedObjectId) {
+        const obj = objects.find(o => o.id === selectedObjectId);
+        if (obj) { obj.opacity = parseInt(opacitySlider.value) / 100; render(); }
+    }
+});
+opacitySlider.addEventListener('change', () => {
+    if (selectedObjectId) saveHistory();
+});
 
 lineWidthInput.addEventListener('input', () => {
     // Validate to prevent negative, zero, or values above 20
@@ -987,7 +1138,11 @@ lineWidthInput.addEventListener('input', () => {
 lineWidthInput.addEventListener('change', () => { if (selectedObjectId) saveHistory(); });
 
 // Global Mouse Events
-canvas.addEventListener('mousemove', (e) => {
+// document, not canvas: a drag that overshoots the canvas edge (very easy to
+// do near the border of a screenshot) would otherwise never receive the
+// mousemove/mouseup that finalizes it, leaving isDrawing/isMoving/isResizing
+// stuck true forever and silently breaking every tool until the page reloads.
+document.addEventListener('mousemove', (e) => {
     if (isEditing) return;
     const rect = canvas.getBoundingClientRect();
 
@@ -1009,6 +1164,16 @@ canvas.addEventListener('mousemove', (e) => {
         return;
     }
 
+    // Crop selection's own corner/move handles - same resize-cursor feedback
+    // as every other tool's handles, not a flat crosshair the whole time.
+    if (currentTool === 'crop' && cropArea) {
+        const handle = getCropHandleAt(mx, my);
+        if (handle) {
+            canvas.style.cursor = getCursorForHandle(handle);
+            return;
+        }
+    }
+
     // Handle detection
     if (selectedObjectId) {
         const obj = objects.find(o => o.id === selectedObjectId);
@@ -1028,13 +1193,14 @@ function getCursorForHandle(handle) {
     if (handle === 'nw' || handle === 'se') return 'nwse-resize';
     if (handle === 'ne' || handle === 'sw') return 'nesw-resize';
     if (handle === 'r') return 'ew-resize';
+    if (handle === 'move') return 'move';
     return 'default';
 }
 
 function getHandleAt(mx, my, obj) {
     if (!obj) return null;
     const s = HANDLE_SIZE + 4;
-    if (obj.type === 'rect' || obj.type === 'image') {
+    if (obj.type === 'rect' || obj.type === 'image' || obj.type === 'blur') {
         if (dist(mx, my, obj.x, obj.y) < s) return 'nw';
         if (dist(mx, my, obj.x + obj.width, obj.y) < s) return 'ne';
         if (dist(mx, my, obj.x, obj.y + obj.height) < s) return 'sw';
@@ -1115,6 +1281,9 @@ canvas.addEventListener('mousedown', (e) => {
         isMoving = true;
         colorPicker.value = clicked.color || '#ff0000';
         lineWidthInput.value = clicked.lineWidth || 3;
+        fillToggleBtn.classList.toggle('active', !!clicked.fill);
+        opacitySlider.value = Math.round((clicked.opacity ?? 1) * 100);
+        opacityValue.textContent = opacitySlider.value + '%';
 
         // Activate the corresponding tool button based on object type
         if (clicked.type === 'rect') { currentTool = 'rect'; setActiveBtn(rectBtn); }
@@ -1123,14 +1292,16 @@ canvas.addEventListener('mousedown', (e) => {
         else if (clicked.type === 'line') { currentTool = 'line'; setActiveBtn(lineBtn); }
         else if (clicked.type === 'arrow') { currentTool = 'arrow'; setActiveBtn(arrowBtn); }
         else if (clicked.type === 'pencil') { currentTool = 'pencil'; setActiveBtn(pencilBtn); }
+        else if (clicked.type === 'blur') { currentTool = 'blur'; setActiveBtn(blurBtn); }
+        else if (clicked.type === 'step') { currentTool = 'step'; setActiveBtn(stepBtn); }
         else if (clicked.type === 'image') { currentTool = null; setActiveBtn(uploadBtn); }
 
         render();
         return;
     }
 
-    // Priority Tools (Crop, Text)
-    if (currentTool === 'crop' || currentTool === 'text') {
+    // Priority Tools (Crop, Text, Step) - single click, not a drag
+    if (currentTool === 'crop' || currentTool === 'text' || currentTool === 'step') {
         if (currentTool === 'crop' && cropArea) {
             const handle = getCropHandleAt(startX, startY);
             if (handle) {
@@ -1159,6 +1330,20 @@ canvas.addEventListener('mousedown', (e) => {
             render();
             return;
         }
+
+        if (currentTool === 'step') {
+            // One click, no drag - a badge drops right where you clicked. The
+            // number is however many step markers already exist, so deleting
+            // one leaves a gap instead of silently renumbering the rest.
+            const number = objects.filter(o => o.type === 'step').length + 1;
+            objects.push({
+                id: Date.now(), type: 'step', x: startX, y: startY, number,
+                color: colorPicker.value, radius: STEP_RADIUS, opacity: parseInt(opacitySlider.value) / 100
+            });
+            saveHistory();
+            render();
+            return;
+        }
     }
 
     if (currentTool) {
@@ -1166,16 +1351,20 @@ canvas.addEventListener('mousedown', (e) => {
         selectedObjectId = null;
         currentObject = null;
         const id = Date.now();
+        const opacity = parseInt(opacitySlider.value) / 100;
+        const fill = fillToggleBtn.classList.contains('active');
         if (currentTool === 'rect') {
-            currentObject = { id, type: 'rect', x: startX, y: startY, width: 0, height: 0, color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value) };
+            currentObject = { id, type: 'rect', x: startX, y: startY, width: 0, height: 0, color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value), fill, opacity };
         } else if (currentTool === 'circle') {
-            currentObject = { id, type: 'circle', x: startX, y: startY, radius: 0, color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value) };
+            currentObject = { id, type: 'circle', x: startX, y: startY, radius: 0, color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value), fill, opacity };
         } else if (currentTool === 'line') {
-            currentObject = { id, type: 'line', x: startX, y: startY, endX: startX, endY: startY, color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value) };
+            currentObject = { id, type: 'line', x: startX, y: startY, endX: startX, endY: startY, color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value), opacity };
         } else if (currentTool === 'arrow') {
-            currentObject = { id, type: 'arrow', x: startX, y: startY, endX: startX, endY: startY, color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value) };
+            currentObject = { id, type: 'arrow', x: startX, y: startY, endX: startX, endY: startY, color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value), opacity };
         } else if (currentTool === 'pencil') {
-            currentObject = { id, type: 'pencil', points: [{ x: startX, y: startY }], color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value) };
+            currentObject = { id, type: 'pencil', points: [{ x: startX, y: startY }], color: colorPicker.value, lineWidth: parseInt(lineWidthInput.value), opacity };
+        } else if (currentTool === 'blur') {
+            currentObject = { id, type: 'blur', x: startX, y: startY, width: 0, height: 0 };
         }
     } else {
         selectedObjectId = null;
@@ -1186,12 +1375,15 @@ canvas.addEventListener('mousedown', (e) => {
     hasMoved = false; // Reset on every drag start
 });
 
-canvas.addEventListener('mouseup', () => {
+document.addEventListener('mouseup', () => {
     if (isEditing) return;
+    // Nothing was in progress (a plain click elsewhere on the page) - do not
+    // run the drag-finalize logic below for every unrelated mouseup.
+    if (!isDrawing && !isMoving && !isResizing && !isMovingCrop && !isResizingCrop) return;
     if (isDrawing && currentObject) {
         // Validate that the shape was actually dragged (not just clicked)
         let meaningful = false;
-        if (currentObject.type === 'rect') meaningful = Math.abs(currentObject.width) > 5 || Math.abs(currentObject.height) > 5;
+        if (currentObject.type === 'rect' || currentObject.type === 'blur') meaningful = Math.abs(currentObject.width) > 5 || Math.abs(currentObject.height) > 5;
         else if (currentObject.type === 'circle') meaningful = currentObject.radius > 5;
         else if (currentObject.type === 'line' || currentObject.type === 'arrow') meaningful = dist(currentObject.x, currentObject.y, currentObject.endX, currentObject.endY) > 5;
         else if (currentObject.type === 'pencil') meaningful = currentObject.points.length > 3;
@@ -1199,6 +1391,10 @@ canvas.addEventListener('mouseup', () => {
         if (meaningful) {
             objects.push(currentObject);
             saveHistory();
+        } else {
+            // A drag under the threshold vanishes with zero feedback otherwise -
+            // reads exactly like the tool silently didn't work.
+            showToast('Too small to keep - try dragging a bit further');
         }
     } else if ((isMoving || isResizing || isMovingCrop || isResizingCrop) && hasMoved) {
         saveHistory();
@@ -1270,7 +1466,7 @@ function handleDrag(mx, my) {
     if (!currentObject) return;
 
     if (isResizing) {
-        if (currentObject.type === 'rect' || currentObject.type === 'image') {
+        if (currentObject.type === 'rect' || currentObject.type === 'image' || currentObject.type === 'blur') {
             if (currentHandle === 'se') {
                 currentObject.width = mx - currentObject.x;
                 currentObject.height = my - currentObject.y;
@@ -1319,7 +1515,7 @@ function handleDrag(mx, my) {
         startX = mx; startY = my;
         hasMoved = true;
     } else if (isDrawing) {
-        if (currentTool === 'rect') {
+        if (currentTool === 'rect' || currentTool === 'blur') {
             currentObject.width = mx - startX;
             currentObject.height = my - startY;
         } else if (currentTool === 'circle') {
@@ -1348,13 +1544,13 @@ function handleCropDrag(mx, my) {
 }
 
 function isPointInObject(x, y, obj, p = 0) {
-    if (obj.type === 'rect' || obj.type === 'image') {
+    if (obj.type === 'rect' || obj.type === 'image' || obj.type === 'blur') {
         const x1 = Math.min(obj.x, obj.x + obj.width) - p;
         const x2 = Math.max(obj.x, obj.x + obj.width) + p;
         const y1 = Math.min(obj.y, obj.y + obj.height) - p;
         const y2 = Math.max(obj.y, obj.y + obj.height) + p;
         return x >= x1 && x <= x2 && y >= y1 && y <= y2;
-    } else if (obj.type === 'circle') {
+    } else if (obj.type === 'circle' || obj.type === 'step') {
         return Math.sqrt((x - obj.x) ** 2 + (y - obj.y) ** 2) <= (obj.radius + p);
     } else if (obj.type === 'text') {
         ctx.font = `${obj.fontSize}px 'Outfit', sans-serif`;

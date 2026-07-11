@@ -23,6 +23,8 @@
                     <button id="lineBtn" title="Line"><i class="fas fa-minus"></i></button>
                     <button id="rectBtn" title="Rectangle"><i class="far fa-square"></i></button>
                     <button id="circleBtn" title="Circle"><i class="far fa-circle"></i></button>
+                    <button id="blurBtn" title="Blur / Redact"><i class="fas fa-eye-slash"></i></button>
+                    <button id="stepBtn" title="Numbered Step"><i class="fas fa-list-ol"></i></button>
                 </div>
             </div>
 
@@ -37,7 +39,18 @@
             <div class="separator"></div>
 
             <input type="color" id="colorPicker" value="#ff0000" title="Color Picker">
+            <div class="color-palette" id="colorPalette">
+                <button type="button" class="swatch" data-color="#ff0000" style="background:#ff0000" title="Red"></button>
+                <button type="button" class="swatch" data-color="#22c55e" style="background:#22c55e" title="Green"></button>
+                <button type="button" class="swatch" data-color="#3b82f6" style="background:#3b82f6" title="Blue"></button>
+                <button type="button" class="swatch" data-color="#eab308" style="background:#eab308" title="Yellow"></button>
+                <button type="button" class="swatch" data-color="#ffffff" style="background:#ffffff" title="White"></button>
+                <button type="button" class="swatch" data-color="#000000" style="background:#000000" title="Black"></button>
+            </div>
+            <button id="fillToggleBtn" title="Fill Shape (rectangle/circle)"><i class="fas fa-fill-drip"></i></button>
             <input type="number" id="lineWidth" value="3" min="1" max="20" title="Stroke Width">
+            <input type="range" id="opacitySlider" min="10" max="100" value="100" title="Opacity">
+            <span class="opacity-value" id="opacityValue">100%</span>
 
             <div id="headerCropControls" style="display: none; align-items: center; gap: 8px;">
                 <div class="separator"></div>

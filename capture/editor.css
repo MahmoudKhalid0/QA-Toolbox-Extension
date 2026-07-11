@@ -139,6 +139,45 @@ html {
   border-color: var(--accent-blue);
 }
 
+/* Quick color presets, next to the native color picker */
+.color-palette {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.color-palette .swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.color-palette .swatch:hover {
+  transform: scale(1.15);
+  border-color: var(--text-primary);
+}
+
+#fillToggleBtn.active {
+  background: rgba(0, 120, 212, 0.2);
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+
+#opacitySlider {
+  width: 70px;
+  accent-color: var(--accent-blue);
+}
+
+.opacity-value {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 32px;
+}
+
 /* Buttons */
 button {
   background: transparent;
