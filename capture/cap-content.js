@@ -108,8 +108,9 @@ function showRecordingControl() {
             .rec-group { display: flex; align-items: center; gap: 8px; }
             @keyframes recPulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
             .rec-indicator { width: 10px; height: 10px; background: #ff4757; border-radius: 50%; animation: recPulse 1s infinite; }
+            .rec-indicator.paused { animation: none; opacity: 0.6; background: #ffa502; }
             .rec-text { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.9; }
-            .timer { font-size: 18px; font-weight: 700; font-family: 'Consolas', 'Monaco', monospace; min-width: 60px; text-align: center; color: #fff; }
+            .timer { font-size: 26px; font-weight: 800; font-family: 'Consolas', 'Monaco', monospace; min-width: 78px; text-align: center; color: #fff; }
             .stop-btn {
                 background: #ff4757;
                 color: white;
@@ -126,6 +127,67 @@ function showRecordingControl() {
             }
             .stop-btn:hover { background: #ff6b81; transform: scale(1.05); }
             .stop-btn:active { transform: scale(0.95); }
+            .pause-btn {
+                background: rgba(255, 255, 255, 0.08);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                padding: 8px 14px;
+                border-radius: 10px;
+                cursor: pointer;
+                font-weight: 700;
+                font-size: 13px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                transition: transform 0.2s, background 0.2s;
+            }
+            .pause-btn:hover { background: rgba(255, 255, 255, 0.18); transform: scale(1.05); }
+            .pause-btn:active { transform: scale(0.95); }
+            .discard-btn {
+                background: transparent;
+                color: rgba(255, 255, 255, 0.55);
+                border: none;
+                width: 32px;
+                height: 32px;
+                border-radius: 10px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: background 0.2s, color 0.2s;
+            }
+            .discard-btn:hover { background: rgba(255, 71, 87, 0.18); color: #ff6b81; }
+            .point-wrap { position: relative; }
+            .point-btn {
+                background: rgba(255, 255, 255, 0.08);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                width: 34px;
+                height: 34px;
+                border-radius: 10px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: transform 0.2s, background 0.2s, border-color 0.2s;
+            }
+            .point-btn:hover { background: rgba(255, 255, 255, 0.18); transform: scale(1.05); }
+            .point-btn.active { background: rgba(139, 92, 246, 0.35); border-color: #8b5cf6; color: #d8c8ff; }
+            .point-menu {
+                position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
+                background: #16162e; border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 12px; padding: 6px; display: none; flex-direction: column;
+                gap: 2px; min-width: 150px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            }
+            .point-menu.open { display: flex; }
+            .point-menu button {
+                background: transparent; color: white; border: none; text-align: left;
+                padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13px;
+                font-weight: 600; display: flex; align-items: center; gap: 8px;
+            }
+            .point-menu button:hover { background: rgba(255, 255, 255, 0.1); }
+            .point-menu button.active { color: #d8c8ff; }
+            .point-menu button.active::after { content: '✓'; margin-left: auto; }
             svg { fill: currentColor; }
         `;
 
@@ -137,10 +199,27 @@ function showRecordingControl() {
         content.className = 'control-bar';
         content.innerHTML = `
             <div class="rec-group">
-                <div class="rec-indicator"></div>
-                <span class="rec-text">Recording</span>
+                <div class="rec-indicator" id="rec-indicator"></div>
+                <span class="rec-text" id="rec-text">Recording</span>
             </div>
             <div class="timer" id="rec-timer-display">${initialTime}</div>
+            <button class="pause-btn" id="pause-rec-handle">
+                <svg id="pause-icon" width="12" height="12" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                <span id="pause-btn-text">Pause</span>
+            </button>
+            <button class="discard-btn" id="discard-rec-handle" title="Discard recording">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z"/></svg>
+            </button>
+            <div class="point-wrap">
+                <button class="point-btn" id="point-rec-handle" title="Point out something to the viewer">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+                </button>
+                <div class="point-menu" id="point-menu">
+                    <button data-mode="click" id="point-mode-click">Click Effect</button>
+                    <button data-mode="spotlight" id="point-mode-spotlight">Spotlight</button>
+                    <button data-mode="off" id="point-mode-off">Off</button>
+                </div>
+            </div>
             <button class="stop-btn" id="stop-rec-handle">
                 <svg width="12" height="12" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
                 Stop
@@ -156,8 +235,12 @@ function showRecordingControl() {
         let dragStartX, dragStartY;
         let initialX, initialY;
 
+        const isControlClick = (e) => e.composedPath().some(el =>
+            el.id === 'stop-rec-handle' || el.id === 'pause-rec-handle' || el.id === 'discard-rec-handle' ||
+            (el.classList && el.classList.contains('point-wrap')));
+
         container.addEventListener('mousedown', (e) => {
-            if (e.composedPath().some(el => el.id === 'stop-rec-handle')) return;
+            if (isControlClick(e)) return;
             isDragging = true;
             const rect = container.getBoundingClientRect();
             dragStartX = e.clientX;
@@ -191,13 +274,218 @@ function showRecordingControl() {
         };
 
         const timerDisplay = shadow.getElementById('rec-timer-display');
-        recordingInterval = setInterval(() => {
+        // Paused time is subtracted out, same trick as the popup's own timer -
+        // simpler than tracking elapsed as a separately-ticking running total.
+        let pausedAccumMs = 0;
+        let pauseStartedAt = null;
+
+        function tick() {
             const now = Date.now();
-            const elapsed = Math.floor((now - startTime + 200) / 1000);
+            const elapsed = Math.floor((now - startTime + 200 - pausedAccumMs) / 1000);
             const mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
             const secs = (elapsed % 60).toString().padStart(2, '0');
             timerDisplay.textContent = `${mins}:${secs}`;
-        }, 200);
+        }
+        function startTicking() {
+            clearInterval(recordingInterval);
+            recordingInterval = setInterval(tick, 200);
+        }
+        startTicking();
+
+        // Pause / Resume Handler
+        const pauseBtn = shadow.getElementById('pause-rec-handle');
+        const pauseBtnText = shadow.getElementById('pause-btn-text');
+        const pauseIcon = shadow.getElementById('pause-icon');
+        const recIndicator = shadow.getElementById('rec-indicator');
+        const recText = shadow.getElementById('rec-text');
+        const PAUSE_ICON_SVG = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+        const PLAY_ICON_SVG = '<polygon points="6,4 20,12 6,20"/>';
+        let isPaused = false;
+        pauseBtn.onclick = () => {
+            if (!isPaused) {
+                chrome.runtime.sendMessage({ action: 'requestPauseRecording' });
+                isPaused = true;
+                pauseStartedAt = Date.now();
+                clearInterval(recordingInterval);
+                pauseBtnText.textContent = 'Resume';
+                pauseIcon.innerHTML = PLAY_ICON_SVG;
+                recIndicator.classList.add('paused');
+                recText.textContent = 'Paused';
+            } else {
+                chrome.runtime.sendMessage({ action: 'requestResumeRecording' });
+                isPaused = false;
+                if (pauseStartedAt) { pausedAccumMs += (Date.now() - pauseStartedAt); pauseStartedAt = null; }
+                pauseBtnText.textContent = 'Pause';
+                pauseIcon.innerHTML = PAUSE_ICON_SVG;
+                recIndicator.classList.remove('paused');
+                recText.textContent = 'Recording';
+                startTicking();
+            }
+        };
+
+        // Discard Handler - separate from Stop, throws the recording away
+        const discardBtn = shadow.getElementById('discard-rec-handle');
+        discardBtn.onclick = async () => {
+            const yes = await qaConfirm('Discard this recording?', 'This cannot be undone.');
+            if (!yes) return;
+            chrome.runtime.sendMessage({ action: 'requestDiscardRecording' });
+            hideRecordingControl();
+        };
+
+        // Point-out-something Handler - Click Effect / Spotlight / Off
+        const pointBtn = shadow.getElementById('point-rec-handle');
+        const pointMenu = shadow.getElementById('point-menu');
+        const pointModeButtons = {
+            click: shadow.getElementById('point-mode-click'),
+            spotlight: shadow.getElementById('point-mode-spotlight'),
+            off: shadow.getElementById('point-mode-off'),
+        };
+        const setActivePointMode = (mode) => {
+            Object.entries(pointModeButtons).forEach(([m, btn]) => btn.classList.toggle('active', m === mode));
+            pointBtn.classList.toggle('active', mode !== 'off');
+        };
+        setActivePointMode('off');
+
+        pointBtn.onclick = () => pointMenu.classList.toggle('open');
+        pointModeButtons.click.onclick = () => { enableClickEffect(); setActivePointMode('click'); pointMenu.classList.remove('open'); };
+        pointModeButtons.spotlight.onclick = () => { enableSpotlight(); setActivePointMode('spotlight'); pointMenu.classList.remove('open'); };
+        pointModeButtons.off.onclick = () => { disablePointerEffect(); setActivePointMode('off'); pointMenu.classList.remove('open'); };
+
+        // Close the menu on any click elsewhere, same convention as the
+        // editor's shapes dropdown.
+        document.addEventListener('click', (e) => {
+            if (!e.composedPath().includes(pointBtn) && !e.composedPath().includes(pointMenu)) {
+                pointMenu.classList.remove('open');
+            }
+        });
+    });
+}
+
+// Pointer effects (Click Effect / Spotlight) - a light-DOM, full-page,
+// pointer-events:none overlay so it never blocks real interaction with the
+// page underneath, but still gets painted into the actual tab/desktop
+// capture like any other on-screen content. Only one mode is active at once.
+let pointerMode = null;
+let pointerOverlay = null;
+let pointerListener = null;
+
+function disablePointerEffect() {
+    if (pointerListener) {
+        document.removeEventListener('click', pointerListener, true);
+        document.removeEventListener('mousemove', pointerListener, true);
+        pointerListener = null;
+    }
+    if (pointerOverlay) { pointerOverlay.remove(); pointerOverlay = null; }
+    pointerMode = null;
+}
+
+function enableClickEffect() {
+    disablePointerEffect();
+    pointerMode = 'click';
+    pointerListener = (e) => {
+        const ring = document.createElement('div');
+        ring.style.cssText = `
+            position: fixed; left: ${e.clientX}px; top: ${e.clientY}px;
+            width: 20px; height: 20px; margin: -10px 0 0 -10px;
+            border-radius: 50%; border: 3px solid #8b5cf6;
+            pointer-events: none; z-index: 2147483646;
+            animation: qa-click-ring 0.6s ease-out forwards;
+        `;
+        document.body.appendChild(ring);
+        ring.addEventListener('animationend', () => ring.remove());
+    };
+    // capture phase: sees every click on the page without touching how the
+    // page itself handles it (never calls preventDefault/stopPropagation).
+    document.addEventListener('click', pointerListener, true);
+}
+
+function enableSpotlight() {
+    disablePointerEffect();
+    pointerMode = 'spotlight';
+    pointerOverlay = document.createElement('div');
+    pointerOverlay.style.cssText = `
+        position: fixed; inset: 0; z-index: 2147483645; pointer-events: none;
+        background: radial-gradient(circle 130px at 50vw 50vh, transparent 0%, transparent 100px, rgba(0,0,0,0.65) 145px);
+    `;
+    document.body.appendChild(pointerOverlay);
+    pointerListener = (e) => {
+        pointerOverlay.style.background =
+            `radial-gradient(circle 130px at ${e.clientX}px ${e.clientY}px, transparent 0%, transparent 100px, rgba(0,0,0,0.65) 145px)`;
+    };
+    document.addEventListener('mousemove', pointerListener, true);
+}
+
+// One shared stylesheet for the click-effect keyframes - it lives in the
+// light DOM (the ring itself does too), so it can't go inside the control
+// bar's shadow root the way the rest of the bar's styling does.
+(function ensurePointerStyles() {
+    if (document.getElementById('qa-pointer-fx-style')) return;
+    const style = document.createElement('style');
+    style.id = 'qa-pointer-fx-style';
+    style.textContent = `
+        @keyframes qa-click-ring {
+            0% { transform: scale(0.3); opacity: 1; }
+            100% { transform: scale(2.2); opacity: 0; }
+        }
+    `;
+    document.head.appendChild(style);
+})();
+
+// A branded confirm dialog, not the native confirm() - that one shows the
+// page's own hostname ("webserver-xyz.cloud says..."), which reads like a
+// random site popup rather than something the extension is asking.
+function qaConfirm(title, message) {
+    return new Promise((resolve) => {
+        const host = document.createElement('div');
+        host.id = 'qa-confirm-host';
+        host.style.cssText = 'position: fixed; inset: 0; z-index: 2147483647;';
+        document.body.appendChild(host);
+        const shadow = host.attachShadow({ mode: 'open' });
+        shadow.innerHTML = `
+            <style>
+                :host { all: initial; }
+                .backdrop {
+                    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6);
+                    display: flex; align-items: center; justify-content: center;
+                    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+                }
+                .card {
+                    background: #16162e; border: 1px solid rgba(255, 255, 255, 0.1);
+                    border-radius: 16px; padding: 22px 24px; width: 340px;
+                    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); color: white;
+                    direction: ltr; text-align: left;
+                }
+                .card h3 { margin: 0 0 8px; font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+                .card h3 svg { color: #ff4757; flex-shrink: 0; }
+                .card p { margin: 0 0 18px; font-size: 13px; color: rgba(255, 255, 255, 0.65); line-height: 1.5; }
+                .actions { display: flex; justify-content: flex-end; gap: 10px; }
+                button { border: none; border-radius: 10px; padding: 9px 16px; font-weight: 700; font-size: 13px; cursor: pointer; transition: transform .15s, background .15s; }
+                .cancel-btn { background: rgba(255, 255, 255, 0.08); color: white; }
+                .cancel-btn:hover { background: rgba(255, 255, 255, 0.15); }
+                .confirm-btn { background: #ff4757; color: white; }
+                .confirm-btn:hover { background: #ff6b81; }
+                button:active { transform: scale(0.96); }
+            </style>
+            <div class="backdrop">
+                <div class="card">
+                    <h3>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                        ${title}
+                    </h3>
+                    <p>${message}</p>
+                    <div class="actions">
+                        <button class="cancel-btn" id="qa-confirm-cancel">Cancel</button>
+                        <button class="confirm-btn" id="qa-confirm-ok">Discard</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        const done = (val) => { host.remove(); resolve(val); };
+        shadow.getElementById('qa-confirm-cancel').onclick = () => done(false);
+        shadow.getElementById('qa-confirm-ok').onclick = () => done(true);
+        shadow.querySelector('.backdrop').addEventListener('click', (e) => {
+            if (e.target.classList.contains('backdrop')) done(false);
+        });
     });
 }
 
@@ -206,6 +494,7 @@ function hideRecordingControl() {
     if (control) control.remove();
     if (recordingInterval) clearInterval(recordingInterval);
     recordingInterval = null;
+    disablePointerEffect();
 }
 
 function showCountdown(seconds) {

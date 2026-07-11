@@ -263,6 +263,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // Pause/resume: recording is still in progress, so the floating control
+  // stays up (it just switches its own button/timer state) - only the
+  // popup's actual MediaRecorder needs to hear about it.
+  if (request.action === "requestPauseRecording") {
+    chrome.runtime.sendMessage({ action: 'pauseRecordingFromTab' });
+    return true;
+  }
+
+  if (request.action === "requestResumeRecording") {
+    chrome.runtime.sendMessage({ action: 'resumeRecordingFromTab' });
+    return true;
+  }
+
+  // Same shutdown as Stop, but the popup is told to throw the recording away
+  // instead of saving it - no editor tab opens for a discarded recording.
+  if (request.action === "requestDiscardRecording") {
+    isRecordingInProgress = false;
+    chrome.storage.local.set({ isRecordingInProgress: false });
+    // The normal stop-and-save path clears this too. Skipping it here left a
+    // stale recordingStartTime behind, and a race in how the floating control
+    // reads it (it can run slightly before the NEXT recording writes its own
+    // fresh timestamp) meant a new recording after a discard would show the
+    // timer picking up from the discarded session's elapsed time.
+    chrome.storage.local.remove(['recordingStartTime']);
+    stopBadgeTimer();
+    broadcastHideControl();
+    chrome.runtime.sendMessage({ action: 'discardRecordingFromTab' });
+    return true;
+  }
+
   // Handle video data from capture page
   if (request.type === 'recording-stopped' && request.target === 'background') {
     handleRecordingFinished(request.videoDataUrl);

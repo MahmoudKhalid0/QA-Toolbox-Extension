@@ -66,7 +66,7 @@ async function startRecording(sId) {
 
         // Set in Settings > Screenshot & Record. Lower bitrates make the base64
         // handoff to the editor meaningfully faster for long recordings.
-        const BITRATE_BY_QUALITY = { low: 1500000, medium: 3000000, high: 5000000 };
+        const BITRATE_BY_QUALITY = { low: 1500000, medium: 3000000, high: 5000000, ultra: 8000000 };
         const { videoQuality } = await chrome.storage.local.get(['videoQuality']);
         const videoBitsPerSecond = BITRATE_BY_QUALITY[videoQuality] || BITRATE_BY_QUALITY.high;
 

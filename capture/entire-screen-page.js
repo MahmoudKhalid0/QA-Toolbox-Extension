@@ -6,6 +6,9 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let recordingStream = null;
 let timerInterval = null;
+let recordingStartTimeRef = null;
+let pauseStartedAt = null;
+let isDiscarding = false;
 
 async function startCapture() {
     chrome.desktopCapture.chooseDesktopMedia(['screen', 'window', 'tab'], (streamId) => {
@@ -52,9 +55,17 @@ async function startVideoRecording(streamId) {
         const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
         const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
 
+        // Set in Settings > Screenshot & Record. This is the recorder that
+        // actually runs for every real recording (the "record" action always
+        // opens this popup) - offscreen.js has its own copy of this same
+        // setup but nothing currently triggers it to record.
+        const BITRATE_BY_QUALITY = { low: 1500000, medium: 3000000, high: 5000000, ultra: 8000000 };
+        const { videoQuality } = await chrome.storage.local.get(['videoQuality']);
+        const videoBitsPerSecond = BITRATE_BY_QUALITY[videoQuality] || BITRATE_BY_QUALITY.high;
+
         mediaRecorder = new MediaRecorder(recordingStream, {
             mimeType,
-            videoBitsPerSecond: 5000000
+            videoBitsPerSecond
         });
 
         recordedChunks = [];
@@ -94,9 +105,10 @@ async function startVideoRecording(streamId) {
 
         setTimeout(() => {
             const startTime = Date.now();
+            recordingStartTimeRef = startTime;
             chrome.storage.local.set({ recordingStartTime: startTime });
 
-            // Give the tab's countdown UI extra time to disappear 
+            // Give the tab's countdown UI extra time to disappear
             // before actually starting the capture
             setTimeout(() => {
                 mediaRecorder.start(1000);
@@ -105,7 +117,7 @@ async function startVideoRecording(streamId) {
             // Show Recording UI in this window (ready when un-minimized)
             document.getElementById('init-ui').style.display = 'none';
             document.getElementById('recording-ui').style.display = 'block';
-            startTimer(startTime);
+            startTimer();
         }, 3000);
 
     } catch (err) {
@@ -114,36 +126,81 @@ async function startVideoRecording(streamId) {
     }
 }
 
-function startTimer(startTime) {
+function startTimer() {
     const timerDisplay = document.getElementById('timer');
     timerInterval = setInterval(() => {
         const now = Date.now();
-        const seconds = Math.floor((now - startTime) / 1000);
+        const seconds = Math.floor((now - recordingStartTimeRef) / 1000);
         const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
         const secs = (seconds % 60).toString().padStart(2, '0');
         timerDisplay.textContent = `${mins}:${secs}`;
     }, 1000);
 }
 
-document.getElementById('stopBtn').addEventListener('click', () => {
+// Pausing freezes the displayed time by simply not ticking; resuming shifts
+// recordingStartTimeRef forward by however long the pause lasted, so the
+// same "now - start" formula keeps working without tracking elapsed time
+// as a separate running total.
+function pauseRecording() {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.pause();
+        pauseStartedAt = Date.now();
+        clearInterval(timerInterval);
+    }
+}
+
+function resumeRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'paused') {
+        mediaRecorder.resume();
+        if (pauseStartedAt) {
+            recordingStartTimeRef += (Date.now() - pauseStartedAt);
+            pauseStartedAt = null;
+        }
+        startTimer();
+    }
+}
+
+function discardRecording() {
+    isDiscarding = true;
+    if (mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused')) {
+        mediaRecorder.stop();
+    } else {
+        window.close();
+    }
+}
+
+document.getElementById('stopBtn').addEventListener('click', () => {
+    if (mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused')) {
         mediaRecorder.stop();
         document.getElementById('stopBtn').disabled = true;
         document.getElementById('stopBtn').textContent = 'Processing...';
     }
 });
 
-// Listen for stop request from the tab UI
+// Listen for control requests relayed from the floating tab UI
 chrome.runtime.onMessage.addListener((request) => {
     if (request.action === 'stopRecordingFromTab') {
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
+        if (mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused')) {
             mediaRecorder.stop();
         }
+    } else if (request.action === 'pauseRecordingFromTab') {
+        pauseRecording();
+    } else if (request.action === 'resumeRecordingFromTab') {
+        resumeRecording();
+    } else if (request.action === 'discardRecordingFromTab') {
+        discardRecording();
     }
 });
 
 async function handleRecordingStopped() {
     clearInterval(timerInterval);
+
+    // Thrown away on purpose - close without ever building/sending the blob,
+    // so nothing gets saved and the editor never opens for it.
+    if (isDiscarding) {
+        window.close();
+        return;
+    }
 
     const loader = document.getElementById('globalLoader');
     if (loader) {
