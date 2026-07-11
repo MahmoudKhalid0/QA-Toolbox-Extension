@@ -6,6 +6,3 @@ config.js
 *.pem
 *.crx
 
-# Supabase keys for the capture tool's cloud share - never commit them.
-# Copy capture/supabase-config.example.js to capture/supabase-config.js.
-capture/supabase-config.js

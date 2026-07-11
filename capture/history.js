@@ -4,6 +4,10 @@
 
 const $ = (id) => document.getElementById(id);
 
+// The pull timer runs every minute at best - opening the gallery is also a
+// good moment to ask, so a capture shared from another device shows up sooner.
+chrome.runtime.sendMessage({ action: 'pullNow' }).catch(() => { });
+
 let items = [];                 // metadata only; blobs are fetched on demand
 let filter = 'all';
 let picked = new Set();
@@ -128,6 +132,154 @@ function matchesDate(it) {
     return Date.now() - it.createdAt < days * 86400000;
 }
 
+let workspaceFilter = localStorage.getItem('wsFilter') || 'all';
+
+function setWorkspaceFilter(name) {
+    workspaceFilter = name;
+    if (name === 'all') localStorage.removeItem('wsFilter');
+    else localStorage.setItem('wsFilter', name);
+}
+
+// A workspace is a Drive folder, so it can exist with zero local captures in
+// it (just created, or shared into from a different device). The sidebar's
+// list is local-items-derived names PLUS whatever Drive itself reports.
+let driveWorkspaceNames = null;   // null = not fetched yet, [] = fetched, none extra
+let driveSignedIn = false;
+
+async function loadDriveWorkspaces() {
+    const meta = await chrome.runtime.sendMessage({ action: 'syncStatus' }).catch(() => null);
+    driveSignedIn = !!(meta && meta.signedIn);
+    if (!driveSignedIn) { driveWorkspaceNames = []; return; }
+
+    const res = await chrome.runtime.sendMessage({ action: 'listWorkspaces' }).catch(() => null);
+    driveWorkspaceNames = (res && res.success) ? res.workspaces.map(w => w.name) : [];
+    renderWorkspaceList();
+}
+
+function matchesWorkspace(it) {
+    return workspaceFilter === 'all' || (it.workspace || '') === workspaceFilter;
+}
+
+// Local items give a workspace's usage; Drive gives its existence - a folder
+// just created, or shared into from another device, has no local items yet
+// but is still a real workspace. Counts are raw local totals, same as the tab
+// counts in renderStats() above.
+function renderWorkspaceList() {
+    const list = $('wsList');
+    const localNames = items.map(it => it.workspace).filter(Boolean);
+    const names = [...new Set([...localNames, ...(driveWorkspaceNames || [])])].sort();
+    if (workspaceFilter !== 'all' && !names.includes(workspaceFilter)) setWorkspaceFilter('all');
+
+    const countFor = (name) => name === 'all' ? items.length : items.filter(it => it.workspace === name).length;
+
+    // "All workspaces" is a view, not a folder - nothing to delete there.
+    const row = (value, label, deletable) => `
+        <div class="ws-item ${workspaceFilter === value ? 'active' : ''}" data-ws="${esc(value)}">
+            <span class="ws-name">${esc(label)}</span><span class="ws-count">${countFor(value)}</span>
+            ${deletable ? `<button class="ws-del" data-del-ws="${esc(value)}" title="Delete this workspace"><i class="fas fa-trash"></i></button>` : ''}
+        </div>`;
+
+    list.innerHTML = row('all', 'All workspaces', false) + names.map(n => row(n, n, true)).join('')
+        + `<div class="ws-item ws-add" id="wsAddRow"><span class="ws-name"><i class="fas fa-plus"></i> New workspace</span></div>`;
+
+    list.querySelectorAll('.ws-item[data-ws]').forEach(el =>
+        el.addEventListener('click', (e) => {
+            if (e.target.closest('.ws-del')) return;   // handled separately below
+            setWorkspaceFilter(el.dataset.ws);
+            render();
+        }));
+
+    list.querySelectorAll('.ws-del').forEach(btn =>
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteWorkspace(btn.dataset.delWs);
+        }));
+
+    $('wsAddRow').addEventListener('click', startAddWorkspace, { once: true });
+}
+
+// Turns the "+ New workspace" row into a text input in place, rather than a
+// modal - it is one more folder, not a decision worth interrupting the page for.
+function startAddWorkspace() {
+    if (!driveSignedIn) {
+        toast('Sign in to Google Drive from Settings first to create workspaces', true);
+        renderWorkspaceList();   // the {once:true} listener is gone - put it back
+        return;
+    }
+
+    const row = $('wsAddRow');
+    row.innerHTML = `<input type="text" id="wsAddInput" placeholder="Workspace name" maxlength="100">`;
+    const input = $('wsAddInput');
+    input.focus();
+
+    const cancel = () => renderWorkspaceList();
+    const confirm = async () => {
+        const name = input.value.trim();
+        if (!name) { cancel(); return; }
+        // Creating the folder in Drive is a real round trip, not instant -
+        // same reasoning as every other delete/create action in this sidebar.
+        row.innerHTML = `<span class="ws-name"><i class="fas fa-spinner fa-spin"></i> Creating "${esc(name)}"…</span>`;
+        const res = await chrome.runtime.sendMessage({ action: 'createWorkspace', name }).catch(() => null);
+        if (!res || !res.success) {
+            toast('Could not create the workspace: ' + ((res && res.error) || 'no response'), true);
+            cancel();
+            return;
+        }
+        if (!driveWorkspaceNames.includes(res.name)) driveWorkspaceNames.push(res.name);
+        setWorkspaceFilter(res.name);
+        toast(`Created "${res.name}"`);
+        render();
+    };
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') confirm();
+        if (e.key === 'Escape') cancel();
+    });
+    input.addEventListener('blur', () => { if (!input.value.trim()) cancel(); });
+}
+
+async function deleteWorkspace(name) {
+    const count = items.filter(it => it.workspace === name).length;
+    const yes = await ask({
+        title: `Delete "${name}"?`,
+        text: count
+            ? `This workspace and its ${count} capture${count > 1 ? 's' : ''} are removed for good.`
+            : 'This workspace is removed for good.',
+        warn: 'Any shared links inside it stop working. This cannot be undone.',
+        okText: 'Delete workspace'
+    });
+    if (!yes) return;
+
+    // One shared capture inside is one full round trip (revoke, then trash),
+    // then the folder itself - this is not instant. Without feedback here it
+    // reads exactly like the silent bulk-delete did, which is what taught us
+    // to add a spinner there in the first place.
+    const list = $('wsList');
+    const btn = list.querySelector(`.ws-del[data-del-ws="${CSS.escape(name)}"]`);
+    list.classList.add('busy');
+    if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+
+    try {
+        const res = await chrome.runtime.sendMessage({ action: 'deleteWorkspace', name }).catch(() => null);
+        if (!res || !res.success) {
+            toast('Could not delete the workspace: ' + ((res && res.error) || 'no response'), true);
+            return;
+        }
+        if (workspaceFilter === name) setWorkspaceFilter('all');
+        // The sidebar also merges in the Drive-fetched list (see loadDriveWorkspaces) -
+        // without this, the row survives on that stale cache until the next reload.
+        if (driveWorkspaceNames) driveWorkspaceNames = driveWorkspaceNames.filter(n => n !== name);
+        toast(res.stuck
+            ? `Deleted "${name}" - ${res.stuck} link(s) may still be live`
+            : `Deleted "${name}" and ${res.removed} capture${res.removed === 1 ? '' : 's'}`);
+        load();   // rebuilds the sidebar, which clears .busy as a side effect
+    } finally {
+        // On the error path load() never runs, so this DOM still exists to reset.
+        list.classList.remove('busy');
+        if (btn) btn.innerHTML = '<i class="fas fa-trash"></i>';
+    }
+}
+
 function sortItems(list) {
     const by = $('sortBy').value;
     const c = list.slice();
@@ -140,20 +292,23 @@ function sortItems(list) {
 // ── render ──────────────────────────────────────────────────────────────────
 
 function renderStats() {
-    const imgs = items.filter(i => i.type === 'image').length;
-    const vids = items.filter(i => i.type === 'video').length;
-    const size = items.reduce((s, i) => s + (i.size || 0), 0);
-    const withIssues = items.filter(i => issues(i) > 0).length;
-    const shared = items.filter(i => i.cloudUrl).length;
+    // Scoped to the selected workspace, same as the grid itself - "Captures: 3"
+    // while looking at a 2-capture workspace read as the filter doing nothing.
+    const scoped = items.filter(matchesWorkspace);
+    const imgs = scoped.filter(i => i.type === 'image').length;
+    const vids = scoped.filter(i => i.type === 'video').length;
+    const size = scoped.reduce((s, i) => s + (i.size || 0), 0);
+    const withIssues = scoped.filter(i => issues(i) > 0).length;
+    const shared = scoped.filter(i => i.cloudUrl).length;
 
     $('stats').innerHTML = `
-        <div class="stat"><div class="v">${items.length}</div><div class="l">Captures</div></div>
+        <div class="stat"><div class="v">${scoped.length}</div><div class="l">Captures</div></div>
         <div class="stat"><div class="v">${imgs} / ${vids}</div><div class="l">Images / Videos</div></div>
         <div class="stat"><div class="v">${fmtSize(size)}</div><div class="l">Storage used</div></div>
         <div class="stat ${withIssues ? 'warn' : ''}"><div class="v">${withIssues}</div><div class="l">With issues</div></div>
         <div class="stat ${shared ? 'ok' : ''}"><div class="v">${shared}</div><div class="l">Shared</div></div>`;
 
-    $('nAll').textContent = items.length;
+    $('nAll').textContent = scoped.length;
     $('nImage').textContent = imgs;
     $('nVideo').textContent = vids;
     $('nIssues').textContent = withIssues;
@@ -162,10 +317,11 @@ function renderStats() {
 
 function render() {
     revokeAll();
+    renderWorkspaceList();   // may correct workspaceFilter if its workspace is gone
     renderStats();
 
     const q = $('searchInput').value.trim().toLowerCase();
-    visible = sortItems(items.filter(it => matchesFilter(it) && matchesSearch(it, q) && matchesDate(it)));
+    visible = sortItems(items.filter(it => matchesFilter(it) && matchesSearch(it, q) && matchesDate(it) && matchesWorkspace(it)));
 
     if (!visible.length) {
         $('content').innerHTML = items.length
@@ -308,10 +464,16 @@ async function remove(id) {
         warn: (it && it.cloudUrl) ? 'The link you shared stops working.' : ''
     });
     if (!yes) return;
+
+    // A shared capture's delete is a Drive round trip (revoke, then trash),
+    // same reasoning as bulk-delete: show something moving, not a dead click.
+    const btn = document.querySelector(`.del[data-del="${CSS.escape(id)}"]`);
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+
     const res = await chrome.runtime.sendMessage({ action: 'deleteCapture', id }).catch(() => null);
     picked.delete(id);
     toast(res && res.revoked === false ? 'Deleted here, but the shared link is still live' : 'Deleted');
-    load();
+    load();   // rebuilds the grid, which clears the spinner as a side effect
 }
 
 function reencodePng(blob) {
@@ -486,6 +648,7 @@ function sideHtml(it) {
                 <a href="${esc(it.cloudUrl)}" target="_blank" rel="noopener">Open link</a>
                 &nbsp;·&nbsp;
                 <a href="#" class="copy-share-link" data-url="${esc(it.cloudUrl)}">Copy link</a></dd>` : ''}
+            ${it.workspace ? `<dt>Workspace</dt><dd>${esc(it.workspace)}</dd>` : ''}
         </dl>`;
 
     // Every log the page emitted, not only errors: a warning right before the
@@ -557,8 +720,27 @@ $('clearBtn').addEventListener('click', async () => {
         okText: 'Delete all'
     });
     if (!yes) return;
-    await CapStore.clear();
-    toast('Library cleared');
+
+    // Same reason as bulk-delete: each shared item is a revoke round trip
+    // before removal, so this is not instant - show live progress.
+    const btn = $('clearBtn');
+    const label = btn.innerHTML;
+    btn.disabled = true;
+
+    const all = items.slice();
+    const n = all.length;
+    let done = 0;
+    let stuck = 0;
+    for (const it of all) {
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Deleting ${done + 1}/${n}…`;
+        const res = await chrome.runtime.sendMessage({ action: 'deleteCapture', id: it.id }).catch(() => null);
+        if (res && res.revoked === false) stuck++;
+        done++;
+    }
+
+    btn.innerHTML = label;
+    btn.disabled = false;
+    toast(stuck ? `Library cleared - ${stuck} link(s) may still be live` : 'Library cleared');
     load();
 });
 
@@ -579,14 +761,16 @@ $('bulkDelete').addEventListener('click', async () => {
     if (!yes) return;
 
     // Each deletion is a round trip to revoke the Drive link before removing
-    // the local record, so a large batch is not instant. Disable the bar and
-    // show live progress, or a second click reads as "it didn't work" and
+    // the local record, so a large batch is not instant. Disable the whole bar
+    // and show live progress, or a second click reads as "it didn't work" and
     // invites exactly the repeated clicking that prompted this.
     const btn = $('bulkDelete');
     const cancelBtn = $('bulkCancel');
+    const downloadBtn = $('bulkDownload');
     const label = btn.innerHTML;
     btn.disabled = true;
     cancelBtn.disabled = true;
+    downloadBtn.disabled = true;
 
     const n = picked.size;
     let done = 0;
@@ -596,18 +780,43 @@ $('bulkDelete').addEventListener('click', async () => {
         const res = await chrome.runtime.sendMessage({ action: 'deleteCapture', id }).catch(() => null);
         if (res && res.revoked === false) stuck++;
         done++;
+        // Reflect each deletion as it happens, not only once the whole batch
+        // finishes - the counts should never look stuck while work is visibly
+        // still going.
+        items = items.filter(it => it.id !== id);
+        renderStats();
+        renderWorkspaceList();
     }
 
     btn.innerHTML = label;
     btn.disabled = false;
     cancelBtn.disabled = false;
+    downloadBtn.disabled = false;
     toast(stuck ? `${n} deleted, ${stuck} link(s) still live` : `${n} deleted`);
     picked.clear();
     load();
 });
 
 $('bulkDownload').addEventListener('click', async () => {
-    for (const id of picked) { await download(id); await new Promise(r => setTimeout(r, 250)); }
+    const btn = $('bulkDownload');
+    const deleteBtn = $('bulkDelete');
+    const cancelBtn = $('bulkCancel');
+    const label = btn.innerHTML;
+    const n = picked.size;
+    let done = 0;
+    btn.disabled = true;
+    deleteBtn.disabled = true;
+    cancelBtn.disabled = true;
+    for (const id of picked) {
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Downloading ${done + 1}/${n}…`;
+        await download(id);
+        done++;
+        await new Promise(r => setTimeout(r, 250));   // let the browser's own download queue keep up
+    }
+    btn.innerHTML = label;
+    btn.disabled = false;
+    deleteBtn.disabled = false;
+    cancelBtn.disabled = false;
 });
 
 $('pvClose').addEventListener('click', closePreview);
@@ -623,3 +832,4 @@ document.addEventListener('keydown', (e) => {
 });
 
 load();
+loadDriveWorkspaces();

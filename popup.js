@@ -2,6 +2,10 @@ let profiles = [];
 let currentFields = [];
 let isRecording = false;
 
+// The pull timer runs every minute at best - opening the panel is also a
+// good moment to ask, so a change made on another device shows up sooner.
+chrome.runtime.sendMessage({ action: 'pullNow' }).catch(() => { });
+
 // Make sure the content script is alive in the tab. Content scripts die whenever
 // the extension is reloaded, so pages opened before the reload need re-injection.
 async function ensureContentScript(tabId) {

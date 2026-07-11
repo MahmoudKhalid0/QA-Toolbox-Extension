@@ -5,8 +5,8 @@
  * Settings > API
  */
 const supabaseConfig = {
-    supabaseUrl: "https://YOUR-PROJECT.supabase.co",
-    supabaseKey: "YOUR-PUBLISHABLE-KEY"
+    supabaseUrl: "https://irbifacgmcjgciwgivqj.supabase.co",
+    supabaseKey: "sb_publishable_gDOaPEdBV24IrVx7BGkgng_ypB5mUEA"
 };
 
 export default supabaseConfig;

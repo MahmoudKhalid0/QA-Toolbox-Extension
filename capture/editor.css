@@ -1064,7 +1064,11 @@ body.video-mode .logo {
   margin-bottom: 20px;
 }
 
-#customModal .modal-content {
+/* The share dialog is a small confirmation, not the 900px/85vh shell .modal-content
+   defaults to (that size is for the Bug Report modal) - without this override it
+   renders as a mostly-empty giant box, which is what made it look unstyled. */
+#customModal .modal-content,
+#shareModal .modal-content {
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
   background: var(--bg-dark);
@@ -1073,7 +1077,9 @@ body.video-mode .logo {
   max-height: 85vh;
 }
 
-#modalInput {
+#modalInput,
+#shareTitleInput,
+#shareWorkspaceNew {
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--glass-border);
   color: white;
@@ -1086,11 +1092,40 @@ body.video-mode .logo {
   margin-bottom: 5px;
 }
 
-#modalInput:focus {
+#modalInput:focus,
+#shareTitleInput:focus,
+#shareWorkspaceNew:focus {
   border-color: var(--accent-blue);
   background: rgba(0, 0, 0, 0.3);
   outline: none;
   box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.2);
+}
+
+/* A <select>'s dropdown list is drawn by the OS/browser and cannot be themed
+   from CSS; matching the closed box is what actually reads as "in theme". */
+#shareWorkspaceSelect {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--glass-border);
+  color: white;
+  padding: 12px 15px;
+  border-radius: 10px;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+#shareWorkspaceSelect:focus {
+  border-color: var(--accent-blue);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.2);
+}
+
+/* The closed box's white text otherwise falls back to the OS popup's own
+   white background for these rows, making them unreadable when open. */
+#shareWorkspaceSelect option {
+  background: var(--bg-light);
+  color: #fff;
 }
 
 .modal-footer {

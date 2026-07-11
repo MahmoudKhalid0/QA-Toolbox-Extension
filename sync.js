@@ -430,19 +430,62 @@ async function syncSignOut() {
 // Files land in one folder in the user's own Drive, so they can find and delete
 // them without us. drive.file only ever shows us what this extension created,
 // so this query cannot see anything else they own.
-async function driveShareFolderId() {
+async function driveFindOrCreateFolder(name, parentId) {
+    const escaped = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const q = encodeURIComponent(
-        `name='${SHARE_FOLDER}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+        `name='${escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false` +
+        (parentId ? ` and '${parentId}' in parents` : ''));
     const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id)`);
     const found = (await res.json()).files || [];
     if (found.length) return found[0].id;
 
+    const meta = { name, mimeType: 'application/vnd.google-apps.folder' };
+    if (parentId) meta.parents = [parentId];
     const made = await driveFetch('https://www.googleapis.com/drive/v3/files?fields=id', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: SHARE_FOLDER, mimeType: 'application/vnd.google-apps.folder' })
+        body: JSON.stringify(meta)
     });
     return (await made.json()).id;
+}
+
+async function driveShareFolderId() {
+    return driveFindOrCreateFolder(SHARE_FOLDER, null);
+}
+
+// The default workspace is named for whichever account is currently synced.
+// Logging in from another machine with the same account sees the same name and
+// the same Drive folder - there is nothing device-local to fall out of step.
+async function driveDefaultWorkspaceName() {
+    const meta = await syncGetMeta();
+    return meta.email || 'My captures';
+}
+
+// Resolve a workspace to its Drive folder id, creating it under the shared root
+// if this is the first time it is used. No name means the default workspace.
+async function driveWorkspaceFolderId(workspaceName) {
+    const rootId = await driveShareFolderId();
+    const name = (workspaceName || '').trim() || await driveDefaultWorkspaceName();
+    const id = await driveFindOrCreateFolder(name, rootId);
+    return { id, name };
+}
+
+// Every workspace that exists in Drive, default first. The default is created
+// here if it does not exist yet, so the picker is never empty.
+async function driveListWorkspaces() {
+    const rootId = await driveShareFolderId();
+    const q = encodeURIComponent(
+        `'${rootId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)`);
+    const found = (await res.json()).files || [];
+
+    const defaultName = await driveDefaultWorkspaceName();
+    if (!found.some(f => f.name === defaultName)) {
+        const id = await driveFindOrCreateFolder(defaultName, rootId);
+        found.push({ id, name: defaultName });
+    }
+    found.sort((a, b) => (a.name === defaultName ? -1 : b.name === defaultName ? 1 : a.name.localeCompare(b.name)));
+    return { workspaces: found, defaultName };
 }
 
 // Drive wants multipart/related: a JSON part, then the bytes. A Blob can hold
@@ -484,20 +527,32 @@ async function driveReplaceShared(fileId, blob) {
     return res.json();
 }
 
-async function driveShareBlob(blob, name, interactive = true, replaceFileId = null) {
+async function driveShareBlob(blob, name, interactive = true, replaceFileId = null, workspaceName = null) {
     const meta = await syncGetMeta();
     if (!meta.signedIn) throw new Error('Sign in to Google in Settings first');
 
     syncAllowPrompt = !!interactive;
     try {
-        const file = replaceFileId
-            ? await driveReplaceShared(replaceFileId, blob)
-            : await driveUploadShared(blob, name, await driveShareFolderId());
+        // Replacing a file updates it in whatever workspace it already lives in;
+        // only a brand-new share needs to be filed into one.
+        let file;
+        let resolvedWorkspace = null;
+        if (replaceFileId) {
+            file = await driveReplaceShared(replaceFileId, blob);
+        } else {
+            const ws = await driveWorkspaceFolderId(workspaceName);
+            resolvedWorkspace = ws.name;
+            file = await driveUploadShared(blob, name, ws.id);
+        }
 
         // A replaced file keeps the grant it already had.
         if (!replaceFileId) await driveMakeLinkReadable(file.id);
 
-        return { id: file.id, url: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view` };
+        return {
+            id: file.id,
+            url: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
+            workspace: resolvedWorkspace
+        };
     } catch (err) {
         throw new Error(syncExplain(err));
     } finally {
@@ -526,6 +581,26 @@ async function driveTrashFile(fileId) {
     });
 }
 
+// A workspace is never itself shared (only the files inside it are, one grant
+// each), so there is no public permission to strip here - trashing is enough.
+// Returns false rather than throwing when the folder is simply gone already.
+async function driveTrashWorkspace(name) {
+    const rootId = await driveShareFolderId();
+    const escaped = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const q = encodeURIComponent(
+        `name='${escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '${rootId}' in parents`);
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id)`);
+    const found = (await res.json()).files || [];
+    if (!found.length) return false;
+
+    await driveFetch(`https://www.googleapis.com/drive/v3/files/${found[0].id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: true })
+    });
+    return true;
+}
+
 // One wording for each failure, wherever it surfaces.
 function syncExplain(err) {
     const code = String((err && err.message) || err);
@@ -542,5 +617,8 @@ syncExportTarget.CloudSync = {
     syncSignOut,
     syncGetMeta,
     driveShareBlob,
-    driveTrashFile
+    driveListWorkspaces,
+    driveWorkspaceFolderId,
+    driveTrashFile,
+    driveTrashWorkspace
 };

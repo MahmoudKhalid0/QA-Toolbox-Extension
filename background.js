@@ -256,6 +256,22 @@ async function clearRecordingState() {
     chrome.runtime.sendMessage({ action: 'recordingStopped' }).catch(() => { });
 }
 
+// Shared by single-capture delete and workspace delete: trash the Drive file
+// behind a record's link, if it has one. true = revoked, false = it had a link
+// but revoking failed (the record is removed locally regardless), null = there
+// was never a link to begin with.
+async function revokeCaptureLink(rec) {
+    const fileId = rec && (rec.cloudFileId || (String(rec.cloudUrl || '').match(/\/d\/([^/]+)/) || [])[1]);
+    if (!fileId) return null;
+    try {
+        await CloudSync.driveTrashFile(fileId);
+        return true;
+    } catch (e) {
+        console.error('Could not revoke the shared link:', e);
+        return false;
+    }
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'openEditorWithFields') {
         (async () => {
@@ -414,21 +430,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // whose URL still opens for whoever you sent it to is not deleted.
     if (request.action === 'deleteCapture') {
         (async () => {
-            let revoked = null;
-            try {
-                const rec = await CapStore.get(request.id);
-                const fileId = rec && (rec.cloudFileId || (String(rec.cloudUrl || '').match(/\/d\/([^/]+)/) || [])[1]);
-                if (fileId) {
-                    await CloudSync.driveTrashFile(fileId);
-                    revoked = true;
-                }
-            } catch (e) {
-                // The capture still goes; say plainly that the link did not.
-                revoked = false;
-                console.error('Could not revoke the shared link:', e);
-            }
+            const revoked = await revokeCaptureLink(await CapStore.get(request.id));
             await CapStore.remove(request.id);
             sendResponse({ success: true, revoked });
+        })();
+        return true;
+    }
+
+    // Deleting a workspace is deleting everything a user named it into: every
+    // capture inside it, and the Drive folder itself, so a rename-by-recreating
+    // never leaves an orphaned folder behind. The gallery confirms this with the
+    // user before ever sending it - here it is unconditional.
+    if (request.action === 'deleteWorkspace') {
+        (async () => {
+            try {
+                const all = await CapStore.list();
+                const matches = all.filter(it => it.workspace === request.name);
+
+                let stuck = 0;
+                for (const it of matches) {
+                    const ok = await revokeCaptureLink(it);
+                    if (ok === false) stuck++;
+                    await CapStore.remove(it.id);
+                }
+
+                let folderRemoved = false;
+                try {
+                    folderRemoved = await CloudSync.driveTrashWorkspace(request.name);
+                } catch (e) {
+                    console.error('Could not remove the workspace folder:', e);
+                }
+
+                sendResponse({ success: true, removed: matches.length, stuck, folderRemoved });
+            } catch (err) {
+                sendResponse({ success: false, error: String(err.message || err) });
+            }
         })();
         return true;
     }
@@ -468,9 +504,43 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 // never be missed by a race with the library write.
                 const blob = request.dataUrl ? await CapStore.dataUrlToBlob(request.dataUrl) : rec.blob;
                 const reuseId = request.replace ? rec.cloudFileId : null;
-                const { id, url } = await CloudSync.driveShareBlob(blob, name, true, reuseId);
-                await CapStore.patch(request.id, { cloudUrl: url, cloudFileId: id, sharedAt: Date.now() });
-                sendResponse({ success: true, url });
+                // A replace keeps whatever workspace the file already lives in;
+                // only a first share is filed into the one the user picked.
+                const { id, url, workspace } = await CloudSync.driveShareBlob(blob, name, true, reuseId, request.workspace);
+                const patch = { cloudUrl: url, cloudFileId: id, sharedAt: Date.now() };
+                if (workspace) patch.workspace = workspace;
+                await CapStore.patch(request.id, patch);
+                sendResponse({ success: true, url, workspace: workspace || rec.workspace });
+            } catch (err) {
+                sendResponse({ success: false, error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
+    // The workspace picker in the share dialog: every folder that already
+    // exists in Drive, so a second machine signed into the same account sees
+    // exactly the same list.
+    if (request.action === 'listWorkspaces') {
+        (async () => {
+            try {
+                const { workspaces, defaultName } = await CloudSync.driveListWorkspaces();
+                sendResponse({ success: true, workspaces, defaultName });
+            } catch (err) {
+                sendResponse({ success: false, error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
+    // Creating an empty workspace from the gallery, not just at share time -
+    // this just files (or finds) the Drive folder; nothing local changes until
+    // something is actually shared into it.
+    if (request.action === 'createWorkspace') {
+        (async () => {
+            try {
+                const { id, name } = await CloudSync.driveWorkspaceFolderId(request.name);
+                sendResponse({ success: true, id, name });
             } catch (err) {
                 sendResponse({ success: false, error: String(err.message || err) });
             }
@@ -2341,12 +2411,18 @@ chrome.runtime.onStartup.addListener(() => {
 
 // A push tells Drive. Nothing tells the other browser, so ask on a timer.
 // chrome.alarms, not setInterval: the service worker is torn down when idle.
+// 1 minute is Chrome's hard floor for periodInMinutes - there is no faster
+// timer-based option short of a backend server pushing to the client.
 const CLOUD_PULL_ALARM = 'cloudSyncPull';
-const CLOUD_PULL_MINUTES = 5;
+const CLOUD_PULL_MINUTES = 1;
 
 function ensureCloudPullAlarm() {
     chrome.alarms.get(CLOUD_PULL_ALARM, (existing) => {
-        if (!existing) chrome.alarms.create(CLOUD_PULL_ALARM, { periodInMinutes: CLOUD_PULL_MINUTES });
+        // Recreate on top of an alarm left over from an older, slower interval -
+        // chrome.alarms.create() only takes effect for a name that doesn't exist yet.
+        if (!existing || existing.periodInMinutes !== CLOUD_PULL_MINUTES) {
+            chrome.alarms.create(CLOUD_PULL_ALARM, { periodInMinutes: CLOUD_PULL_MINUTES });
+        }
     });
 }
 chrome.runtime.onStartup.addListener(ensureCloudPullAlarm);
@@ -2355,6 +2431,13 @@ ensureCloudPullAlarm();          // and after every service-worker restart
 
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === CLOUD_PULL_ALARM) CloudSync.syncNow(false);
+});
+
+// The timer alone means up to a full minute of staleness right when someone
+// opens a panel to go look at something - pull the instant a page opens too.
+chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'pullNow') CloudSync.syncNow(false);
+    return false;
 });
 
 // Auto-fill logic for "On Reload"

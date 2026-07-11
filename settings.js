@@ -1,5 +1,9 @@
 let availableCategories = [];
 
+// The pull timer runs every minute at best - opening Settings is also a
+// good moment to ask, so a change made on another device shows up sooner.
+chrome.runtime.sendMessage({ action: 'pullNow' }).catch(() => { });
+
 document.addEventListener('DOMContentLoaded', async () => {
     await loadSettings();
     await loadCategories();

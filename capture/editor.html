@@ -330,6 +330,32 @@
         </div>
     </div>
 
+    <!-- Share to Drive: title + which workspace (Drive subfolder) it is filed into -->
+    <div id="shareModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Share this capture</h3>
+                <button class="modal-close" id="shareModalCloseBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Name it, so you can find it in Drive later:</p>
+                <div style="margin-top: 15px;">
+                    <label style="display: block; margin-bottom: 8px; font-size: 13px; color: var(--text-secondary);">Title</label>
+                    <input type="text" id="shareTitleInput" placeholder="Enter title...">
+                </div>
+                <div style="margin-top: 15px;">
+                    <label style="display: block; margin-bottom: 8px; font-size: 13px; color: var(--text-secondary);">Workspace</label>
+                    <select id="shareWorkspaceSelect"></select>
+                    <input type="text" id="shareWorkspaceNew" placeholder="New workspace name..." style="display: none; margin-top: 8px;">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="shareModalCancelBtn" class="btn-secondary">Cancel</button>
+                <button id="shareModalConfirmBtn" class="primary">Share</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Everything the page was doing when the shot was taken -->
     <aside class="ctx-drawer" id="ctxDrawer">
         <div class="ctx-head">

@@ -128,10 +128,21 @@ const fieldSearch = document.getElementById('fieldSearch');
 const fieldList = document.getElementById('fieldList');
 const cloudUploadBtn = document.getElementById('cloudUploadBtn');
 
+// The pull timer runs every minute at best - opening the editor is also a
+// good moment to ask, so a change made on another device shows up sooner.
+chrome.runtime.sendMessage({ action: 'pullNow' }).catch(() => { });
+
 // Sharing rides on the same Google account as Cloud Sync. Without one, the
 // button can only fail, so it does not appear.
+let workspacesCache = null;   // { workspaces: [{id,name}], defaultName } | null
 chrome.runtime.sendMessage({ action: 'syncStatus' }).then((meta) => {
     if (cloudUploadBtn && !(meta && meta.signedIn)) cloudUploadBtn.style.display = 'none';
+    // Prefetch: by the time Share is clicked, the list is usually already in hand.
+    if (meta && meta.signedIn) {
+        chrome.runtime.sendMessage({ action: 'listWorkspaces' }).then((res) => {
+            if (res && res.success) workspacesCache = res;
+        }).catch(() => { });
+    }
 }).catch(() => { });
 const viewHistoryBtn = document.getElementById('viewHistoryBtn');
 const reportBugBtn = document.getElementById('reportBugBtn');
@@ -2011,6 +2022,78 @@ bugParentSearch.addEventListener('input', saveLastFormValues);
 bugTagsSearch.addEventListener('input', saveLastFormValues);
 
 // ========= Sharing a capture =========
+const NEW_WORKSPACE = '__new__';
+
+async function getWorkspaces() {
+    if (workspacesCache) return workspacesCache;
+    const res = await chrome.runtime.sendMessage({ action: 'listWorkspaces' }).catch(() => null);
+    if (res && res.success) { workspacesCache = res; return res; }
+    return { workspaces: [], defaultName: '' };
+}
+
+// A dedicated dialog, not showCustomModal: this one needs a second field - which
+// Drive folder (workspace) the capture is filed into, with room to create a new
+// one on the spot. Resolves to { title, workspace } or false if cancelled.
+function showShareModal(defaultTitle) {
+    const modal = document.getElementById('shareModal');
+    const titleInput = document.getElementById('shareTitleInput');
+    const select = document.getElementById('shareWorkspaceSelect');
+    const newInput = document.getElementById('shareWorkspaceNew');
+    const confirmBtn = document.getElementById('shareModalConfirmBtn');
+    const cancelBtn = document.getElementById('shareModalCancelBtn');
+    const closeBtn = document.getElementById('shareModalCloseBtn');
+
+    if (!modal) return Promise.resolve({ title: defaultTitle, workspace: '' });
+
+    titleInput.value = defaultTitle;
+    select.innerHTML = '';
+    select.appendChild(new Option('Loading workspaces…', ''));
+    select.disabled = true;
+    newInput.style.display = 'none';
+    newInput.value = '';
+
+    modal.style.display = 'flex';
+    modal.classList.add('show');
+    setTimeout(() => titleInput.focus(), 100);
+
+    getWorkspaces().then(({ workspaces, defaultName }) => {
+        select.innerHTML = '';
+        for (const w of workspaces) {
+            select.appendChild(new Option(w.name === defaultName ? `${w.name} (default)` : w.name, w.name, false, w.name === defaultName));
+        }
+        select.appendChild(new Option('+ New workspace…', NEW_WORKSPACE));
+        select.disabled = false;
+    });
+
+    select.onchange = () => {
+        const isNew = select.value === NEW_WORKSPACE;
+        newInput.style.display = isNew ? '' : 'none';
+        if (isNew) newInput.focus();
+    };
+
+    return new Promise((resolve) => {
+        const cleanup = (value) => {
+            modal.style.display = 'none';
+            modal.classList.remove('show');
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+            closeBtn.onclick = null;
+            resolve(value);
+        };
+        confirmBtn.onclick = () => {
+            const title = titleInput.value.trim() || defaultTitle;
+            let workspace = select.value;
+            if (workspace === NEW_WORKSPACE) {
+                workspace = newInput.value.trim();
+                if (!workspace) { newInput.focus(); return; }
+            }
+            cleanup({ title, workspace });
+        };
+        cancelBtn.onclick = () => cleanup(false);
+        closeBtn.onclick = () => cleanup(false);
+    });
+}
+
 // One folder in the user's own Drive, one link, readable by anyone who has it.
 if (cloudUploadBtn) {
     cloudUploadBtn.addEventListener('click', async () => {
@@ -2024,14 +2107,14 @@ if (cloudUploadBtn) {
         }
 
         const updating = !!shareUrl;
-        const title = updating ? pageTitle : await showCustomModal({
-            title: 'Share this capture',
-            message: 'Name it, so you can find it in Drive later:',
-            showInput: true,
-            inputValue: pageTitle,
-            primaryText: 'Share'
-        });
-        if (title === false) return;
+        let title = pageTitle;
+        let workspace = '';
+        if (!updating) {
+            const picked = await showShareModal(pageTitle);
+            if (picked === false) return;
+            title = picked.title;
+            workspace = picked.workspace;
+        }
 
         try {
             toggleLoader(true, updating ? 'Updating the shared image…' : 'Uploading to Drive…');
@@ -2045,16 +2128,18 @@ if (cloudUploadBtn) {
                 ? (window.pendingVideo ? await readAsDataUrl(window.pendingVideo) : null)
                 : canvas.toDataURL('image/png');
             if (dataUrl) {
+                const ctxRes = captureId ? await chrome.storage.local.get([`ctx_${captureId}`]) : {};
+                const ctx = captureId ? ctxRes[`ctx_${captureId}`] : null;
                 await chrome.runtime.sendMessage({
                     action: 'capLibrarySave', id, dataUrl, title,
-                    type: isVideoSession ? 'video' : 'image', skipCloud: true
+                    type: isVideoSession ? 'video' : 'image', skipCloud: true, ctx
                 });
             }
 
             // `replace` keeps the same Drive file, so the link a colleague already
             // has keeps working and starts showing the new version. The same bytes
             // ride along here too, so the upload is exactly what was just saved.
-            const res = await chrome.runtime.sendMessage({ action: 'shareCapture', id, title, replace: updating, dataUrl });
+            const res = await chrome.runtime.sendMessage({ action: 'shareCapture', id, title, replace: updating, dataUrl, workspace });
             if (!res || !res.success) throw new Error((res && res.error) || 'no response from the extension');
 
             shareUrl = res.url;
@@ -2063,6 +2148,12 @@ if (cloudUploadBtn) {
             // a file it has already been told is identical.
             await chrome.storage.local.set({ [`cloudUrl_${id}`]: res.url, [`cloudHash_${id}`]: sharedImage });
             updateShareButton();
+
+            // A workspace typed for the first time here should be pickable
+            // right away if another capture is shared in this same session.
+            if (res.workspace && workspacesCache && !workspacesCache.workspaces.some(w => w.name === res.workspace)) {
+                workspacesCache.workspaces.push({ name: res.workspace });
+            }
 
             await navigator.clipboard.writeText(res.url).catch(() => { });
             showToast(updating ? 'Updated - same link' : 'Link copied to clipboard');
