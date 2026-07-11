@@ -178,9 +178,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
       try {
         const blob = await CapStore.dataUrlToBlob(request.dataUrl);
-        const patched = await CapStore.patch(request.id, { blob, title: request.title || undefined });
+        // Images get theirs generated from the blob itself (see capMakeThumb);
+        // a video blob can't be decoded that way, so the editor grabs a real
+        // frame from the <video> it already has loaded and sends it along.
+        const thumb = request.thumbDataUrl ? await CapStore.dataUrlToBlob(request.thumbDataUrl) : undefined;
+        const patch = { blob, title: request.title || undefined };
+        if (thumb) patch.thumb = thumb;
+        const patched = await CapStore.patch(request.id, patch);
         if (!patched) {
-          await CapStore.save({ id: request.id, type: request.type || 'image', title: request.title || 'Capture', blob, ctx: request.ctx || null });
+          await CapStore.save({ id: request.id, type: request.type || 'image', title: request.title || 'Capture', blob, thumb, ctx: request.ctx || null });
         }
 
         // The editor reopens from storage.local, not from the library, so every
@@ -394,20 +400,31 @@ async function handleRecordingFinished(videoDataUrl) {
     broadcastHideControl();
     stopBadgeTimer();
 
-    chrome.storage.local.set({ [captureId]: videoDataUrl, isVideo: true }, () => {
-      chrome.tabs.create({
-        url: chrome.runtime.getURL(`capture/editor.html?id=${captureId}&title=${encodeURIComponent(tabTitle)}&type=video`)
+    // A long recording can take real, visible time to hand off to storage
+    // before the editor tab opens - say so, or it reads as the capture
+    // silently doing nothing right after the control UI disappears.
+    chrome.action.setBadgeText({ text: '...' });
+    chrome.action.setBadgeBackgroundColor({ color: '#3b82f6' });
+
+    // The gallery only ever holds what has been shared to Drive - see the
+    // editor's cloud button. A recording that is never shared must never
+    // appear here, same rule already applied to screenshots - so nothing is
+    // written to CapStore at capture time. ctx is still stored for the
+    // editor to pick up later (context drawer, and the eventual Share/Save).
+    const openEditor = (ctx) => {
+      chrome.storage.local.set({
+        [captureId]: videoDataUrl, isVideo: true, [`ctx_${captureId}`]: ctx || null
+      }, () => {
+        chrome.tabs.create({
+          url: chrome.runtime.getURL(`capture/editor.html?id=${captureId}&title=${encodeURIComponent(tabTitle)}&type=video`)
+        });
+        chrome.action.setBadgeText({ text: '' });
+        chrome.storage.local.remove(['tempTabTitle', 'tempTabId', 'recordingStartTime']);
       });
-      chrome.storage.local.remove(['tempTabTitle', 'tempTabId', 'recordingStartTime']);
-    });
+    };
 
-    const finish = (ctx) => CapStore.save({
-      id: captureId, type: 'video', title: tabTitle,
-      pageUrl: (ctx && ctx.url) || '', dataUrl: videoDataUrl, ctx
-    }).catch(e => console.error('library save failed:', e));
-
-    if (tabId) chrome.tabs.get(tabId, (t) => finish(t ? capCollectContext(t) : null));
-    else finish(null);
+    if (tabId) chrome.tabs.get(tabId, (t) => openEditor(t ? capCollectContext(t) : null));
+    else openEditor(null);
   });
 }
 

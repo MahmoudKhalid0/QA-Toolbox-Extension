@@ -1,4 +1,14 @@
 // Content script for recording and countdown
+//
+// Injected dynamically via chrome.scripting.executeScript from several call
+// sites in cap-background.js, at least two of which do so unconditionally
+// with no "already there" check first. Re-injecting a file re-runs its whole
+// top level, which would otherwise register a second onMessage listener (and
+// everything below it) on top of the first, still-live one - this guard
+// makes a repeat injection a no-op instead of quietly duplicating all of it.
+if (!window.__qaCapContentLoaded) {
+window.__qaCapContentLoaded = true;
+
 let tabRecorder = null;
 let recordedChunks = [];
 let recordingStream = null;
@@ -266,3 +276,5 @@ function showCountdown(seconds) {
         }
     }
 }
+
+}   // end of the __qaCapContentLoaded guard

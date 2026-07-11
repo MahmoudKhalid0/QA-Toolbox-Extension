@@ -83,11 +83,14 @@ function toggleLoader(show, text = "Processing...") {
 }
 
 // Helper to convert DataURL to File
-function dataURLtoFile(dataurl, filename) {
-    var arr = dataurl.split(','), mime = arr[0].match(/:(.*?);/)[1],
-        bstr = atob(arr[1]), n = bstr.length, u8arr = new Uint8Array(n);
-    while (n--) { u8arr[n] = bstr.charCodeAt(n); }
-    return new File([u8arr], filename, { type: mime });
+// fetch()'s native decoder, not atob() + a byte-by-byte JS loop: for a large
+// recording (many MB of base64) the manual loop runs synchronously on the
+// main thread and is genuinely slow - this is most of why a long recording
+// takes a very long time to actually appear once the editor tab opens.
+async function dataURLtoFile(dataurl, filename) {
+    const mime = dataurl.match(/^data:(.*?);/)[1];
+    const blob = await (await fetch(dataurl)).blob();
+    return new File([blob], filename, { type: mime });
 }
 
 const canvas = document.getElementById('canvas');
@@ -288,7 +291,7 @@ async function initEditor() {
     // 2. Load the actual data
     if (isVideoSession && captureId) {
         setMode('video');
-        chrome.storage.local.get([captureId], (result) => {
+        chrome.storage.local.get([captureId], async (result) => {
             const data = result[captureId] || sessionStorage.getItem('currentScreenshot');
             if (!data) {
                 console.error('Video data not found');
@@ -298,7 +301,7 @@ async function initEditor() {
 
             try {
                 let sanitizedTitle = pageTitle.replace(/[/\\?%*:|"<>]/g, '').trim().replace(/\s+/g, '_') || 'recording';
-                const videoFile = dataURLtoFile(data, `${sanitizedTitle}.webm`);
+                const videoFile = await dataURLtoFile(data, `${sanitizedTitle}.webm`);
                 window.pendingVideo = videoFile;
 
                 videoPlayer.src = URL.createObjectURL(videoFile);
@@ -308,11 +311,20 @@ async function initEditor() {
                     showToast("Error loading video playback.");
                 };
                 videoPlayer.onloadeddata = () => toggleLoader(false);
-                // Fallback if onloadeddata doesn't fire
-                setTimeout(() => toggleLoader(false), 3000);
+                // A safety net, not a "must be done by now" cutoff - a large
+                // recording can legitimately still be decoding at 3s in. Hiding
+                // the loader unconditionally here made it look like loading had
+                // silently finished (or hung) while real work was still going -
+                // that is almost certainly what "the video doesn't open" was.
+                setTimeout(() => {
+                    if (videoPlayer.readyState < 2) {
+                        toggleLoader(true, "Still loading a large recording…");
+                    }
+                }, 3000);
             } catch (err) {
                 console.error("Video processing error:", err);
                 toggleLoader(false);
+                showToast("Error loading the recording.");
             }
         });
     } else if (captureId || sessionStorage.getItem('currentScreenshot')) {
@@ -2326,9 +2338,28 @@ if (cloudUploadBtn) {
             if (dataUrl) {
                 const ctxRes = captureId ? await chrome.storage.local.get([`ctx_${captureId}`]) : {};
                 const ctx = captureId ? ctxRes[`ctx_${captureId}`] : null;
+                // The gallery only ever shows a play-icon placeholder for video
+                // otherwise - a real frame is worth grabbing while the <video>
+                // is already loaded here (the service worker has no DOM to do
+                // this with itself).
+                let thumbDataUrl = null;
+                if (isVideoSession && videoPlayer && videoPlayer.videoWidth) {
+                    try {
+                        const maxW = 480;
+                        const scale = Math.min(1, maxW / videoPlayer.videoWidth);
+                        const tw = Math.max(1, Math.round(videoPlayer.videoWidth * scale));
+                        const th = Math.max(1, Math.round(videoPlayer.videoHeight * scale));
+                        const tc = document.createElement('canvas');
+                        tc.width = tw; tc.height = th;
+                        tc.getContext('2d').drawImage(videoPlayer, 0, 0, tw, th);
+                        thumbDataUrl = tc.toDataURL('image/webp', 0.7);
+                    } catch (e) {
+                        console.error('video thumbnail failed:', e);
+                    }
+                }
                 await chrome.runtime.sendMessage({
                     action: 'capLibrarySave', id, dataUrl, title,
-                    type: isVideoSession ? 'video' : 'image', skipCloud: true, ctx
+                    type: isVideoSession ? 'video' : 'image', skipCloud: true, ctx, thumbDataUrl
                 });
             }
 

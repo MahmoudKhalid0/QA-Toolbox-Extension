@@ -355,7 +355,9 @@ function cardHtml(it) {
     const errs = errCount(it), reqs = reqCount(it);
     const thumbSrc = it.thumb ? blobUrl(it.thumb, 't' + it.id) : '';
     const media = it.type === 'video'
-        ? `<div class="ph"><i class="fas fa-circle-play"></i></div>`
+        ? (thumbSrc
+            ? `<img src="${thumbSrc}" alt="" loading="lazy"><div class="play-overlay"><i class="fas fa-circle-play"></i></div>`
+            : `<div class="ph"><i class="fas fa-circle-play"></i></div>`)
         : thumbSrc
             ? `<img src="${thumbSrc}" alt="" loading="lazy">`
             : `<div class="ph"><i class="fas fa-image"></i></div>`;

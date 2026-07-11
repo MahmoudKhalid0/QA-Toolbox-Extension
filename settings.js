@@ -599,7 +599,16 @@ function showToast(msg) {
 (function captureSettings() {
     const eye = document.getElementById('capEyeToggle');
     const delay = document.getElementById('capDelaySeconds');
+    const quality = document.getElementById('videoQuality');
     if (!eye || !delay) return;
+
+    if (quality) {
+        chrome.storage.local.get(['videoQuality'], (r) => { quality.value = r.videoQuality || 'high'; });
+        quality.addEventListener('change', () => {
+            chrome.storage.local.set({ videoQuality: quality.value });
+            showToast(`Recording quality set to ${quality.options[quality.selectedIndex].text}`);
+        });
+    }
 
     chrome.storage.local.get(['capEyeEnabled'], (r) => { eye.checked = !!r.capEyeEnabled; });
     eye.addEventListener('change', () => {
