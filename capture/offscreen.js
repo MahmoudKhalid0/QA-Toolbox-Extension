@@ -213,6 +213,13 @@ async function stitchFullPage(data) {
         canvas.width = pageWidth;
         canvas.height = totalHeight;
         const ctx = canvas.getContext('2d');
+        // totalHeight is an estimate (document.scrollHeight at the start) and
+        // can end up a little taller than what the slices actually cover -
+        // an unpainted canvas region is transparent, which renders as a flat
+        // black bar once exported to PNG. Filling white first means any such
+        // gap just blends into the page instead of showing as a black stripe.
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         let maxYReached = 0;
 
@@ -257,7 +264,25 @@ async function stitchFullPage(data) {
             finalCanvas.width = Math.max(contextImg.naturalWidth, elementX + pageWidth);
             finalCanvas.height = Math.max(contextImg.naturalHeight, elementY + totalHeight);
             const fctx = finalCanvas.getContext('2d');
+            fctx.fillStyle = '#ffffff';
+            fctx.fillRect(0, 0, finalCanvas.width, finalCanvas.height);
             fctx.drawImage(contextImg, 0, 0);
+
+            // The context screenshot is only ever one viewport tall - if the
+            // modal's full content runs past that, there is no real page
+            // content for the rest. Stretching the context image's own last
+            // row down to fill the gap keeps the sidebar/dimmed-backdrop look
+            // going the whole way, instead of cutting to flat white beside
+            // the modal (which is what happened before this).
+            if (finalCanvas.height > contextImg.naturalHeight) {
+                const extendHeight = finalCanvas.height - contextImg.naturalHeight;
+                fctx.drawImage(
+                    contextImg,
+                    0, contextImg.naturalHeight - 1, contextImg.naturalWidth, 1,
+                    0, contextImg.naturalHeight, contextImg.naturalWidth, extendHeight
+                );
+            }
+
             fctx.drawImage(canvas, elementX, elementY);
             fullImageDataUrl = finalCanvas.toDataURL('image/png');
         } else {
