@@ -215,6 +215,25 @@
         `;
         document.documentElement.appendChild(scrollbarHideStyle);
 
+        // Horizontal tiling is only safe on a genuinely-wide LTR page. Two
+        // things force it back to a single viewport-wide column:
+        //   1. RTL pages (Arabic, Hebrew...). Their horizontal scroll origin
+        //      is on the RIGHT, so scrollTo(positiveX) doesn't move the way
+        //      the tiling assumes - it re-captures almost the whole page a few
+        //      px over and stitches it as a ghost strip down the side (the
+        //      reported bug, which appeared only after switching the site to
+        //      Arabic). The visible page is still captured correctly top to
+        //      bottom; only the rare truly-wider-than-viewport RTL overflow is
+        //      skipped, and that would have been captured wrong anyway.
+        //   2. A few px of overflow on ANY page (sub-pixel rounding, a
+        //      scrollbar) - not a real second screen of content.
+        const pageRtl = (document.documentElement.getAttribute('dir') || '').toLowerCase() === 'rtl'
+            || (document.body && (document.body.getAttribute('dir') || '').toLowerCase() === 'rtl')
+            || getComputedStyle(document.documentElement).direction === 'rtl'
+            || (document.body && getComputedStyle(document.body).direction === 'rtl');
+        const H_TILE_SLACK = 32;
+        if (isWindow && (pageRtl || totalWidth - viewportWidth <= H_TILE_SLACK)) totalWidth = viewportWidth;
+
         const numXTiles = isWindow ? Math.max(1, Math.ceil(totalWidth / viewportWidth)) : 1;
 
         // One column at a time: scroll down, capturing every row, at whatever

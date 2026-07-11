@@ -1,4 +1,17 @@
-// Content script for recording form fills
+// Content script for recording form fills.
+//
+// Idempotency guard: the manifest injects this file at document_idle, but
+// popup.js's ensureContentScript() also re-injects it via executeScript when
+// its ping goes unanswered - which happens after the (unpacked) extension is
+// reloaded while a page stays open. Two injections into the same isolated
+// world would re-declare every top-level `let`/`const`, throwing
+// "Identifier 'isRecording' has already been declared" and leaving the tab
+// with no working content script. Wrapping the whole file so a second
+// injection is a no-op keeps those top-level names block-scoped (no
+// collision) and simply skips re-running.
+if (!window.__qaToolboxContentLoaded) {
+    window.__qaToolboxContentLoaded = true;
+
 let isRecording = false;
 let recordedFields = [];
 let mutationObserver = null;
@@ -7999,3 +8012,5 @@ function openTimeMachinePanel() {
     document.addEventListener('mousemove', (e) => { if (!off) return; panel.style.right = 'auto'; panel.style.left = Math.max(4, Math.min(innerWidth - 80, e.clientX - off.dx)) + 'px'; panel.style.top = Math.max(4, Math.min(innerHeight - 50, e.clientY - off.dy)) + 'px'; });
     document.addEventListener('mouseup', () => { off = null; });
 }
+
+} // end idempotency guard (window.__qaToolboxContentLoaded)

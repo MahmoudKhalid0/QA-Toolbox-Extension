@@ -1685,6 +1685,32 @@ chrome.runtime.onMessage.addListener((req) => {
         showToastMessage('Capturing after the countdown…', 'success');
     });
 
+    // Upload an image from the device and open it straight in the editor - the
+    // same annotate/crop/share flow as a real capture, just sourced from a
+    // file. The editor loads its image from storage.local[id]; ctx is optional
+    // (a local file has no page context), so this needs nothing more than the
+    // data URL under a fresh id.
+    const uploadInput = $id('capUploadInput');
+    $id('capUploadBtn').addEventListener('click', () => uploadInput.click());
+    uploadInput.addEventListener('change', () => {
+        const file = uploadInput.files && uploadInput.files[0];
+        uploadInput.value = ''; // let the same file be re-picked next time
+        if (!file) return;
+        if (!file.type.startsWith('image/')) { showToastMessage('Please choose an image file', 'error'); return; }
+        const reader = new FileReader();
+        reader.onload = () => {
+            const id = 'upload_' + Date.now();
+            const title = (file.name || 'image').replace(/\.[^.]+$/, '');
+            chrome.storage.local.set({ [id]: reader.result, isVideo: false }, () => {
+                chrome.tabs.create({
+                    url: chrome.runtime.getURL(`capture/editor.html?id=${id}&title=${encodeURIComponent(title)}`)
+                });
+            });
+        };
+        reader.onerror = () => showToastMessage('Could not read that file', 'error');
+        reader.readAsDataURL(file);
+    });
+
     $id('capAreaBtn').addEventListener('click', async () => {
         const t = await activeTab();
         if (!pageOk(t)) { showToastMessage('Open a website first', 'error'); return; }
