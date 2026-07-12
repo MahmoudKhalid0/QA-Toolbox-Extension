@@ -2074,6 +2074,10 @@ document.addEventListener('selectionchange', () => {
 
 let selectionAiEnabled = true;
 let selectedTextForAi = '';
+// WHERE that text is, not just what it says. The review comes back as a list of
+// mistakes, and a mistake you cannot find on the page is only half an answer - so
+// the selection's range is kept alive to point back at each one.
+let selectedRangeForAi = null;
 
 function hideSelectionTools() {
     const icon = document.getElementById('ff-sel-icon');
@@ -2092,6 +2096,9 @@ function updateSelectionTools() {
         sel.anchorNode.parentElement.closest('#ff-sel-icon, #ff-sel-menu, #ff-char-counter, #ff-ai-field-icon, #ff-ai-field-menu, #ff-sel-result')) return;
 
     selectedTextForAi = text;
+    // Cloned: the live selection is gone the moment the user clicks the menu.
+    try { selectedRangeForAi = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null; }
+    catch (e) { selectedRangeForAi = null; }
 
     let icon = document.getElementById('ff-sel-icon');
     if (!icon) {
@@ -2204,6 +2211,149 @@ function runSelectionAi(act, text) {
     );
 }
 
+// ── point at a mistake on the page ──────────────────────────────────────────
+// The review names the offending text; this finds it inside the range that was
+// reviewed and puts a marker round it - the same "show me exactly where" that
+// Text Match gives, because a list of mistakes you then have to hunt for by eye
+// is a list you end up ignoring.
+
+// Every text node inside a range, in document order, with the offsets the range
+// actually covers (the first and last nodes are usually only partly selected).
+function reviewTextNodesIn(range) {
+    const out = [];
+    if (!range) return out;
+    const root = range.commonAncestorContainer;
+    const walker = document.createTreeWalker(
+        root.nodeType === Node.TEXT_NODE ? root.parentNode : root,
+        NodeFilter.SHOW_TEXT,
+        {
+            acceptNode(n) {
+                if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+                if (!range.intersectsNode(n)) return NodeFilter.FILTER_REJECT;
+                const p = n.parentElement;
+                if (p && p.closest('#ff-sel-result, #ff-sel-icon, #ff-sel-menu, #qa-result-panel')) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        }
+    );
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const from = (n === range.startContainer) ? range.startOffset : 0;
+        const to = (n === range.endContainer) ? range.endOffset : n.nodeValue.length;
+        if (to > from) out.push({ node: n, from, to });
+    }
+    return out;
+}
+
+// Build a Range around `needle` inside the reviewed selection. The text may run
+// across several nodes (a bolded word mid-sentence), so the nodes are flattened
+// into one string, the match found there, and the position mapped back to the
+// node and offset it came from.
+function reviewRangeFor(needle, withinRange) {
+    const wanted = String(needle || '').replace(/\s+/g, ' ').trim();
+    if (!wanted) return null;
+
+    const parts = reviewTextNodesIn(withinRange);
+    if (!parts.length) return null;
+
+    let flat = '';
+    const map = [];                       // flat index -> { node, offset }
+    for (const p of parts) {
+        const s = p.node.nodeValue.slice(p.from, p.to);
+        for (let i = 0; i < s.length; i++) {
+            flat += s[i];
+            map.push({ node: p.node, offset: p.from + i });
+        }
+    }
+
+    // Match on collapsed whitespace, but keep a way back to the real offsets: walk
+    // the flat text building a normalised copy and remembering where each kept
+    // character came from.
+    let norm = '';
+    const normMap = [];
+    let prevSpace = false;
+    for (let i = 0; i < flat.length; i++) {
+        const isSpace = /\s/.test(flat[i]);
+        if (isSpace) {
+            if (prevSpace || !norm) continue;
+            norm += ' ';
+            normMap.push(i);
+            prevSpace = true;
+        } else {
+            norm += flat[i];
+            normMap.push(i);
+            prevSpace = false;
+        }
+    }
+
+    const at = norm.indexOf(wanted);
+    if (at === -1) return null;
+
+    const startFlat = normMap[at];
+    const endFlat = normMap[Math.min(at + wanted.length - 1, normMap.length - 1)];
+    const s = map[startFlat];
+    const e = map[endFlat];
+    if (!s || !e) return null;
+
+    try {
+        const r = document.createRange();
+        r.setStart(s.node, s.offset);
+        r.setEnd(e.node, e.offset + 1);
+        return r;
+    } catch (err) {
+        return null;
+    }
+}
+
+// Wait for a smooth scroll to actually finish. A fixed delay is a guess, and the
+// marker drawn on a guess lands wherever the page happened to be mid-animation -
+// which is how it ended up 187px above the word it was pointing at.
+function reviewAfterScroll(done) {
+    let last = -1;
+    let still = 0;
+    const tick = () => {
+        const y = Math.round(window.scrollY);
+        if (y === last) still++; else { still = 0; last = y; }
+        if (still >= 3) done();            // three frames unmoved: it has settled
+        else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+}
+
+// Scroll to it and ring it, briefly. Drawn as an overlay rather than by touching
+// the page's own markup - the page under test must come out of this unchanged.
+function reviewFlashRange(range) {
+    try { (range.startContainer.parentElement || document.body).scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    catch (e) { }
+
+    reviewAfterScroll(() => {
+        const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0);
+        if (!rects.length) return;
+
+        if (!document.getElementById('qa-rv-flash-style')) {
+            const st = document.createElement('style');
+            st.id = 'qa-rv-flash-style';
+            st.textContent = '@keyframes qaRvPulse{0%{opacity:0;transform:scale(1.12)}12%{opacity:1;transform:scale(1)}75%{opacity:1}100%{opacity:0}}';
+            (document.head || document.documentElement).appendChild(st);
+        }
+
+        // Page coordinates, not viewport ones: pinned to the words themselves, so a
+        // scroll while it is still showing carries it along instead of leaving it
+        // hanging over whatever has scrolled into its place.
+        const sx = window.scrollX, sy = window.scrollY;
+        for (const rc of rects) {
+            const mark = document.createElement('div');
+            mark.className = 'qa-rv-flash';
+            mark.style.cssText = `position:absolute; left:${rc.left + sx - 3}px; top:${rc.top + sy - 3}px;
+                width:${rc.width + 6}px; height:${rc.height + 6}px;
+                border:2px solid #f43f5e; border-radius:4px; background:rgba(244,63,94,.16);
+                z-index:2147483646; pointer-events:none; box-shadow:0 0 0 4px rgba(244,63,94,.18);
+                animation:qaRvPulse 1.6s ease-out forwards;`;
+            document.body.appendChild(mark);
+            setTimeout(() => mark.remove(), 2600);
+        }
+    });
+}
+
 const REVIEW_TYPE_COLORS = {
     spelling: '#fca5a5', grammar: '#fcd34d', 'word-choice': '#c4b5fd', punctuation: '#7dd3fc', spacing: '#fdba74', other: '#cbd5e1'
 };
@@ -2303,10 +2453,17 @@ function showReviewResult(review, originalText) {
            </div>`
         : '';
 
+    // Where each mistake actually sits on the page. Worked out now, once, while the
+    // reviewed range is still intact - and it also tells us which rows can be
+    // clicked, so a row that leads nowhere never pretends it can.
+    const reviewedRange = selectedRangeForAi ? selectedRangeForAi.cloneRange() : null;
+    const issueRanges = issues.map((it) => reviewRangeFor(it.original, reviewedRange));
+
     const body = (review.isCorrect || issues.length === 0)
         ? '<div style="padding:16px;text-align:center;color:#6ee7b7;"><i class="fas fa-circle-check"></i> No mistakes found.</div>'
-        : issues.map(it => {
+        : issues.map((it, i) => {
             const rtl = /[؀-ۿ]/.test((it.context || '') + (it.original || '') + (it.explanation || ''));
+            const findable = !!issueRanges[i];
             // Show the surrounding context with the wrong fragment highlighted in place
             let ctx = '';
             if (it.context) {
@@ -2317,8 +2474,12 @@ function showReviewResult(review, originalText) {
                     : safe;
                 ctx = `<div class="rv-ctx">…${highlighted}…</div>`;
             }
-            return `<div class="rv-item" style="${rtl ? 'direction:rtl;' : ''}">
-                <div class="rv-line"><span class="rv-wrong">${escapeHtml(it.original)}</span><svg class="rv-arrow" width="13" height="13" viewBox="0 0 24 24" fill="#94a3b8" aria-hidden="true"><path d="M4 11h12.2l-4.6-4.6L13 5l7 7-7 7-1.4-1.4 4.6-4.6H4z"/></svg><span class="rv-right">${escapeHtml(it.correction)}</span></div>
+            return `<div class="rv-item${findable ? ' rv-findable' : ''}" data-i="${i}"
+                         style="${rtl ? 'direction:rtl;' : ''}"
+                         title="${findable ? 'Click to show it on the page' : ''}">
+                <div class="rv-line"><span class="rv-wrong">${escapeHtml(it.original)}</span><svg class="rv-arrow" width="13" height="13" viewBox="0 0 24 24" fill="#94a3b8" aria-hidden="true"><path d="M4 11h12.2l-4.6-4.6L13 5l7 7-7 7-1.4-1.4 4.6-4.6H4z"/></svg><span class="rv-right">${escapeHtml(it.correction)}</span>
+                    ${findable ? '<i class="fas fa-location-crosshairs rv-goto" title="Show it on the page"></i>' : ''}
+                </div>
                 ${ctx}
                 <div class="rv-meta"><span class="rv-tag" style="color:${REVIEW_TYPE_COLORS[it.type] || '#cbd5e1'};">${escapeHtml(reviewTypeLabel(it.type, rtl))}</span> ${escapeHtml(it.explanation)}</div>
             </div>`;
@@ -2336,6 +2497,13 @@ function showReviewResult(review, originalText) {
             #ff-sel-result .sr-btns button:hover { background: rgba(255,255,255,0.22); }
             #ff-sel-result .sr-body { overflow-y: auto; padding: 8px 12px 12px; }
             #ff-sel-result .rv-item { background: rgba(0,0,0,0.3); border-radius: 9px; padding: 10px 12px; margin-top: 8px; }
+            /* A mistake we can actually point at is worth clicking. One we cannot
+               find on the page looks exactly as it always did - so the row never
+               offers something it cannot do. */
+            #ff-sel-result .rv-item.rv-findable { cursor: pointer; transition: background .15s, border-color .15s; border: 1px solid transparent; }
+            #ff-sel-result .rv-item.rv-findable:hover { background: rgba(244,63,94,0.13); border-color: rgba(244,63,94,0.4); }
+            #ff-sel-result .rv-item.rv-findable:hover .rv-goto { opacity: 1; color: #fb7185; }
+            #ff-sel-result .rv-goto { margin-inline-start: auto; font-size: 11px; color: #64748b; opacity: .55; flex-shrink: 0; transition: opacity .15s, color .15s; }
             #ff-sel-result .rv-line { font-size: 14px; line-height: 1.7; word-break: break-word; direction: ltr; text-align: left; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
             #ff-sel-result .rv-wrong { color: #fca5a5; text-decoration: line-through; text-decoration-color: rgba(239,68,68,0.5); unicode-bidi: isolate; }
             #ff-sel-result .rv-right { unicode-bidi: isolate; }
@@ -2365,6 +2533,15 @@ function showReviewResult(review, originalText) {
     panel.querySelector('#sr-close').addEventListener('click', () => panel.remove());
     const csvBtn = panel.querySelector('#sr-csv');
     if (csvBtn) csvBtn.addEventListener('click', () => downloadReviewCsv(issues));
+
+    // Click a mistake -> scroll to it on the page and ring it. Same as Text Match:
+    // a list of mistakes you then have to find by eye is a list you stop reading.
+    panel.addEventListener('click', (e) => {
+        const row = e.target.closest('.rv-item.rv-findable');
+        if (!row) return;
+        const r = issueRanges[+row.dataset.i];
+        if (r) reviewFlashRange(r);
+    });
 
     const copyBtn = panel.querySelector('#sr-copy');
     if (copyBtn) copyBtn.addEventListener('click', () => {
@@ -7976,20 +8153,17 @@ function openTextMatchPanel() {
         if (!row) return;
         const d = lastDiffItems[+row.dataset.i];
         if (!d || !d.sTok || !d.sTok.s.node.parentElement) return;
-        try { d.sTok.s.node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (err) { }
-        setTimeout(() => {   // after the smooth scroll settles
-            try {
-                const r = document.createRange();
-                r.setStart(d.sTok.s.node, d.sTok.s.offset);
-                r.setEnd(d.eTok.e.node, d.eTok.e.offset + 1);
-                const rect = r.getBoundingClientRect();
-                if (!rect.width && !rect.height) return;
-                const box = document.createElement('div');
-                box.style.cssText = `position:fixed;left:${rect.left - 3}px;top:${rect.top - 3}px;width:${rect.width + 6}px;height:${rect.height + 6}px;border:2px solid #000;border-radius:4px;z-index:2147483646;pointer-events:none;`;
-                document.body.appendChild(box);
-                setTimeout(() => box.remove(), 2400);
-            } catch (err) { }
-        }, 550);
+        try {
+            const r = document.createRange();
+            r.setStart(d.sTok.s.node, d.sTok.s.offset);
+            r.setEnd(d.eTok.e.node, d.eTok.e.offset + 1);
+            // The same marker the review tool uses. This used to guess at the scroll
+            // with a 550ms timeout and then draw at fixed viewport coordinates - so
+            // if the smooth scroll had not finished, the box landed above or below
+            // the words, and any later scroll left it stranded over whatever had
+            // moved into its place.
+            reviewFlashRange(r);
+        } catch (err) { }
     });
 
     // drag by header

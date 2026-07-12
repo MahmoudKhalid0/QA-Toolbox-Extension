@@ -122,6 +122,19 @@ function capAttachViewport(tab, ctx) {
     }).catch(() => ctx);
 }
 
+// The editor belongs beside the page it came from. chrome.tabs.create with no
+// index drops it at the END of the strip - with a dozen tabs open, the shot you
+// just took lands somewhere far to the right and you have to go and find it.
+function capEditorTabProps(tab, path) {
+    const props = { url: chrome.runtime.getURL(path) };
+    if (tab && typeof tab.index === 'number') {
+        props.index = tab.index + 1;      // immediately to the right of it
+        props.windowId = tab.windowId;    // and in the same window, not wherever is focused
+        if (typeof tab.id === 'number') props.openerTabId = tab.id;
+    }
+    return props;
+}
+
 function capOpenEditor(tab, dataUrl, extra) {
     if (!dataUrl) return;
     const captureId = Date.now().toString();
@@ -133,9 +146,8 @@ function capOpenEditor(tab, dataUrl, extra) {
     }, extra || {});
 
     chrome.storage.local.set(payload, () => {
-        chrome.tabs.create({
-            url: chrome.runtime.getURL(`capture/editor.html?id=${captureId}&title=${encodeURIComponent(tab.title || 'screenshot')}` + ((extra && extra.cropArea) ? '&crop=true' : ''))
-        });
+        chrome.tabs.create(capEditorTabProps(tab,
+            `capture/editor.html?id=${captureId}&title=${encodeURIComponent(tab.title || 'screenshot')}` + ((extra && extra.cropArea) ? '&crop=true' : '')));
     });
 
     // The gallery only ever holds what has been shared to Drive - see the
@@ -531,18 +543,23 @@ async function handleRecordingFinished(captureId) {
     // appear here, same rule already applied to screenshots - so nothing is
     // written to the library at capture time. ctx is still stored for the
     // editor to pick up later (context drawer, and the eventual Share/Save).
-    const openEditor = (ctx) => {
+    // `srcTab` is the tab that was being recorded, so the editor opens right beside
+    // it. It can be null (the tab was closed mid-recording) - then Chrome's default
+    // placement is all we have.
+    const openEditor = (ctx, srcTab) => {
       chrome.storage.local.set({ [`ctx_${captureId}`]: ctx || null }, () => {
-        chrome.tabs.create({
-          url: chrome.runtime.getURL(`capture/editor.html?id=${captureId}&title=${encodeURIComponent(tabTitle)}&type=video`)
-        });
+        chrome.tabs.create(capEditorTabProps(srcTab,
+          `capture/editor.html?id=${captureId}&title=${encodeURIComponent(tabTitle)}&type=video`));
         chrome.action.setBadgeText({ text: '' });
         chrome.storage.local.remove(['tempTabTitle', 'tempTabId', 'recordingStartTime']);
       });
     };
 
-    if (tabId) chrome.tabs.get(tabId, (t) => openEditor(t ? capCollectContext(t) : null));
-    else openEditor(null);
+    if (tabId) chrome.tabs.get(tabId, (t) => {
+      void chrome.runtime.lastError;                 // the tab may be gone by now
+      openEditor(t ? capCollectContext(t) : null, t || null);
+    });
+    else openEditor(null, null);
   });
 }
 
