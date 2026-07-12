@@ -7,6 +7,7 @@ importScripts('capture/cap-background.js');
 importScripts('session-cookie-jar.js');   // pure cookie-jar logic
 importScripts('session-isolation.js');    // per-tab session isolation via chrome.debugger
 importScripts('session-swap.js');         // quick login switch (Snapshot & Swap, no debugger)
+importScripts('automation.js');           // AI automation-code generator (prompts + framework matrix)
 if (self.SessionIsolation) self.SessionIsolation.loadFromStorage();
 
 // A recording is handed to the editor as a Blob in IndexedDB. If that editor tab
@@ -1120,6 +1121,53 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     // Element Inspector: AI-generated robust relative XPath (premium candidate)
+    // AI automation, pass 1: look at the element and choose a locator. The page
+    // verifies it before any code is written (the content script runs the loop).
+    if (request.action === 'aiAnalyseElement') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
+                const out = await analyseElementWithAI(AI_CONFIG.apiKey, {
+                    framework: request.framework,
+                    description: request.description,
+                    element: request.element,
+                    url: request.url,
+                    feedback: request.feedback,
+                    lastChance: !!request.lastChance,
+                });
+                if (out.__refused || out.outOfScope) { sendResponse({ refused: true }); return; }
+                sendResponse(out);
+            } catch (err) {
+                console.error('aiAnalyseElement error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
+    // AI automation, pass 2: write the code around the locator that was verified.
+    if (request.action === 'aiGenerateAutomation') {
+        (async () => {
+            try {
+                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
+                const result = await generateAutomationWithAI(AI_CONFIG.apiKey, {
+                    framework: request.framework,
+                    language: request.language,
+                    pom: !!request.pom,
+                    description: request.description,
+                    element: request.element,
+                    url: request.url,
+                    verified: request.verified,
+                });
+                sendResponse(result);
+            } catch (err) {
+                console.error('aiGenerateAutomation error:', err);
+                sendResponse({ error: String(err.message || err) });
+            }
+        })();
+        return true;
+    }
+
     if (request.action === 'aiGenerateXPath') {
         (async () => {
             try {
@@ -2181,6 +2229,111 @@ async function generateRelativeXPathWithAI(apiKey, context, url, extensionXpath,
     const textBlock = (data.content || []).find(b => b.type === 'text');
     if (!textBlock || !textBlock.text) throw new Error('Empty AI response');
     return JSON.parse(textBlock.text);
+}
+
+// Write automation code for a picked element. The system prompt is deliberately
+// narrow (see automation.js): this writes tests for the element in front of it and
+// refuses everything else, rather than becoming a chat window that happens to live
+// in a QA tool.
+async function callClaudeJson(apiKey, { system, prompt, schema, maxTokens }) {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            // Sonnet: this is code someone will commit. Cheapness is not the point.
+            model: AI_CONFIG.smartModel || AI_CONFIG.model,
+            max_tokens: maxTokens || 2048,
+            system,
+            output_config: { format: { type: 'json_schema', schema } },
+            messages: [{ role: 'user', content: prompt }]
+        })
+    });
+
+    if (!response.ok) {
+        let message = `Claude API error (${response.status})`;
+        try {
+            const err = await response.json();
+            if (err && err.error && err.error.message) message = err.error.message;
+        } catch (e) { }
+        throw new Error(message);
+    }
+
+    const data = await response.json();
+    if (data.stop_reason === 'refusal') return { __refused: true };
+
+    // The answer ran out of room. Say so - a truncated JSON body would otherwise
+    // blow up in JSON.parse as "Unterminated string", which tells the user nothing
+    // about what actually went wrong or what to do about it.
+    if (data.stop_reason === 'max_tokens') {
+        throw new Error('The answer was cut short (too long). Try a shorter description, or turn Page Object off.');
+    }
+
+    const textBlock = (data.content || []).find(b => b.type === 'text');
+    if (!textBlock || !textBlock.text) throw new Error('Empty AI response');
+
+    try {
+        return JSON.parse(textBlock.text);
+    } catch (e) {
+        console.error('Could not parse the AI response:', textBlock.text);
+        throw new Error('The AI returned a malformed answer. Try again.');
+    }
+}
+
+// PASS 1 - look at the element and choose a locator. No code is written yet: the
+// locator comes back as a plain CSS/XPath too, so the PAGE can run it and tell us
+// whether it really matches this element and nothing else. If it does not, the
+// failure goes back to the model as feedback and it picks a different anchor.
+async function analyseElementWithAI(apiKey, req) {
+    const A = self.AutomationGen;
+    return callClaudeJson(apiKey, {
+        system: A.systemPrompt(),
+        prompt: A.analysePrompt(req),
+        schema: A.analyseSchema,
+        // A long XPath anchored on a label, plus its reason, in a JSON envelope -
+        // 700 left no room and the answer came back cut in half.
+        maxTokens: 1500,
+    });
+}
+
+// PASS 2 - write the code around a locator that has already been proven on the
+// page, with the class names fixed so the file and the class cannot disagree.
+async function generateAutomationWithAI(apiKey, req) {
+    const A = self.AutomationGen;
+    const out = await callClaudeJson(apiKey, {
+        system: A.systemPrompt(),
+        prompt: A.userPrompt(req),
+        schema: A.schema,
+        // Page Object means TWO files. A Java page object and its test, with imports
+        // and waits, and every newline escaped inside a JSON string, runs well past
+        // 2048 - and the answer came back truncated, which JSON.parse then reported
+        // as "Unterminated string" rather than as the size problem it was.
+        maxTokens: 8000,
+    });
+
+    if (out.__refused) return { refused: true };
+    if (String(out.code || '').trim() === A.REFUSAL) return { refused: true };
+
+    const name = (req.verified && req.verified.className) || 'Element';
+    const pageObject = out.pageObject || '';
+    return {
+        refused: false,
+        code: out.code,
+        pageObject,
+        notes: out.notes || '',
+        locator: (req.verified && req.verified.locator) || '',
+        reason: (req.verified && req.verified.reason) || '',
+        className: name,
+        // Named FROM the code, not from a name the model was asked to honour and
+        // then quietly changed - a Java file whose class does not match it will not
+        // compile, and that is not something to leave to good behaviour.
+        testFile: A.fileNameFromCode(req.language, out.code, name, 'test'),
+        pageFile: A.fileNameFromCode(req.language, pageObject, name, 'page'),
+    };
 }
 
 // Generate a single value for one field (right-click fill). mode: 'valid' makes

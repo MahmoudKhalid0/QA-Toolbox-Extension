@@ -76,6 +76,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         startInspectMode();
         sendResponse({ success: true });
     }
+    if (request.action === 'startAutomationPicker') {
+        // The framework/language/style were settled in the panel; carry them into
+        // the pick so the page panel opens already knowing what it is writing.
+        qaAutoCfg = {
+            framework: request.framework, language: request.language, pom: !!request.pom,
+            frameworkLabel: request.frameworkLabel, languageLabel: request.languageLabel,
+        };
+        startInspectMode((el) => showAutomationPanel(el));
+        sendResponse({ success: true });
+        return;
+    }
     if (request.action === 'startXPathFinder') {
         const mode = request.mode; // 'extension' | 'ai'
         closeXPathFinderPanel();
@@ -5239,6 +5250,272 @@ function showXPathFinderPanel(el, mode) {
 }
 
 // Compact description of an element + its ancestors for AI XPath generation
+// ── AI Automation Code ──────────────────────────────────────────────────────
+// The settings were chosen in the panel; what the user actually WANTS is asked
+// here, on the page, next to the element it is about - because that is the only
+// place the question makes sense.
+let qaAutoCfg = null;    // { framework, language, pom } carried in from the panel
+
+function showAutomationPanel(el) {
+    const ctx = collectAiXPathContext(el);
+    const cfg = qaAutoCfg || { framework: 'playwright', language: 'typescript', pom: false };
+    const fwLabel = cfg.frameworkLabel || cfg.framework;
+    const langLabel = cfg.languageLabel || cfg.language;
+
+    const esc = (t) => { const d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; };
+    const body = qaOpenPanel('<i class="fas fa-code"></i> AI Automation Code', 'automation');
+
+    const summary = `<${ctx.tag}>` + (ctx.text ? ` "${ctx.text.slice(0, 40)}"` : '');
+
+    body.innerHTML = `
+        <style>
+            .qa-auto-el { display:flex; align-items:center; gap:8px; background:rgba(16,185,129,.09); border:1px solid rgba(16,185,129,.25);
+                          border-radius:10px; padding:9px 11px; font-size:12px; color:#6ee7b7; margin-bottom:10px; }
+            .qa-auto-el code { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#a7f3d0; }
+            .qa-auto-cfg { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+            .qa-auto-tag { font-size:10.5px; font-weight:700; color:#94a3b8; background:rgba(255,255,255,.06);
+                           border-radius:20px; padding:4px 10px; }
+            .qa-auto-ta { width:100%; box-sizing:border-box; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.14);
+                          border-radius:10px; color:#fff; padding:10px 12px; font-size:13px; outline:none; resize:vertical;
+                          min-height:64px; font-family:inherit; }
+            .qa-auto-ta:focus { border-color:#10b981; }
+            .qa-auto-go { width:100%; margin-top:9px; border:none; border-radius:10px; padding:11px; font-size:13px; font-weight:700;
+                          cursor:pointer; color:#fff; background:linear-gradient(135deg,#10b981,#0d9488);
+                          display:flex; align-items:center; justify-content:center; gap:8px; }
+            .qa-auto-go:hover { filter:brightness(1.08); }
+            .qa-auto-go:disabled { opacity:.6; cursor:not-allowed; }
+            .qa-auto-out { margin-top:12px; }
+
+            /* Verified badge: the locator was RUN on this page and hit exactly one
+               element. Worth saying loudly - it is what separates code you can trust
+               from code you have to go and check by hand. */
+            .qa-auto-ok { display:flex; gap:9px; background:rgba(16,185,129,.1); border:1px solid rgba(16,185,129,.3);
+                          border-radius:10px; padding:10px 12px; font-size:11.5px; color:#a7f3d0; line-height:1.6; }
+            .qa-auto-ok > i { color:#10b981; margin-top:2px; flex-shrink:0; }
+            /* min-width:0. A flex child defaults to min-width:auto, which means it
+               refuses to shrink below its content - so a long locator pushed the whole
+               badge out past the edge of the panel instead of wrapping or scrolling. */
+            .qa-auto-ok > div { flex:1; min-width:0; overflow-wrap:anywhere; }
+            .qa-auto-ok b { color:#6ee7b7; }
+            .qa-auto-ok code { display:block; margin-top:5px; font-family:ui-monospace,Menlo,monospace; font-size:11px;
+                               color:#e2e8f0; background:rgba(0,0,0,.3); border-radius:6px; padding:6px 8px;
+                               max-width:100%; box-sizing:border-box;
+                               overflow-x:auto; white-space:pre; }
+            .qa-auto-ok code::-webkit-scrollbar { height:6px; }
+            .qa-auto-ok code::-webkit-scrollbar-thumb { background:rgba(255,255,255,.2); border-radius:3px; }
+            .qa-auto-why { display:block; margin-top:5px; color:#7dd3b0; }
+
+            /* The file name and its buttons were on one row, and the Download button
+               fell off the end of a panel this narrow. The name gets the row; the
+               buttons get their own. */
+            .qa-auto-file { margin-top:14px; }
+            .qa-auto-name { display:block; font-size:11.5px; font-weight:700; color:#cbd5e1;
+                            font-family:ui-monospace,Menlo,monospace; margin-bottom:7px;
+                            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+            .qa-auto-acts { display:flex; gap:7px; margin-bottom:7px; }
+            .qa-auto-btn { flex:1; justify-content:center; border:none; border-radius:8px; padding:7px 10px; font-size:11.5px;
+                           font-weight:700; cursor:pointer; color:#cbd5e1; background:rgba(255,255,255,.08);
+                           display:flex; align-items:center; gap:6px; }
+            .qa-auto-btn:hover { background:rgba(16,185,129,.3); color:#fff; }
+            .qa-auto-btn.dl { background:linear-gradient(135deg,#10b981,#0d9488); color:#fff; }
+            .qa-auto-btn.dl:hover { filter:brightness(1.08); }
+
+            .qa-auto-code { margin:0; background:#0b1020; border:1px solid rgba(255,255,255,.1); border-radius:10px;
+                            padding:12px; overflow:auto; max-height:280px; }
+            .qa-auto-code::-webkit-scrollbar { width:8px; height:8px; }
+            .qa-auto-code::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16); border-radius:4px; }
+            .qa-auto-code code { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.7; color:#e2e8f0;
+                                 white-space:pre; display:block; }
+            .qa-auto-note { margin-top:10px; font-size:11px; color:#94a3b8; line-height:1.55;
+                            border-left:2px solid rgba(255,255,255,.12); padding-left:9px; }
+            .qa-auto-err { background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.35); color:#fca5a5;
+                           border-radius:10px; padding:11px; font-size:12px; line-height:1.6; }
+            .qa-auto-err code { font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+        </style>
+        <div class="qa-auto-el"><i class="fas fa-crosshairs"></i><code>${esc(summary)}</code></div>
+        <div class="qa-auto-cfg">
+            <span class="qa-auto-tag">${esc(fwLabel)}</span>
+            <span class="qa-auto-tag">${esc(langLabel)}</span>
+            ${cfg.pom ? '<span class="qa-auto-tag">Page Object</span>' : ''}
+        </div>
+        <textarea class="qa-auto-ta" id="qaAutoWhat"
+            placeholder="What should the code do?&#10;e.g. assert the text is &quot;Saved&quot;, or click it and check the dialog closes"></textarea>
+        <button class="qa-auto-go" id="qaAutoGo"><i class="fas fa-wand-magic-sparkles"></i> Generate code</button>
+        <div class="qa-auto-out" id="qaAutoOut"></div>
+    `;
+
+    const what = body.querySelector('#qaAutoWhat');
+    const go = body.querySelector('#qaAutoGo');
+    const out = body.querySelector('#qaAutoOut');
+    setTimeout(() => what.focus(), 60);
+
+    const download = (name, text) => {
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    };
+
+    const fileBlock = (name, code) => {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div class="qa-auto-file">
+                <span class="qa-auto-name" title="${esc(name)}">${esc(name)}</span>
+                <div class="qa-auto-acts">
+                    <button class="qa-auto-btn qa-copy"><i class="fas fa-copy"></i> Copy</button>
+                    <button class="qa-auto-btn dl qa-dl"><i class="fas fa-download"></i> Download</button>
+                </div>
+            </div>
+            <pre class="qa-auto-code"><code>${esc(code)}</code></pre>`;
+        wrap.querySelector('.qa-copy').addEventListener('click', (e) => {
+            navigator.clipboard.writeText(code).then(() => {
+                const b = e.currentTarget;
+                b.innerHTML = '<i class="fas fa-check"></i> Copied';
+                setTimeout(() => { b.innerHTML = '<i class="fas fa-copy"></i> Copy'; }, 1200);
+            }).catch(() => { });
+        });
+        wrap.querySelector('.qa-dl').addEventListener('click', () => download(name, code));
+        return wrap;
+    };
+
+    const ask = (msg) => new Promise((resolve) => {
+        chrome.runtime.sendMessage(msg, (resp) => {
+            if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+            else resolve(resp || { error: 'no response' });
+        });
+    });
+
+    // Run the locator the AI chose against THIS page. A selector that matches
+    // nothing, or matches five things, is a test that will fail or - worse - quietly
+    // act on the wrong element. Either way the model hears about it and tries again.
+    const checkOnPage = (selector, type) => {
+        let nodes;
+        if (type === 'xpath') {
+            nodes = evaluateXPathAll(selector);
+            if (nodes === null) return { ok: false, why: `that XPath is not valid syntax: ${selector}` };
+        } else {
+            try { nodes = Array.from(document.querySelectorAll(selector)); }
+            catch (e) { return { ok: false, why: `that CSS selector is not valid syntax: ${selector}` }; }
+        }
+        if (nodes.length === 0) return { ok: false, why: `"${selector}" matched NOTHING on the live page.` };
+        if (nodes.length > 1) return { ok: false, why: `"${selector}" matched ${nodes.length} elements - it must match exactly one.` };
+        if (nodes[0] !== el) return { ok: false, why: `"${selector}" matched a different element (a <${nodes[0].tagName.toLowerCase()}>), not the one that was picked.` };
+        return { ok: true, count: 1 };
+    };
+
+    const err = (html) => { out.innerHTML = `<div class="qa-auto-err">${html}</div>`; };
+    const refusedHtml = `<b>That is not something this tool does.</b><br>
+        It only writes test-automation code for the element you picked.
+        Describe what you want tested &mdash; an assertion, a click, a form fill.`;
+
+    go.addEventListener('click', async () => {
+        const description = (what.value || '').trim();
+        if (!description) { what.focus(); return; }
+
+        go.disabled = true;
+        out.innerHTML = '';
+
+        // ── pass 1: the AI studies the element and picks a locator; the PAGE checks
+        // it. Up to three goes, and it is shown EVERY failure so far - told only the
+        // last one, it would cycle back round to an answer it had already been told
+        // was wrong. ──
+        let verified = null;
+        const failures = [];
+        for (let attempt = 0; attempt < 3 && !verified; attempt++) {
+            go.innerHTML = attempt === 0
+                ? '<i class="fas fa-spinner fa-spin"></i> Studying the element…'
+                : `<i class="fas fa-spinner fa-spin"></i> That locator missed &mdash; trying another…`;
+
+            const a = await ask({
+                action: 'aiAnalyseElement',
+                framework: cfg.framework,
+                description,
+                element: ctx,
+                url: location.href,
+                feedback: failures.length ? failures : undefined,
+                // On the final go, a brittle-but-unique anchor beats no answer at
+                // all - some pages really do offer nothing stable. It has to admit
+                // to the brittleness, which the badge then shows.
+                lastChance: attempt === 2,
+            });
+
+            if (a.error) {
+                go.disabled = false;
+                go.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Generate code';
+                err(`<b>Could not generate:</b> ${esc(a.error === 'no_api_key' ? 'The AI key is not configured.' : a.error)}`);
+                return;
+            }
+            if (a.refused) {
+                go.disabled = false;
+                go.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Generate code';
+                err(refusedHtml);
+                return;
+            }
+
+            const check = checkOnPage(a.verifySelector, a.verifyType);
+            if (check.ok) verified = a;
+            else failures.push(check.why);
+        }
+
+        // Three misses. Say so rather than handing over code built on a locator we
+        // know does not find the element.
+        if (!verified) {
+            go.disabled = false;
+            go.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Generate code';
+            err(`<b>Could not find a locator that reliably matches this element.</b><br>
+                 Tried ${failures.length}:<br>${failures.map((f) => '&bull; ' + esc(f)).join('<br>')}`);
+            return;
+        }
+
+        // ── pass 2: write the code around the locator we just proved ──
+        go.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Writing the code…';
+        const resp = await ask({
+            action: 'aiGenerateAutomation',
+            framework: cfg.framework,
+            language: cfg.language,
+            pom: cfg.pom,
+            description,
+            element: ctx,
+            url: location.href,
+            verified,
+        });
+
+        go.disabled = false;
+        go.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Generate code';
+
+        if (resp.error) {
+            err(`<b>Could not generate:</b> ${esc(resp.error === 'no_api_key' ? 'The AI key is not configured.' : resp.error)}`);
+            return;
+        }
+        if (resp.refused) { err(refusedHtml); return; }
+
+        out.innerHTML = '';
+
+        // Say plainly that the locator was run on this page and hit exactly one
+        // element - that is the difference between code you can trust and code you
+        // have to go and check yourself.
+        const badge = document.createElement('div');
+        badge.className = 'qa-auto-ok';
+        badge.innerHTML = `<i class="fas fa-circle-check"></i>
+            <div><b>Verified on this page</b> &mdash; the locator matches this element and nothing else.
+            <code>${esc(verified.locator)}</code>
+            ${verified.reason ? `<span class="qa-auto-why">${esc(verified.reason)}</span>` : ''}</div>`;
+        out.appendChild(badge);
+
+        if (resp.pageObject) out.appendChild(fileBlock(resp.pageFile, resp.pageObject));
+        out.appendChild(fileBlock(resp.testFile, resp.code));
+
+        if (resp.notes) {
+            const note = document.createElement('div');
+            note.className = 'qa-auto-note';
+            note.textContent = resp.notes;
+            out.appendChild(note);
+        }
+    });
+}
+
 function collectAiXPathContext(el) {
     const attrs = {};
     for (const a of Array.from(el.attributes || [])) attrs[a.name] = a.value.slice(0, 80);

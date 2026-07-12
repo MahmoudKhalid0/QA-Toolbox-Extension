@@ -373,6 +373,7 @@ document.getElementById('addBtn').addEventListener('click', () => {
 const TOOL_SECTIONS = [
     { card: 'capToolBtn', panel: 'capOptions' },
     { card: 'inspectorToolBtn', panel: 'inspectorOptions' },
+    { card: 'autoToolBtn', panel: 'autoOptions' },
     { card: 'autorefreshToolBtn', panel: 'autorefreshOptions' }
 ];
 function toggleToolSection(cardId, panelId) {
@@ -403,7 +404,7 @@ let inspectStartingGuard = false;
 // ever the single active/highlighted one at a time. Extend this list when a
 // new tool is added instead of wiring its own one-off clearing logic.
 const ALL_TOOL_BTN_IDS = [
-    'inspectBtn', 'xpathBtn', 'aiXpathBtn', 'ocrBtn', 'measureBtn',
+    'inspectBtn', 'xpathBtn', 'aiXpathBtn', 'ocrBtn', 'measureBtn', 'autoToolBtn',
     'linksToolBtn', 'perfToolBtn', 'imagesToolBtn',
     'storageToolBtn', 'responsiveToolBtn', 'textMatchToolBtn', 'apiExportToolBtn', 'timeMachineToolBtn'
 ];
@@ -663,6 +664,75 @@ async function startXPathFinder(mode) {
 
 document.getElementById('xpathBtn').addEventListener('click', () => startXPathFinder('extension'));
 document.getElementById('aiXpathBtn').addEventListener('click', () => startXPathFinder('ai'));
+
+// ── AI Automation Code ──────────────────────────────────────────────────────
+// The framework decides which languages even exist (Java for Cypress is not a
+// thing), so the language list is rebuilt from the framework rather than being a
+// fixed list the user can put into an impossible state.
+(function setupAutomationTool() {
+    const A = window.AutomationGen;
+    const card = document.getElementById('autoToolBtn');
+    const fwSel = document.getElementById('autoFramework');
+    const langSel = document.getElementById('autoLanguage');
+    const pom = document.getElementById('autoPom');
+    if (!A || !card || !fwSel) return;
+
+    card.addEventListener('click', () => toggleToolSection('autoToolBtn', 'autoOptions'));
+
+    for (const [id, f] of Object.entries(A.FRAMEWORKS)) {
+        fwSel.appendChild(new Option(f.label, id));
+    }
+
+    const paintLanguages = (want) => {
+        const langs = A.languagesFor(fwSel.value);
+        langSel.innerHTML = '';
+        for (const l of langs) langSel.appendChild(new Option(l.label, l.id));
+        // Keep the language if the new framework can still be written in it -
+        // switching Selenium->Playwright should not silently throw away "Python".
+        langSel.value = langs.some(l => l.id === want) ? want : langs[0].id;
+    };
+
+    const save = () => chrome.storage.local.set({
+        autoFramework: fwSel.value, autoLanguage: langSel.value, autoPom: pom.checked
+    });
+
+    chrome.storage.local.get(['autoFramework', 'autoLanguage', 'autoPom'], (r) => {
+        fwSel.value = A.FRAMEWORKS[r.autoFramework] ? r.autoFramework : 'playwright';
+        paintLanguages(r.autoLanguage);
+        pom.checked = !!r.autoPom;
+    });
+
+    fwSel.addEventListener('change', () => { paintLanguages(langSel.value); save(); });
+    langSel.addEventListener('change', save);
+    pom.addEventListener('change', save);
+
+    document.getElementById('autoPickBtn').addEventListener('click', async () => {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.url || /^(chrome|chrome-extension|edge|about):/i.test(tab.url)) {
+            showToastMessage('Open a website first', 'error');
+            return;
+        }
+        await ensureContentScript(tab.id);
+        markActiveTool('autoToolBtn');
+        // The settings ride along with the pick, so the page panel already knows
+        // what it is generating for before the user has typed a word.
+        // The labels ride along rather than the page loading automation.js just to
+        // read two strings - the content script is injected into every page, and
+        // this keeps it that much lighter.
+        await chrome.tabs.sendMessage(tab.id, {
+            action: 'startAutomationPicker',
+            framework: fwSel.value,
+            language: langSel.value,
+            pom: pom.checked,
+            frameworkLabel: A.FRAMEWORKS[fwSel.value].label,
+            languageLabel: A.LANGUAGES[langSel.value].label,
+        }).catch(() => { });
+        // The panel stays open, exactly as it does for the Inspector and the XPath
+        // finder. Only the capture tools close it, and only because they would
+        // otherwise be in the shot.
+        showToastMessage('Pick an element on the page (Esc to cancel)', 'success');
+    });
+})();
 
 // Image Text Extractor (OCR) - pick an image, AI reads its text
 document.getElementById('ocrBtn').addEventListener('click', async () => {

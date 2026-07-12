@@ -1490,6 +1490,39 @@
         /* The gallery belongs to the whole card, not to the section above it. */
         .cap-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07); }
 
+        /* AI automation: the choices you keep (framework, language, style). */
+        #autoOptions .auto-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+        #autoOptions .auto-lbl { font-size: 11.5px; color: #94a3b8; width: 78px; flex-shrink: 0; }
+        #autoOptions .auto-sel {
+            flex: 1; min-width: 0; background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12); border-radius: 9px; color: #fff;
+            padding: 8px 10px; font-size: 12.5px; outline: none; cursor: pointer;
+        }
+        #autoOptions .auto-sel:focus { border-color: #10b981; }
+        /* The dropdown list is drawn by the OS, and an <option> inherits the
+           select's white text onto its own white background - the items are there,
+           you simply cannot see them. Every other select here already says this;
+           this one has to as well. */
+        #autoOptions .auto-sel option { background: #1e293b; color: #fff; }
+        #autoOptions .auto-pom { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-size: 12px; color: #cbd5e1; cursor: pointer; user-select: none; }
+        #autoOptions .auto-pom i { color: #94a3b8; font-size: 12px; }
+        #autoOptions .auto-pom span:first-of-type { flex: 1; }
+        #autoOptions .auto-pom input { position: absolute; opacity: 0; pointer-events: none; }
+        #autoOptions .auto-pom-sw { width: 32px; height: 18px; border-radius: 20px; background: rgba(255,255,255,0.14); position: relative; flex-shrink: 0; transition: background .18s; }
+        #autoOptions .auto-pom-sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .18s; }
+        #autoOptions .auto-pom input:checked ~ .auto-pom-sw { background: #10b981; }
+        #autoOptions .auto-pom input:checked ~ .auto-pom-sw::after { transform: translateX(14px); }
+        #autoOptions .auto-pom:has(input:checked) { color: #6ee7b7; }
+        #autoOptions .auto-pom:has(input:checked) i { color: #10b981; }
+        #autoOptions .auto-pick {
+            width: 100%; box-sizing: border-box; border: none; border-radius: 10px;
+            padding: 11px; font-size: 13px; font-weight: 700; cursor: pointer; color: #fff;
+            background: linear-gradient(135deg, #10b981, #0d9488);
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+        #autoOptions .auto-pick:hover { filter: brightness(1.08); }
+        #autoOptions .auto-hint { margin-top: 8px; font-size: 10.5px; color: #64748b; line-height: 1.5; text-align: center; }
+
         /* Mic switch: arms narration for the NEXT recording, so it sits with the
            capture buttons but must not read as one of them. */
         .cap-mic { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11.5px; color: #cbd5e1; cursor: pointer; user-select: none; }
@@ -1734,6 +1767,41 @@
                             <p>Sizes, padding &amp; margin; gap between two elements, with alignment guides</p>
                         </div>
                     </button>
+                </div>
+
+                <!-- AI automation: pick an element, say what you want, get code you
+                     could commit. The choices live HERE, before the pick, because
+                     they are settings you keep; the description lives on the page,
+                     next to the element it is about. -->
+                <button class="tool-card" id="autoToolBtn" title="AI Automation Code">
+                    <div class="tool-card-icon" style="background: linear-gradient(135deg, #10b981, #0d9488);">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <div class="tool-card-info">
+                        <h4>AI Automation Code</h4>
+                        <p>Pick an element, say what you want tested &mdash; get clean automation code in your framework and language, ready to download</p>
+                    </div>
+                    <i class="fas fa-chevron-down tool-card-chevron"></i>
+                </button>
+                <div class="tool-options hidden" id="autoOptions">
+                    <div class="auto-row">
+                        <label class="auto-lbl" for="autoFramework">Framework</label>
+                        <select id="autoFramework" class="auto-sel"></select>
+                    </div>
+                    <div class="auto-row">
+                        <label class="auto-lbl" for="autoLanguage">Language</label>
+                        <select id="autoLanguage" class="auto-sel"></select>
+                    </div>
+                    <label class="auto-pom" id="autoPomRow" title="Generate a page-object class plus a test that uses it">
+                        <i class="fas fa-layer-group"></i>
+                        <span>Page Object Model</span>
+                        <input type="checkbox" id="autoPom">
+                        <span class="auto-pom-sw"></span>
+                    </label>
+                    <button class="auto-pick" id="autoPickBtn">
+                        <i class="fas fa-crosshairs"></i> Pick an element
+                    </button>
+                    <div class="auto-hint">You describe what you want on the page, next to the element itself.</div>
                 </div>
 
                 <button class="tool-card" id="linksToolBtn" title="Scan links on this page">
@@ -2110,6 +2178,9 @@
     </div>
 
     <script src="db.js"></script>
+    <!-- The framework/language matrix and the prompts. Shared with the worker, so
+         the panel's dropdowns and the model's instructions can never drift apart. -->
+    <script src="automation.js"></script>
     <script src="popup.js"></script>
     <script src="tempmail.js"></script>
     <script src="sessions.js"></script>
