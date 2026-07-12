@@ -345,7 +345,10 @@ body.video-mode .tools {
   display: none !important;
 }
 
-body.video-mode .actions button:not(#saveBtn):not(#reportBugBtn):not(#cloudUploadBtn):not(#viewHistoryBtn),
+/* #ctxBtn stays: a recording carries the same page context (console errors,
+   failed requests, environment) as a screenshot does - hiding the button was
+   what made those look like they were never collected for video. */
+body.video-mode .actions button:not(#saveBtn):not(#reportBugBtn):not(#cloudUploadBtn):not(#viewHistoryBtn):not(#ctxBtn),
 body.video-mode .actions .separator {
   display: none !important;
 }
@@ -965,6 +968,14 @@ body.video-mode .logo {
   color: var(--accent-red);
 }
 
+/* The capture's own row: shown so this field reads the same for a screenshot as
+   it does for a recording, but it carries no remove control - it is uploaded
+   with the bug either way and is not one of the user's picked files. */
+.file-item.file-auto {
+  border-style: dashed;
+  border-color: rgba(46, 213, 115, 0.35);
+}
+
 /* Global Loader Overlays */
 .loader-overlay {
   position: fixed;
@@ -1310,6 +1321,19 @@ body.video-mode .logo {
 }
 .ctx-sec:first-child { margin-top: 0; }
 .ctx-sec .cnt { margin-left: auto; color: var(--text-secondary); letter-spacing: 0; font-weight: 400; }
+
+/* A page with dozens of errors made the whole drawer one endless scroll, so the
+   Environment block and the Network section below scrolled out of reach. Each
+   list now scrolls inside itself: the section headers stay put and the drawer
+   keeps a sane height no matter how many errors a page logged. */
+.ctx-list {
+    max-height: 230px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 3px;
+}
+.ctx-list::-webkit-scrollbar { width: 7px; }
+.ctx-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 4px; }
 
 .ctx-kv { display: grid; grid-template-columns: 84px 1fr; gap: 6px 10px; font-size: 11.5px; }
 .ctx-kv dt { color: var(--text-secondary); }

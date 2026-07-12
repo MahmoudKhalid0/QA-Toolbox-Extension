@@ -3368,22 +3368,80 @@ bugAttachments?.addEventListener('change', (e) => {
     renderAttachmentList();
 });
 
+// The capture's filename, named for the tab it was taken from - so the row in
+// the attachments field and the file that actually lands on the ticket always
+// say the same thing. Same sanitising the download button uses.
+function captureFileName() {
+    const safe = pageTitle.replace(/[/\\?%*:|"<>]/g, '').trim().replace(/\s+/g, '_') || 'capture';
+    return `${safe.slice(0, 80)}.png`;
+}
+
+// The capture as a real file, so the attachments field is the single source of
+// everything that reaches the ticket - nothing is uploaded straight off the
+// canvas. A recording is already the file in selectedFiles; an image session
+// materialises the canvas here, at submit time, so annotations made right up to
+// the click are included. In a video session the canvas was never drawn on
+// (setMode only hides it), so reading it would have produced a blank 300x150
+// PNG - which is exactly what used to get uploaded with every video bug.
+async function buildCaptureFile() {
+    if (isVideoSession) return window.pendingVideo || null;
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+    return blob ? new File([blob], captureFileName(), { type: 'image/png' }) : null;
+}
+
+// The attachments field is the whole payload: the capture plus whatever the
+// user added by hand. The capture leads the list.
+async function collectAttachments() {
+    const files = [...selectedFiles];
+    const capture = await buildCaptureFile();
+    if (capture && !files.includes(capture)) files.unshift(capture);   // a video is already in there
+    return files;
+}
+
 function renderAttachmentList() {
     if (!bugAttachmentList) return;
     bugAttachmentList.innerHTML = '';
-    selectedFiles.forEach((file, index) => {
+
+    // The capture always goes onto the bug. A recording is already a file in
+    // selectedFiles, so it lists itself; a screenshot only becomes a file at
+    // submit time (collectAttachments), so it gets a row of its own here. Both
+    // are shown without a remove control - they are the evidence, not one of the
+    // user's picked files.
+    if (!isVideoSession) {
+        const name = captureFileName();
         const item = document.createElement('div');
-        item.className = 'file-item';
+        item.className = 'file-item file-auto';
+        item.innerHTML = `
+            <i class="fas fa-file-image"></i>
+            <span class="file-name-view" title="Click to preview - ${name}">${name}</span>
+            <i class="fas fa-eye view-file" title="Preview this file"></i>
+        `;
+        const preview = () => canvas.toBlob((b) => { if (b) window.open(URL.createObjectURL(b), '_blank'); }, 'image/png');
+        item.querySelector('.file-name-view').onclick = preview;
+        item.querySelector('.view-file').onclick = preview;
+        bugAttachmentList.appendChild(item);
+    }
+
+    selectedFiles.forEach((file, index) => {
+        // The recording is the capture this bug is being filed from - the same
+        // evidence the screenshot is for an image session. It rides in
+        // selectedFiles because that is how it reaches the tracker, but it is
+        // not one of the user's picked files: no remove control, so a stray
+        // click cannot file a bug with its evidence stripped out.
+        const isCapture = window.pendingVideo && file === window.pendingVideo;
+        const item = document.createElement('div');
+        item.className = isCapture ? 'file-item file-auto' : 'file-item';
         item.innerHTML = `
             <i class="fas ${file.type.startsWith('image/') ? 'fa-file-image' : 'fa-file-video'}"></i>
             <span class="file-name-view" title="Click to preview - ${file.name}">${file.name}</span>
             <i class="fas fa-eye view-file" title="Preview this file"></i>
-            <span class="remove-file" data-index="${index}">&times;</span>
+            ${isCapture ? '' : `<span class="remove-file" data-index="${index}">&times;</span>`}
         `;
         const preview = () => window.open(URL.createObjectURL(file), '_blank');
         item.querySelector('.file-name-view').onclick = preview;
         item.querySelector('.view-file').onclick = preview;
-        item.querySelector('.remove-file').onclick = () => {
+        const rm = item.querySelector('.remove-file');
+        if (rm) rm.onclick = () => {
             selectedFiles.splice(index, 1);
             renderAttachmentList();
         };
@@ -3411,8 +3469,11 @@ reportBugBtn.addEventListener('click', async () => {
     // Ensure video is added to attachments if it exists
     if (window.pendingVideo && !selectedFiles.includes(window.pendingVideo)) {
         selectedFiles.push(window.pendingVideo);
-        renderAttachmentList();
     }
+    // Draw the list every time the modal opens, not only when a video pushed a
+    // file into it - a screenshot capture has no file to push, and its read-only
+    // "auto" row would otherwise never be rendered.
+    renderAttachmentList();
     bugModal.classList.add('show');
     delete bugSeverity.dataset.userSet;      // a new bug, a fresh judgement
     bugOrg.focus();
@@ -3656,8 +3717,7 @@ submitBugBtn.addEventListener('click', async () => {
     // foundIn is now optional
     if (!parent) { showToast('Please select Parent Work Item'); bugParentSearch.focus(); return; }
     const tags = Array.from(selectedTags).join(', ');
-    const screenshotDataUrl = canvas.toDataURL('image/png');
-    const attachments = [...selectedFiles];
+    const attachments = await collectAttachments();
 
     // Show loading
     submitBugBtn.disabled = true;
@@ -3672,7 +3732,10 @@ submitBugBtn.addEventListener('click', async () => {
         const result = await createAzureDevOpsBug({
             org, project, title, description, assignedTo, directManager,
             areaPath: bugArea.value, iterationPath: bugIteration.value,
-            severity, foundIn, parent, tags, screenshotDataUrl, attachments, ctx,
+            severity, foundIn, parent, tags, attachments, ctx,
+            // Names the capture inside `attachments`, so Repro Steps can embed
+            // that same uploaded file inline instead of uploading it a 2nd time.
+            captureName: isVideoSession ? null : captureFileName(),
             dynamicFields: collectDynamicFields()
         });
 
@@ -3727,11 +3790,27 @@ async function createAzureDevOpsBug(data) {
     // reproduce. Carry on filing it, but never let the loss pass unmentioned.
     const otherAttachmentUrls = [];
     const failedUploads = [];
+    // The capture is one of these files now. Remember the URL it uploaded to, so
+    // Repro Steps can show that very file inline - no second upload of the same
+    // bytes, and nothing pulled off the canvas behind the attachments field.
+    let captureImageUrl = null;
     if (data.attachments && data.attachments.length > 0) {
         for (const file of data.attachments) {
             try {
                 const url = await uploadFileAttachment(encodedOrg, encodedProject, authHeader, file);
-                otherAttachmentUrls.push({ url, name: file.name });
+                const isCapture = !captureImageUrl && data.captureName
+                    && file.name === data.captureName && (file.type || '').startsWith('image/');
+                if (isCapture) {
+                    // Embedded inline in Repro Steps below. Azure already lists an
+                    // inline image under Attachments, so adding an AttachedFile
+                    // relation for it as well would list the same file twice -
+                    // which is exactly how it behaved before this all moved to the
+                    // attachments field. A recording has no inline form, so it
+                    // stays a normal relation like any other file.
+                    captureImageUrl = url;
+                } else {
+                    otherAttachmentUrls.push({ url, name: file.name });
+                }
             } catch (e) {
                 console.error('Failed to upload attachment:', file.name, e);
                 failedUploads.push(e.message || file.name);
@@ -3750,12 +3829,15 @@ async function createAzureDevOpsBug(data) {
     // The evidence reads before the picture: what broke, then what it looked like.
     reproSteps += contextHtml(data.ctx);
 
-    // Always upload and attach the screenshot
-    const screenshotUrl = await uploadAttachment(encodedOrg, encodedProject, authHeader, data.screenshotDataUrl, `screenshot.png`);
-    reproSteps += `
+    // Show the capture inside Repro Steps - the same file already uploaded from
+    // the attachments field above. A recording has no image to embed, so nothing
+    // is added (this is where a blank canvas PNG used to land on every video bug).
+    if (captureImageUrl) {
+        reproSteps += `
         <br/>
-        <img src="${screenshotUrl}" alt="Bug Screenshot" style="max-width: 100%; border: 1px solid #ddd; border-radius: 4px;" />
+        <img src="${captureImageUrl}" alt="Bug Screenshot" style="max-width: 100%; border: 1px solid #ddd; border-radius: 4px;" />
     `;
+    }
 
     const workItemData = [
         { op: 'add', path: '/fields/System.Title', value: data.title },
@@ -3979,22 +4061,26 @@ function collectDynamicFields() {
             <div class="ctx-sec"><i class="fas fa-terminal"></i> Console
                 <span class="cnt">${logs.length}${errs.length ? ` &middot; ${errs.length} error${errs.length > 1 ? 's' : ''}` : ''}</span>
             </div>
+            <div class="ctx-list">
             ${logs.length ? logs.map(l => `
                 <div class="ctx-log lvl-${esc(l.level || 'log')}">
                     <span class="lv">${esc(l.level || 'log')}</span>
                     <span class="msg">${esc(l.message)}${l.count > 1 ? ` <b>&times;${l.count}</b>` : ''}</span>
                 </div>`).join('') : '<div class="ctx-none">The page logged nothing.</div>'}
+            </div>
 
             <div class="ctx-sec"><i class="fas fa-wifi"></i> Network
                 <span class="cnt">${reqs.length}${bad.length ? ` &middot; ${bad.length} failed` : ''}</span>
             </div>
+            <div class="ctx-list">
             ${bad.length ? bad.map(r => `
                 <div class="ctx-log req">
                     <span class="st">${esc(r.status || 'ERR')}</span>
                     <span class="u">${esc(r.method || 'GET')} ${esc(r.url)}</span>
                 </div>`).join('')
                 : reqs.length ? '<div class="ctx-none">Every request succeeded.</div>'
-                    : '<div class="ctx-none">No requests were recorded.</div>'}`;
+                    : '<div class="ctx-none">No requests were recorded.</div>'}
+            </div>`;
     }
 
     function markdown() {
@@ -4806,9 +4892,10 @@ ${bullets(r.actualResult)}`.trim();
                 issueType: window.jiraBugTypeName || '',
                 description: document.getElementById('bugDescription').innerHTML.trim(),
                 ctx: captureId ? ctxRes[`ctx_${captureId}`] : null,
-                screenshotDataUrl: canvas.toDataURL('image/png'),
+                // The attachments field is the only source: the capture is a real
+                // file in here, so nothing is uploaded straight off the canvas.
                 severity: window.aiSeverityLevel || '',
-                attachments: [...selectedFiles],
+                attachments: await collectAttachments(),
                 extra,
                 extraMeta: jiraFields
             });

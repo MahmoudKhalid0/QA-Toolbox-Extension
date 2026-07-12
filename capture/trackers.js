@@ -144,7 +144,7 @@ export async function azureCreateBug(cfg, data) {
     if (!String(data.title || '').trim()) throw new Error('The title is empty');
 
     const blob = await dataUrlToBlob(data.screenshotDataUrl);
-    const shotUrl = await azureUpload(data.org, data.project, cfg.pat, blob, `screenshot-${Date.now()}.png`);
+    const shotUrl = await azureUpload(data.org, data.project, cfg.pat, blob, data.captureName || `screenshot-${Date.now()}.png`);
 
     const repro = `<div>${data.description || 'See the screenshot below.'}</div>` +
         contextHtml(data.ctx) +
@@ -702,9 +702,9 @@ export async function jiraCreateBug(cfg, data) {
     // attached by hand; Jira accepts repeated `file` parts.
     try {
         const form = new FormData();
-        if (data.screenshotDataUrl) {
-            form.append('file', await dataUrlToBlob(data.screenshotDataUrl), `screenshot-${Date.now()}.png`);
-        }
+        // The capture is one of data.attachments now - the editor puts it there
+        // itself, so there is nothing to pull off a canvas here. That also means
+        // a video bug no longer carries a blank PNG from a canvas never drawn on.
         for (const img of inlineImages) form.append('file', await dataUrlToBlob(img.dataUrl), img.name);
         for (const f of data.attachments || []) form.append('file', f, f.name);
 
