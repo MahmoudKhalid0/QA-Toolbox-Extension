@@ -454,7 +454,22 @@ async function openInEditor(id) {
     chrome.storage.local.set({ [it.id]: dataUrl, isVideo: it.type === 'video' }, () => {
         const q = `id=${encodeURIComponent(it.id)}&title=${encodeURIComponent(it.title)}` +
             (it.type === 'video' ? '&type=video' : '');
-        chrome.tabs.create({ url: chrome.runtime.getURL(`capture/editor.html?${q}`) });
+        openTabBeside(`capture/editor.html?${q}`);
+    });
+}
+
+// Beside THIS tab, not at the far end of the strip. A tab opened from the gallery
+// belongs next to the gallery - chrome.tabs.create with no index sends it to the
+// end, which with a dozen tabs open means going to look for it.
+function openTabBeside(path) {
+    const url = chrome.runtime.getURL(path);
+    chrome.tabs.getCurrent((me) => {
+        void chrome.runtime.lastError;
+        if (me && typeof me.index === 'number') {
+            chrome.tabs.create({ url, index: me.index + 1, windowId: me.windowId, openerTabId: me.id });
+        } else {
+            chrome.tabs.create({ url });     // not in a tab (shouldn't happen) - let Chrome decide
+        }
     });
 }
 

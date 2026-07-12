@@ -28,6 +28,21 @@ let expandedCategories = new Set();
 let availableCategories = []; // Global list of category names
 let userExpandedCategories = new Set(); // To remember state before search
 let currentTabUrl = '';
+
+// Open one of our own pages BESIDE the tab the user is looking at, in that same
+// window. chrome.tabs.create with no index sends it to the far end of the strip -
+// with a row of tabs open, the editor or the gallery you just asked for turns up
+// somewhere off to the right and you have to go and find it. openerTabId also means
+// closing it returns you to where you were, instead of dumping you anywhere.
+async function qaOpenTabBeside(path) {
+    const url = /^https?:/i.test(path) ? path : chrome.runtime.getURL(path);
+    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (t && typeof t.index === 'number') {
+        chrome.tabs.create({ url, index: t.index + 1, windowId: t.windowId, openerTabId: t.id });
+    } else {
+        chrome.tabs.create({ url });     // no active tab to sit beside - let Chrome decide
+    }
+}
 let smartFilterActive = true;
 
 // Load profiles
@@ -41,12 +56,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Settings Button - Open separate tab
     document.getElementById('settingsBtn').addEventListener('click', () => {
-        chrome.tabs.create({ url: 'settings.html' });
+        qaOpenTabBeside('settings.html');
     });
 
     // Header Login button: opens settings and starts the Google sign-in there
     document.getElementById('loginBtn').addEventListener('click', () => {
-        chrome.tabs.create({ url: 'settings.html?signin=1' });
+        qaOpenTabBeside('settings.html?signin=1');
     });
 
     // Smart Filter "Show All"
@@ -366,7 +381,7 @@ function updateRecordButton() {
 }
 
 document.getElementById('addBtn').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('editor.html?new=true') });
+    qaOpenTabBeside('editor.html?new=true');
 });
 
 // Tools tab accordion: opening one expandable tool collapses the others
@@ -1601,7 +1616,7 @@ function attachProfileListeners(container) {
 }
 
 function editProfile(id) {
-    chrome.tabs.create({ url: chrome.runtime.getURL(`editor.html?id=${id}`) });
+    qaOpenTabBeside(`editor.html?id=${id}`);
 }
 
 async function fillForm(profileId) {
@@ -1803,9 +1818,7 @@ chrome.runtime.onMessage.addListener((req) => {
             // The panel stays open: Upload photographs nothing, so it is never in
             // the way of a shot - which is the only reason the capture buttons close it.
             chrome.storage.local.set({ [id]: reader.result, isVideo: false }, () => {
-                chrome.tabs.create({
-                    url: chrome.runtime.getURL(`capture/editor.html?id=${id}&title=${encodeURIComponent(title)}`)
-                });
+                qaOpenTabBeside(`capture/editor.html?id=${id}&title=${encodeURIComponent(title)}`);
             });
         };
         reader.onerror = () => showToastMessage('Could not read that file', 'error');
@@ -1942,9 +1955,9 @@ chrome.runtime.onMessage.addListener((req) => {
         window.close();
     });
 
-    $id('capGalleryBtn').addEventListener('click', () => {
-        chrome.tabs.create({ url: chrome.runtime.getURL('capture/history.html') });
-    });
+    // Beside the tab you are looking at, not at the far end of the strip. The panel
+    // is not itself a tab, so "beside me" means beside the active one.
+    $id('capGalleryBtn').addEventListener('click', () => qaOpenTabBeside('capture/history.html'));
 
     // the background can't capture Chrome's own pages without an activeTab grant
     chrome.runtime.onMessage.addListener((msg) => {

@@ -2561,7 +2561,18 @@ if (cloudUploadBtn) {
 
 if (viewHistoryBtn) {
     viewHistoryBtn.addEventListener('click', () => {
-        window.open('history.html', '_blank');
+        // Beside THIS tab. window.open sends it to the end of the strip, so the
+        // gallery opened from the editor turned up wherever the tab bar happened to
+        // end - which, with a row of tabs open, means going to hunt for it.
+        chrome.tabs.getCurrent((me) => {
+            void chrome.runtime.lastError;
+            const url = chrome.runtime.getURL('capture/history.html');
+            if (me && typeof me.index === 'number') {
+                chrome.tabs.create({ url, index: me.index + 1, windowId: me.windowId, openerTabId: me.id });
+            } else {
+                window.open('history.html', '_blank');
+            }
+        });
     });
 }
 
