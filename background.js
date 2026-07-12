@@ -2520,6 +2520,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'swapRestore':
             SW.restore(request.tab || (sender && sender.tab), request.id).then(sendResponse);
             return true;
+        case 'swapUpdate':
+            SW.updateSnapshot(request.tab || (sender && sender.tab), request.id).then(sendResponse);
+            return true;
         case 'swapDelete':
             SW.remove(request.url, request.id).then(() => sendResponse({ ok: true }));
             return true;

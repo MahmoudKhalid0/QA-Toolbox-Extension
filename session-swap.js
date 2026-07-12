@@ -155,6 +155,27 @@
         notifyTabs(origin);
     }
 
+    // Re-capture the session you're logged in as RIGHT NOW into an existing
+    // saved login (same name, same landing page). Server sessions expire - after
+    // a reboot or a timeout the saved cookies are dead, so you log in once and
+    // refresh the slot instead of deleting and re-adding it.
+    async function updateSnapshot(tab, id) {
+        if (!tab || !tab.url || !/^https?:/i.test(tab.url)) return { ok: false, error: 'Open a website first' };
+        const origin = originOf(tab.url);
+        const all = await getStore();
+        const snap = (all[origin] || []).find((s) => s.id === id);
+        if (!snap) return { ok: false, error: 'saved login not found' };
+        snap.cookies = await new Promise((res) => chrome.cookies.getAll({ url: tab.url }, (c) => { void chrome.runtime.lastError; res(c || []); }));
+        snap.storage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
+        snap.url = tab.url;              // also refreshes the landing page
+        snap.createdAt = Date.now();
+        await setStore(all);
+        await setActive(origin, id);     // you ARE this login now
+        rebuildMenuFor(tab);
+        notifyTabs(origin);
+        return { ok: true, name: snap.name };
+    }
+
     async function rename(url, id, name) {
         const origin = originOf(url);
         const all = await getStore();
@@ -261,5 +282,5 @@
         });
     }
 
-    root.SessionSwap = { saveCurrent, listFor, remove, rename, restore, rebuildMenuFor };
+    root.SessionSwap = { saveCurrent, listFor, remove, rename, restore, updateSnapshot, rebuildMenuFor };
 })(typeof self !== 'undefined' ? self : globalThis);

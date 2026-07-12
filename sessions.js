@@ -75,14 +75,20 @@
                     <div class="sw-sub">${s.count} cookie${s.count === 1 ? '' : 's'} · saved ${esc(timeAgo(s.createdAt))}</div>
                 </div>
                 ${rightBtn}
-                <button class="sw-x" title="Delete"><i class="fas fa-trash"></i></button>`;
+                <button class="sw-x sw-upd" title="Update this saved login with the session you're logged in as now"><i class="fas fa-rotate"></i></button>
+                <button class="sw-x sw-del" title="Delete"><i class="fas fa-trash"></i></button>`;
+            card.querySelector('.sw-upd').addEventListener('click', async () => {
+                const r = await send({ action: 'swapUpdate', tab: { id: t.id, url }, id: s.id });
+                if (r && r.ok) { showToastMessage(`Updated "${s.name}"`, 'success'); render(); }
+                else showToastMessage('Could not update: ' + ((r && r.error) || 'unknown'), 'error');
+            });
             const goBtn = card.querySelector('.sw-go');
             if (goBtn) goBtn.addEventListener('click', async () => {
                 const r = await send({ action: 'swapRestore', tab: { id: t.id, url }, id: s.id });
                 if (r && r.ok) { showToastMessage(`Switching to "${s.name}"…`, 'success'); window.close(); }
                 else showToastMessage('Could not switch: ' + ((r && r.error) || 'unknown'), 'error');
             });
-            card.querySelector('.sw-x').addEventListener('click', async () => {
+            card.querySelector('.sw-del').addEventListener('click', async () => {
                 await send({ action: 'swapDelete', url, id: s.id });
                 render();
             });

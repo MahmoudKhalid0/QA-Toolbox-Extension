@@ -5504,6 +5504,35 @@ function createFloatingButton() {
             text-overflow: ellipsis;
             max-width: 240px;
         }
+        .ff-swap-badge {
+            margin-left: auto;
+            flex-shrink: 0;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: .5px;
+            color: #10b981;
+            background: rgba(16, 185, 129, 0.15);
+            padding: 2px 7px;
+            border-radius: 20px;
+            max-width: none;
+        }
+        .ff-swap-update {
+            margin-left: auto;
+            flex-shrink: 0;
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #64748b;
+            cursor: pointer;
+            max-width: none;
+            transition: all 0.2s;
+        }
+        .ff-swap-badge + .ff-swap-update { margin-left: 4px; }
+        .ff-swap-update:hover { background: rgba(16, 185, 129, 0.25); color: #10b981; }
+        .ff-swap-update i { font-size: 12px; color: inherit; }
         /* Per-section scroll: a long login/profile list scrolls on its own so it
            never pushes the other sections out of reach. */
         .ff-swap-list, .ff-menu-list {
@@ -5573,6 +5602,24 @@ function createFloatingButton() {
                 });
                 return;
             }
+            // ↻ Update a saved login with the session in use right now. Checked
+            // before the row itself so it works on the CURRENT (no-click) row too.
+            const updBtn = e.target.closest('.ff-swap-update');
+            if (updBtn) {
+                e.stopPropagation();
+                menu.style.display = 'none';
+                showFabAiStatus('loading', 'Updating saved login…');
+                chrome.runtime.sendMessage({ action: 'swapUpdate', id: updBtn.dataset.swapId }, (resp) => {
+                    if (chrome.runtime.lastError || !resp || !resp.ok) {
+                        showFabAiStatus('error', (resp && resp.error) || 'Could not update');
+                    } else {
+                        showFabAiStatus('success', `Updated "${resp.name}"`);
+                        initFloatingButton();
+                    }
+                });
+                return;
+            }
+
             // Switch to a saved login (Snapshot & Swap) - the page reloads.
             // Skip the "current" one (marked no-click) so it can't be re-clicked.
             const swapItem = e.target.closest('.ff-swap-item');
@@ -5674,6 +5721,9 @@ function createFloatingButton() {
             </div>`;
         if (matchingLogins.length) menuHtml += `<div class="ff-swap-list">`;
         matchingLogins.forEach((s) => {
+            // ↻ re-saves the session you're logged in as right now into this slot
+            // (server sessions expire - refresh instead of delete + re-add).
+            const refreshBtn = `<span class="ff-swap-update" data-swap-id="${escHtml(s.id)}" title="Update this saved login with the session you're logged in as now"><i class="fas fa-rotate"></i></span>`;
             if (s.active) {
                 // The login currently in use - shown as CURRENT and not clickable
                 // (so you don't re-switch to yourself by accident).
@@ -5681,13 +5731,15 @@ function createFloatingButton() {
                     <div class="ff-menu-item ff-swap-item ff-active no-click" title="You're using this login now" style="cursor:default;">
                         <i class="fas fa-circle-check" style="color:#10b981;"></i>
                         <span style="font-weight:600;">${escHtml(truncateName(s.name))}</span>
-                        <span style="margin-left:auto;flex-shrink:0;font-size:9px;font-weight:700;letter-spacing:.5px;color:#10b981;background:rgba(16,185,129,.15);padding:2px 7px;border-radius:20px;max-width:none;">CURRENT</span>
+                        <span class="ff-swap-badge">CURRENT</span>
+                        ${refreshBtn}
                     </div>`;
             } else {
                 menuHtml += `
                     <div class="ff-menu-item ff-swap-item" data-swap-id="${escHtml(s.id)}" title="Switch to ${escHtml(s.name)}">
                         <i class="fas fa-user" style="color:#10b981;"></i>
                         <span>${escHtml(truncateName(s.name))}</span>
+                        ${refreshBtn}
                     </div>`;
             }
         });
