@@ -35,22 +35,62 @@
             line-height: 1.35; word-break: break-word; overflow-wrap: break-word;
             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
         }
-        .meta-column { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; min-width: 200px; max-width: 320px; }
-        .meta-item { display: flex; gap: 8px; font-size: 12.5px; }
-        .meta-label { color: #6366f1; font-weight: 700; flex-shrink: 0; letter-spacing: .5px; }
-        .meta-value { color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .meta-column { flex-shrink: 0; display: flex; flex-direction: column; gap: 7px; min-width: 240px; max-width: 360px; }
+        .meta-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+        .meta-label { color: #6366f1; font-weight: 700; flex-shrink: 0; letter-spacing: .5px; width: 48px; }
+        .meta-value { color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
         .meta-value.date { font-variant-numeric: tabular-nums; }
-        .download-row { margin-top: 16px; }
-        .download-eml-btn {
+        .meta-value.inbox { color: #a5b4fc; }
+        /* Copy button that lives at the end of a meta row - dim until the row is
+           hovered so it doesn't shout, and turns green for a moment on success. */
+        .meta-copy {
+            flex-shrink: 0; background: transparent; border: none; color: #64748b;
+            width: 24px; height: 24px; border-radius: 7px; cursor: pointer; font-size: 12px;
+            opacity: 0; transition: opacity .15s, color .15s, background .15s;
+        }
+        .meta-item:hover .meta-copy { opacity: 1; }
+        .meta-copy:hover { background: rgba(255,255,255,0.08); color: #cbd5e1; }
+        .meta-copy.done { opacity: 1; color: #10b981; }
+        /* Skeleton shimmer for the meta values while the message is loading. */
+        body.loading .meta-value { color: transparent; border-radius: 5px; background:
+            linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.14) 37%, rgba(255,255,255,0.06) 63%);
+            background-size: 400% 100%; animation: shimmer 1.3s ease infinite; min-height: 13px; }
+        body.loading .meta-copy { display: none; }
+        @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+        .action-row { margin-top: 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .act-btn {
             display: inline-flex; align-items: center; gap: 9px;
             border: none; border-radius: 11px; padding: 9px 16px;
             font-size: 13px; font-weight: 600; cursor: pointer; color: #fff;
-            background: linear-gradient(135deg, #6366f1, #8b5cf6);
         }
-        .download-eml-btn:hover { filter: brightness(1.1); }
-        .download-eml-btn:disabled { opacity: .6; cursor: wait; }
-        .view-body { flex: 1; min-height: 0; background: #fff; }
+        .act-btn.primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+        .act-btn:hover { filter: brightness(1.12); }
+        .act-btn:disabled { opacity: .6; cursor: wait; }
+
+        /* HTML | Text segmented toggle, pushed to the far end of the action row. */
+        .view-toggle { margin-inline-start: auto; display: inline-flex; background: rgba(255,255,255,0.06); border-radius: 10px; padding: 3px; }
+        .view-toggle button {
+            border: none; background: transparent; color: #94a3b8; cursor: pointer;
+            font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 8px; transition: background .15s, color .15s;
+        }
+        .view-toggle button.on { background: rgba(99,102,241,0.9); color: #fff; }
+        .view-toggle button:disabled { opacity: .4; cursor: not-allowed; }
+
+        .view-body { flex: 1; min-height: 0; background: #fff; position: relative; }
         #email-frame { width: 100%; height: 100%; border: none; display: block; }
+        /* Loader over the white body until the frame has content. */
+        .body-loader {
+            position: absolute; inset: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 14px;
+            background: #fff; color: #64748b; font-size: 13px; z-index: 2;
+        }
+        .body-loader.hidden { display: none; }
+        .body-loader .spinner {
+            width: 34px; height: 34px; border-radius: 50%;
+            border: 3px solid #e2e8f0; border-top-color: #6366f1; animation: spin .8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .rtl .header-grid { direction: rtl; }
         /* The FROM / DATE rows read left-to-right (label on the left, value on
            the right) even for an Arabic email - only the subject and body
@@ -79,7 +119,7 @@
     </style>
 </head>
 
-<body>
+<body class="loading">
     <div class="view-container">
         <header class="view-header" id="header-area">
             <div class="header-grid">
@@ -90,6 +130,16 @@
                     <div class="meta-item">
                         <span class="meta-label">FROM</span>
                         <span id="from" class="meta-value">…</span>
+                        <button class="meta-copy" data-copy="from" title="Copy sender address"><i class="far fa-copy"></i></button>
+                    </div>
+                    <div class="meta-item" id="to-row">
+                        <span class="meta-label">TO</span>
+                        <span id="to" class="meta-value">…</span>
+                        <button class="meta-copy" data-copy="to" title="Copy recipient address"><i class="far fa-copy"></i></button>
+                    </div>
+                    <div class="meta-item" id="inbox-row">
+                        <span class="meta-label">INBOX</span>
+                        <span id="inbox" class="meta-value inbox">…</span>
                     </div>
                     <div class="meta-item">
                         <span class="meta-label">DATE</span>
@@ -97,13 +147,21 @@
                     </div>
                 </div>
             </div>
-            <div class="download-row">
-                <button id="download-btn" class="download-eml-btn" title="Download EML">
-                    <i class="fas fa-download"></i><span>Download as EML</span>
+            <div class="action-row">
+                <button id="download-btn" class="act-btn primary" title="Download EML">
+                    <i class="fas fa-download"></i><span>Download EML</span>
                 </button>
+                <div class="view-toggle" id="view-toggle">
+                    <button id="view-html" class="on" title="Show the formatted email">HTML</button>
+                    <button id="view-text" title="Show the plain-text version">Text</button>
+                </div>
             </div>
         </header>
         <div class="view-body">
+            <div class="body-loader" id="body-loader">
+                <div class="spinner"></div>
+                <span>Loading email…</span>
+            </div>
             <iframe id="email-frame"
                 sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"></iframe>
         </div>

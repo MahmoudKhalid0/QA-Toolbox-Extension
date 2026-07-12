@@ -45,6 +45,78 @@ async function qaOpenTabBeside(path) {
 }
 let smartFilterActive = true;
 
+// ── Reusable in-panel confirm / prompt ──────────────────────────────────────
+// Use these EVERYWHERE instead of the browser's confirm()/prompt()/alert(),
+// which render as a jarring "The extension … says" system box. Both return a
+// Promise (confirm -> boolean, prompt -> string|null). Exposed as globals so the
+// other panel scripts (tempmail.js, sessions.js …) can call them directly, the
+// same way they already call showToastMessage. See memory: in-panel dialogs.
+function qaDialog({ mode = 'confirm', title = 'Are you sure?', message = '', okText, cancelText = 'Cancel', danger = false, value = '', placeholder = '', icon } = {}) {
+    return new Promise((resolve) => {
+        const root = document.getElementById('qaDialog');
+        if (!root) { // markup missing - fail safe to the native path rather than hang
+            if (mode === 'prompt') resolve(window.prompt(title, value));
+            else resolve(window.confirm(message || title));
+            return;
+        }
+        const box = root.querySelector('.qa-dialog-box');
+        const titleEl = document.getElementById('qaDialogTitle');
+        const msgEl = document.getElementById('qaDialogMsg');
+        const input = document.getElementById('qaDialogInput');
+        const okBtn = document.getElementById('qaDialogOk');
+        const cancelBtn = document.getElementById('qaDialogCancel');
+        const iconEl = document.getElementById('qaDialogIc');
+
+        titleEl.textContent = title;
+        msgEl.textContent = message;
+        msgEl.style.display = message ? '' : 'none';
+        okBtn.textContent = okText || (mode === 'prompt' ? 'Save' : 'OK');
+        cancelBtn.textContent = cancelText;
+        root.classList.toggle('danger', !!danger);
+        iconEl.innerHTML = `<i class="fas ${icon || (danger ? 'fa-triangle-exclamation' : (mode === 'prompt' ? 'fa-pen' : 'fa-circle-question'))}"></i>`;
+
+        if (mode === 'prompt') {
+            input.style.display = '';
+            input.value = value;
+            input.placeholder = placeholder;
+        } else {
+            input.style.display = 'none';
+        }
+
+        // One close path for every exit (button, Esc, overlay click), so listeners
+        // never leak across successive dialogs.
+        function close(result) {
+            root.classList.remove('show');
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            root.removeEventListener('mousedown', onOverlay);
+            document.removeEventListener('keydown', onKey);
+            input.removeEventListener('keydown', onInputKey);
+            resolve(result);
+        }
+        const onOk = () => close(mode === 'prompt' ? input.value.trim() : true);
+        const onCancel = () => close(mode === 'prompt' ? null : false);
+        const onOverlay = (e) => { if (e.target === root) onCancel(); };
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+            else if (e.key === 'Enter' && mode === 'confirm') { e.preventDefault(); onOk(); }
+        };
+        const onInputKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); onOk(); } };
+
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        root.addEventListener('mousedown', onOverlay);
+        document.addEventListener('keydown', onKey);
+        if (mode === 'prompt') input.addEventListener('keydown', onInputKey);
+
+        root.classList.add('show');
+        // Focus after paint: the input for a prompt, the OK button otherwise.
+        setTimeout(() => { (mode === 'prompt' ? input : okBtn).focus(); if (mode === 'prompt') input.select(); }, 30);
+    });
+}
+function qaConfirm(opts) { return qaDialog({ ...opts, mode: 'confirm' }); }
+function qaPrompt(opts) { return qaDialog({ ...opts, mode: 'prompt' }); }
+
 // Load profiles
 document.addEventListener('DOMContentLoaded', async () => {
     // Get current tab URL for smart filtering
@@ -1670,10 +1742,11 @@ function deleteProfile(id) {
     }
 
     if (modal) modal.classList.add('active');
-    else if (confirm('Are you sure you want to delete this profile?')) {
+    else qaConfirm({ title: 'Delete this profile?', message: 'This action cannot be undone.', okText: 'Delete', danger: true, icon: 'fa-trash' }).then((ok) => {
+        if (!ok) return;
         profiles = profiles.filter(p => p.id !== id && p.parentProfileId !== id);
         saveProfiles().then(() => renderProfiles());
-    }
+    });
 }
 
 document.getElementById('cancelDeleteBtn')?.addEventListener('click', () => {

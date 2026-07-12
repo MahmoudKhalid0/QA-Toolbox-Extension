@@ -2605,27 +2605,53 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // polling api.mail.tm on a timer and storing the count. Deliberately does NOT
 // touch the toolbar action badge - that belongs to the recording timer.
 const TEMP_MAIL_ALARM = 'tempMailCheck';
+// 30s is the practical floor for a periodic alarm (0.5 min). A truly instant
+// OS notification while the popup is closed isn't reachable in MV3 - the service
+// worker is killed after ~30s idle and mail.tm's push heartbeat is ~31s, just too
+// slow to hold it alive - so 30s is as tight as this can reliably get without a
+// push backend. Re-created if the period drifted from an older 1-minute install.
 function ensureTempMailAlarm() {
     chrome.alarms.get(TEMP_MAIL_ALARM, (existing) => {
-        if (!existing) chrome.alarms.create(TEMP_MAIL_ALARM, { periodInMinutes: 1 });
+        if (!existing || existing.periodInMinutes !== 0.5) {
+            chrome.alarms.create(TEMP_MAIL_ALARM, { periodInMinutes: 0.5 });
+        }
     });
 }
 chrome.runtime.onStartup.addListener(ensureTempMailAlarm);
 chrome.runtime.onInstalled.addListener(ensureTempMailAlarm);
 ensureTempMailAlarm();
 
+// Every inbox the user holds is polled, not just one. tmInboxes is the list
+// tempmail.js maintains ([{id,address,token,name}]); tmToken is kept in step for
+// whichever is active, so a legacy install with only tmToken still gets polled.
+function tmPollList(store) {
+    if (Array.isArray(store.tmInboxes) && store.tmInboxes.length) {
+        return store.tmInboxes.filter((b) => b && b.token);
+    }
+    if (store.tmToken) return [{ id: 'legacy', address: (store.tmAccount || {}).address || '', token: store.tmToken, name: '' }];
+    return [];
+}
+
+// Polls every inbox and stores the summed unread count, so the Mail tab badge
+// stays live while the popup is closed. (OS notifications were dropped - MV3
+// can't deliver them instantly and the delayed ones weren't useful.)
 function updateTempMailUnread() {
-    chrome.storage.local.get(['tmToken'], async (r) => {
-        if (!r.tmToken) return; // user never opened the Mail tab; nothing to poll
-        try {
-            const res = await fetch('https://api.mail.tm/messages', {
-                headers: { 'Authorization': `Bearer ${r.tmToken}` }
-            });
-            if (!res.ok) return;
-            const data = await res.json();
-            const unread = (data['hydra:member'] || []).filter((m) => !m.seen).length;
-            chrome.storage.local.set({ tmUnreadCount: unread });
-        } catch (e) { /* offline / token expired - leave the last count */ }
+    chrome.storage.local.get(['tmInboxes', 'tmToken', 'tmAccount'], async (r) => {
+        const boxes = tmPollList(r);
+        if (!boxes.length) return; // user never opened the Mail tab; nothing to poll
+
+        let total = 0;
+        for (const box of boxes) {
+            try {
+                const res = await fetch('https://api.mail.tm/messages', {
+                    headers: { 'Authorization': `Bearer ${box.token}` }
+                });
+                if (!res.ok) continue;
+                const msgs = (await res.json())['hydra:member'] || [];
+                total += msgs.filter((m) => !m.seen).length;
+            } catch (e) { /* offline / token expired - skip this inbox */ }
+        }
+        chrome.storage.local.set({ tmUnreadCount: total });
     });
 }
 updateTempMailUnread();

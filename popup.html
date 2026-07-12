@@ -1981,14 +1981,36 @@
                     #tab-mail .tm-unread { background: var(--tm-accent); color: #fff; border-radius: 999px; min-width: 20px; height: 20px; padding: 0 6px; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
                     #tab-mail .tm-refresh { background: rgba(255,255,255,0.08); border: none; color: #cbd5e1; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
                     #tab-mail .tm-refresh:hover { background: rgba(99,102,241,0.4); color: #fff; }
+                    /* Manual refresh: spin the icon so the press visibly registers. */
+                    #tab-mail .tm-refresh.loading { background: rgba(99,102,241,0.4); color: #fff; cursor: default; }
+                    #tab-mail .tm-refresh.loading i { animation: tm-refresh-spin .6s linear infinite; }
+                    @keyframes tm-refresh-spin { to { transform: rotate(360deg); } }
                     #tab-mail .tm-list { display: flex; flex-direction: column; gap: 8px; }
                     #tab-mail .tm-msg { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); border-left: 3px solid transparent; border-radius: 12px; padding: 11px 13px; cursor: pointer; transition: all .18s; }
                     #tab-mail .tm-msg:hover { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.4); }
-                    #tab-mail .tm-msg.new { border-left-color: var(--tm-accent); background: rgba(99,102,241,0.07); }
+                    /* Unread stands out hard: a bright left bar, a lifted indigo
+                       fill, and a filled dot before the sender. Read messages
+                       (below) are deliberately dimmed so the two never blur. */
+                    #tab-mail .tm-msg.new { border-left-width: 4px; border-left-color: var(--tm-accent); background: rgba(99,102,241,0.16); }
+                    /* Unread dot: a flex item at the start of the sender row, NOT a
+                       ::before inside .tm-from - that element clips its overflow for
+                       the ellipsis and was slicing the dot in half. */
+                    #tab-mail .tm-msg.new .tm-msg-top::before {
+                        content: ''; flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%;
+                        background: var(--tm-accent); box-shadow: 0 0 0 3px rgba(99,102,241,0.22);
+                    }
+                    #tab-mail .tm-msg.new .tm-from { color: #fff; }
+                    #tab-mail .tm-msg.new .tm-subj { color: #f1f5f9; font-weight: 600; }
+                    /* Read: muted across the board so unread pops by contrast. */
+                    #tab-mail .tm-msg.seen { background: rgba(255,255,255,0.02); opacity: .82; }
+                    #tab-mail .tm-msg.seen .tm-from { color: #94a3b8; font-weight: 600; }
+                    #tab-mail .tm-msg.seen .tm-subj { color: #64748b; font-weight: 400; }
+                    #tab-mail .tm-msg.seen:hover { opacity: 1; }
                     #tab-mail .tm-msg.rtl { direction: rtl; text-align: right; }
-                    #tab-mail .tm-msg-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
-                    #tab-mail .tm-from { font-size: 12.5px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-                    #tab-mail .tm-time { font-size: 10px; color: #64748b; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+                    #tab-mail .tm-msg-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+                    #tab-mail .tm-from { font-size: 12.5px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+                    /* Pushed to the far edge so removing space-between (for the dot) keeps the time in place. */
+                    #tab-mail .tm-time { font-size: 10px; color: #64748b; flex-shrink: 0; font-variant-numeric: tabular-nums; margin-inline-start: auto; }
                     #tab-mail .tm-subj { font-size: 12.5px; color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
                     #tab-mail .tm-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-top: 3px; }
                     #tab-mail .tm-intro { font-size: 11px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; flex: 1; min-width: 0; }
@@ -2001,6 +2023,42 @@
                     #tab-mail .tm-msg.deleting { opacity: .4; pointer-events: none; }
                     #tab-mail .tm-clear:hover { background: rgba(239,68,68,0.5); color: #fff; }
                     #tab-mail .tm-clear:disabled { opacity: .5; cursor: not-allowed; }
+
+                    /* Name the inbox before making it */
+                    #tab-mail .tm-make { display: flex; gap: 7px; margin-top: 12px; }
+                    #tab-mail .tm-wanted { flex: 1; min-width: 0; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 11px; color: #fff; padding: 10px 12px; font-size: 12.5px; outline: none; }
+                    #tab-mail .tm-wanted:focus { border-color: var(--tm-accent); }
+                    #tab-mail .tm-wanted::placeholder { color: #64748b; }
+                    #tab-mail .tm-make .tm-new-btn { width: auto; margin-top: 0; flex-shrink: 0; padding: 10px 14px; }
+
+                    /* The inboxes you have, and which one you are looking at */
+                    #tab-mail .tm-boxes-head { margin: 16px 0 8px; font-size: 10.5px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: #64748b; display: flex; align-items: center; gap: 7px; }
+                    #tab-mail .tm-boxes { display: flex; flex-direction: column; gap: 6px; max-height: 168px; overflow-y: auto; overscroll-behavior: contain; }
+                    #tab-mail .tm-boxes::-webkit-scrollbar { width: 7px; }
+                    #tab-mail .tm-boxes::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 4px; }
+                    #tab-mail .tm-box { display: flex; align-items: center; gap: 9px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); border-radius: 10px; padding: 8px 10px; cursor: pointer; transition: background .15s, border-color .15s; }
+                    #tab-mail .tm-box:hover { background: rgba(255,255,255,0.08); }
+                    #tab-mail .tm-box.active { background: rgba(99,102,241,0.16); border-color: rgba(99,102,241,0.5); }
+                    #tab-mail .tm-box > i { color: #64748b; font-size: 12px; flex-shrink: 0; }
+                    #tab-mail .tm-box.active > i { color: var(--tm-accent); }
+                    #tab-mail .tm-box-meta { flex: 1; min-width: 0; }
+                    #tab-mail .tm-box-name { font-size: 12px; font-weight: 700; color: #e2e8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                    #tab-mail .tm-box-addr { font-size: 10px; color: #64748b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                    #tab-mail .tm-box-unread { flex-shrink: 0; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: #ef4444; color: #fff; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+                    #tab-mail .tm-box-btn { flex-shrink: 0; background: transparent; border: none; color: #64748b; width: 22px; height: 22px; border-radius: 6px; cursor: pointer; font-size: 10px; opacity: 0; transition: opacity .15s; }
+                    #tab-mail .tm-box:hover .tm-box-btn { opacity: 1; }
+                    #tab-mail .tm-box-rename:hover { background: rgba(255,255,255,0.14); color: #fff; }
+                    #tab-mail .tm-box-forget:hover { background: rgba(239,68,68,0.4); color: #fff; }
+
+                    /* Search */
+                    #tab-mail .tm-search-wrap { position: relative; margin-bottom: 10px; }
+                    #tab-mail .tm-search-wrap > i { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #64748b; pointer-events: none; }
+                    #tab-mail .tm-search { width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; color: #fff; padding: 9px 30px 9px 30px; font-size: 12.5px; outline: none; }
+                    #tab-mail .tm-search:focus { border-color: var(--tm-accent); }
+                    #tab-mail .tm-search::placeholder { color: #64748b; }
+                    #tab-mail .tm-search-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: #64748b; width: 22px; height: 22px; border-radius: 6px; cursor: pointer; font-size: 11px; display: none; }
+                    #tab-mail .tm-search-wrap.has .tm-search-clear { display: block; }
+                    #tab-mail .tm-search-clear:hover { background: rgba(255,255,255,0.12); color: #fff; }
                     #tab-mail .tm-empty { text-align: center; color: #64748b; padding: 30px 12px; font-size: 13px; }
                     #tab-mail .tm-empty i { font-size: 30px; opacity: .5; display: block; margin-bottom: 12px; }
                     #tab-mail .tm-spinner { width: 26px; height: 26px; border: 3px solid rgba(255,255,255,0.12); border-top-color: var(--tm-accent); border-radius: 50%; animation: ai-spin 0.8s linear infinite; margin: 0 auto 12px; }
@@ -2011,8 +2069,25 @@
                         <span id="tm-address">Generating…</span>
                         <button id="tm-copy-btn" class="tm-icon-btn" title="Copy address"><i class="fas fa-copy"></i></button>
                     </div>
-                    <button id="tm-new-btn" class="tm-new-btn"><i class="fas fa-rotate"></i> Generate new email</button>
+                    <!-- Name it yourself. user_x7k2p tells you nothing about which
+                         test it belongs to; admin_test does. Left empty, a random
+                         one is used as before. -->
+                    <div class="tm-make">
+                        <input type="text" id="tm-wanted" class="tm-wanted" maxlength="24"
+                               placeholder="Name it (optional) — e.g. admin, user1" autocomplete="off">
+                        <button id="tm-new-btn" class="tm-new-btn" title="Create another inbox - the ones you have are kept">
+                            <i class="fas fa-plus"></i> New inbox
+                        </button>
+                    </div>
                 </div>
+
+                <!-- Every inbox you have made. "Generate new email" used to throw the
+                     last one away along with its key; they are kept and switched
+                     between now, the way the login switcher does it. -->
+                <div class="tm-boxes-head">
+                    <span><i class="fas fa-layer-group"></i> Your inboxes</span>
+                </div>
+                <div id="tm-inboxes" class="tm-boxes"></div>
 
                 <div class="tm-inbox-head">
                     <h2><i class="fas fa-inbox"></i> Inbox</h2>
@@ -2021,6 +2096,11 @@
                         <button id="tm-refresh-btn" class="tm-refresh" title="Refresh"><i class="fas fa-arrows-rotate"></i></button>
                         <button id="tm-clear-btn" class="tm-refresh tm-clear" title="Delete every email in this inbox"><i class="fas fa-trash"></i></button>
                     </div>
+                </div>
+                <div class="tm-search-wrap">
+                    <i class="fas fa-magnifying-glass"></i>
+                    <input type="text" id="tm-search" class="tm-search" placeholder="Search subject, sender or text…" autocomplete="off">
+                    <button id="tm-search-clear" class="tm-search-clear" title="Clear"><i class="fas fa-xmark"></i></button>
                 </div>
                 <div id="tm-list" class="tm-list">
                     <div class="tm-empty"><div class="tm-spinner"></div>Waiting for emails…</div>
@@ -2093,6 +2173,31 @@
                     #tab-sessions .sw-modal-cancel:hover { background: rgba(255,255,255,0.14); }
                     #tab-sessions .sw-modal-ok { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
                     #tab-sessions .sw-modal-ok:hover { filter: brightness(1.08); }
+
+                    /* ── Reusable in-panel confirm / prompt (qaConfirm / qaPrompt in
+                       popup.js). Replaces the browser's native confirm()/prompt(),
+                       which render as an ugly "The extension … says" box. Global,
+                       NOT tab-scoped, so any tool can use it. See memory:
+                       always-use-in-panel-dialogs. ── */
+                    .qa-dialog { position: fixed; inset: 0; z-index: 100000; display: none; align-items: center; justify-content: center; background: rgba(2,6,23,0.72); backdrop-filter: blur(2px); padding: 16px; }
+                    .qa-dialog.show { display: flex; }
+                    .qa-dialog-box { width: 100%; max-width: 340px; background: #131a2b; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 20px; box-shadow: 0 24px 60px rgba(0,0,0,0.6); animation: qa-dialog-pop .16s ease; }
+                    @keyframes qa-dialog-pop { from { transform: scale(.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+                    .qa-dialog-head { display: flex; align-items: center; gap: 11px; margin-bottom: 12px; }
+                    .qa-dialog-ic { flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: #fff; background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+                    .qa-dialog.danger .qa-dialog-ic { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+                    .qa-dialog-title { font-size: 14.5px; font-weight: 700; color: #fff; line-height: 1.3; }
+                    .qa-dialog-msg { font-size: 13px; line-height: 1.6; color: #cbd5e1; white-space: pre-line; margin-bottom: 16px; word-break: break-word; }
+                    .qa-dialog-input { width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; color: #fff; padding: 11px 12px; font-size: 13.5px; outline: none; margin-bottom: 16px; }
+                    .qa-dialog-input:focus { border-color: #6366f1; }
+                    .qa-dialog-input::placeholder { color: #64748b; }
+                    .qa-dialog-actions { display: flex; gap: 9px; justify-content: flex-end; }
+                    .qa-dialog-btn { border: none; border-radius: 10px; padding: 9px 18px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+                    .qa-dialog-cancel { background: rgba(255,255,255,0.08); color: #cbd5e1; }
+                    .qa-dialog-cancel:hover { background: rgba(255,255,255,0.14); }
+                    .qa-dialog-ok { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; }
+                    .qa-dialog.danger .qa-dialog-ok { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+                    .qa-dialog-ok:hover { filter: brightness(1.08); }
                     #tab-sessions .se-divider { display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #64748b; font-size: 10.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
                     #tab-sessions .se-divider::before, #tab-sessions .se-divider::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.1); }
                     #tab-sessions .se-adv { border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; overflow: hidden; }
@@ -2181,6 +2286,23 @@
                     style="flex:1;padding:12px;border:none;border-radius:10px;background:rgba(255,255,255,0.1);color:#888;cursor:pointer;font-weight:600;">Cancel</button>
                 <button id="confirmDeleteBtn"
                     style="flex:1;padding:12px;border:none;border-radius:10px;background:#ef4444;color:white;cursor:pointer;font-weight:600;">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reusable confirm / prompt dialog, driven by qaConfirm() / qaPrompt() in
+         popup.js. One element serves both; the input is shown only for prompts. -->
+    <div class="qa-dialog" id="qaDialog" role="dialog" aria-modal="true">
+        <div class="qa-dialog-box">
+            <div class="qa-dialog-head">
+                <span class="qa-dialog-ic" id="qaDialogIc"><i class="fas fa-triangle-exclamation"></i></span>
+                <span class="qa-dialog-title" id="qaDialogTitle">Are you sure?</span>
+            </div>
+            <div class="qa-dialog-msg" id="qaDialogMsg"></div>
+            <input type="text" class="qa-dialog-input" id="qaDialogInput" autocomplete="off" style="display:none;">
+            <div class="qa-dialog-actions">
+                <button class="qa-dialog-btn qa-dialog-cancel" id="qaDialogCancel">Cancel</button>
+                <button class="qa-dialog-btn qa-dialog-ok" id="qaDialogOk">OK</button>
             </div>
         </div>
     </div>
