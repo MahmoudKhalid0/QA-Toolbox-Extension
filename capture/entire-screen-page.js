@@ -69,7 +69,13 @@ async function startVideoRecording(streamId) {
                     chromeMediaSource: 'desktop',
                     chromeMediaSourceId: streamId,
                     maxWidth: 1920,
-                    maxHeight: 1080
+                    maxHeight: 1080,
+                    // Uncapped, the desktop source hands over frames as fast as the
+                    // display produces them - up to 60/s - and every one of those
+                    // frames has to be encoded. 30 is plenty for showing a bug and
+                    // roughly halves the encoder's work, which is most of what made
+                    // the page feel heavy while recording.
+                    maxFrameRate: 30
                 }
             }
         });
@@ -84,7 +90,13 @@ async function startVideoRecording(streamId) {
             chrome.storage.local.set({ micActive: false, micMuted: false, micDenied });
         }
 
-        const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+        // VP8 first, NOT VP9. VP9 was being picked every time, and its libvpx
+        // encoder is software-only and far slower - it was eating the CPU while
+        // you recorded, which is what made the page stutter and the browser catch.
+        // VP8 encodes much more cheaply, and Chrome can hand it to a hardware
+        // encoder when the machine has one. For showing a bug the size difference
+        // does not matter; the dropped frames did.
+        const types = ['video/webm;codecs=vp8', 'video/webm', 'video/webm;codecs=vp9'];
         const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
 
         // Set in Settings > Screenshot & Record. This is the recorder that
@@ -259,24 +271,35 @@ async function handleRecordingStopped() {
     }
 
     if (recordedChunks.length > 0) {
-        // Plain 'video/webm', NOT mediaRecorder.mimeType. With an audio track the
-        // recorder reports `video/webm;codecs="vp9,opus"` - and that comma is the
-        // very character a data: URL uses to separate the type from the payload.
-        // FileReader would emit `data:video/webm;codecs="vp9,opus";base64,...`,
-        // whose payload any parser truncates at the comma, leaving a corrupt file
-        // the editor waits on forever. The container type alone is all the <video>
-        // needs; Chrome reads the real codecs out of the file.
+        // Plain 'video/webm', NOT mediaRecorder.mimeType: with an audio track the
+        // recorder reports video/webm;codecs="vp9,opus", and the comma in that is
+        // the very character a data: URL uses to separate type from payload.
         const blob = new Blob(recordedChunks, { type: 'video/webm' });
-        const reader = new FileReader();
-        reader.onload = () => {
-            chrome.runtime.sendMessage({
-                type: 'recording-stopped',
-                target: 'background',
-                videoDataUrl: reader.result
+
+        // Hand the Blob over through IndexedDB and send only its id. It used to go
+        // as a base64 data URL: FileReader re-encoded the whole recording into a
+        // string a third larger again, on the main thread, and that string was then
+        // serialised through a runtime message, written into chrome.storage.local,
+        // read back out and parsed once more - tens of megabytes copied four times
+        // before the editor could show a single frame. That was the wait after Stop.
+        const captureId = Date.now().toString();
+        CapStore.putPending(captureId, blob)
+            .then(() => {
+                chrome.runtime.sendMessage({
+                    type: 'recording-stopped',
+                    target: 'background',
+                    captureId
+                });
+                window.close();
+            })
+            .catch((err) => {
+                console.error('Could not store the recording:', err);
+                chrome.runtime.sendMessage({
+                    type: 'recording-error', target: 'background',
+                    error: String((err && err.message) || err)
+                });
+                window.close();
             });
-            window.close();
-        };
-        reader.readAsDataURL(blob);
     } else {
         window.close();
     }

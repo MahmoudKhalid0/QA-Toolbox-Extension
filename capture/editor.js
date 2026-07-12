@@ -393,17 +393,39 @@ async function initEditor() {
     // 2. Load the actual data
     if (isVideoSession && captureId) {
         setMode('video');
-        chrome.storage.local.get([captureId], async (result) => {
-            const data = result[captureId] || sessionStorage.getItem('currentScreenshot');
-            if (!data) {
+        // The recorder left the Blob in IndexedDB and passed only its id. Reading
+        // it back is a straight handle to the bytes - no base64 to decode, nothing
+        // copied through storage. This is the whole of the old wait after Stop.
+        (async () => {
+            let blob = null;
+            try {
+                // A recording just taken: the recorder left the Blob here.
+                blob = await CapStore.getPending(captureId);
+                // Reopened from the gallery: it lives in the library instead.
+                if (!blob) {
+                    const rec = await CapStore.get(captureId);
+                    if (rec && rec.blob) blob = rec.blob;
+                }
+                // Older captures were handed over as a base64 data URL in
+                // chrome.storage.local. Nothing writes that any more, but a
+                // recording taken before this change would still be sitting there.
+                if (!blob) {
+                    const r = await chrome.storage.local.get([captureId]);
+                    if (r[captureId]) blob = await (await fetch(r[captureId])).blob();
+                }
+            } catch (e) {
+                console.error('Could not read the recording:', e);
+            }
+            if (!blob) {
                 console.error('Video data not found');
                 toggleLoader(false);
+                showToast('That recording is no longer available.');
                 return;
             }
 
             try {
                 let sanitizedTitle = pageTitle.replace(/[/\\?%*:|"<>]/g, '').trim().replace(/\s+/g, '_') || 'recording';
-                const videoFile = await dataURLtoFile(data, `${sanitizedTitle}.webm`);
+                const videoFile = new File([blob], `${sanitizedTitle}.webm`, { type: 'video/webm' });
                 window.pendingVideo = videoFile;
 
                 // Until the first frame decodes, a <video> has no idea how big it
@@ -437,7 +459,7 @@ async function initEditor() {
                 toggleLoader(false);
                 showToast("Error loading the recording.");
             }
-        });
+        })();
     } else if (captureId || sessionStorage.getItem('currentScreenshot')) {
         setMode('image');
         const idToGet = captureId || 'currentScreenshot';

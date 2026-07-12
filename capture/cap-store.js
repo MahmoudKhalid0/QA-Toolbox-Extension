@@ -10,8 +10,18 @@
 // Loaded by the service worker (importScripts) and by the gallery page (<script>).
 
 const CAP_DB_NAME = 'qa-captures';
-const CAP_DB_VERSION = 1;
+const CAP_DB_VERSION = 2;
 const CAP_STORE = 'items';
+// Hand-off store: a capture on its way to the editor but not yet in the library
+// (the library only ever holds what was saved or shared). It exists so a
+// recording can travel as a Blob. It used to travel as a base64 data URL - the
+// recorder turned the Blob into a ~33%-larger string on the main thread, pushed
+// that string through a runtime message, the worker wrote it into
+// chrome.storage.local, the editor read it back out and re-parsed it. For a
+// long recording that is tens of megabytes copied and re-encoded four times over
+// before a single frame could be shown - which is the whole of the wait between
+// hitting Stop and the editor appearing.
+const CAP_PENDING = 'pending';
 
 function capOpenDb() {
     return new Promise((resolve, reject) => {
@@ -23,10 +33,49 @@ function capOpenDb() {
                 store.createIndex('createdAt', 'createdAt');
                 store.createIndex('type', 'type');
             }
+            if (!db.objectStoreNames.contains(CAP_PENDING)) {
+                db.createObjectStore(CAP_PENDING, { keyPath: 'id' });
+            }
         };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
+}
+
+// Same as capTx, against the hand-off store.
+function capPendingTx(mode, fn) {
+    return capOpenDb().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(CAP_PENDING, mode);
+        let value;
+        try {
+            const req = fn(tx.objectStore(CAP_PENDING));
+            if (req && 'onsuccess' in req) req.onsuccess = () => { value = req.result; };
+        } catch (e) { db.close(); reject(e); return; }
+        tx.oncomplete = () => { db.close(); resolve(value); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+        tx.onabort = () => { db.close(); reject(tx.error); };
+    }));
+}
+
+function capPutPending(id, blob) {
+    return capPendingTx('readwrite', (store) => store.put({ id: String(id), blob, createdAt: Date.now() }));
+}
+
+function capGetPending(id) {
+    return capPendingTx('readonly', (store) => store.get(String(id))).then(v => (v && v.blob) || null);
+}
+
+function capDropPending(id) {
+    return capPendingTx('readwrite', (store) => store.delete(String(id)));
+}
+
+// A recording the editor was never opened for (the tab was closed, the browser
+// crashed) would otherwise sit in the database for good.
+async function capSweepPending(maxAgeMs = 24 * 60 * 60 * 1000) {
+    const all = await capPendingTx('readonly', (store) => store.getAll());
+    const stale = (all || []).filter(r => Date.now() - (r.createdAt || 0) > maxAgeMs);
+    for (const r of stale) await capDropPending(r.id);
+    return stale.length;
 }
 
 // Runs fn(store) inside a transaction and resolves with whatever fn's request
@@ -137,5 +186,10 @@ capStoreExport.CapStore = {
     patch: capPatch,
     remove: capDelete,
     clear: capClear,
-    dataUrlToBlob: capDataUrlToBlob
+    dataUrlToBlob: capDataUrlToBlob,
+    // Blob hand-off from the recorder to the editor - no base64 anywhere.
+    putPending: capPutPending,
+    getPending: capGetPending,
+    dropPending: capDropPending,
+    sweepPending: capSweepPending
 };

@@ -9,6 +9,13 @@ importScripts('session-isolation.js');    // per-tab session isolation via chrom
 importScripts('session-swap.js');         // quick login switch (Snapshot & Swap, no debugger)
 if (self.SessionIsolation) self.SessionIsolation.loadFromStorage();
 
+// A recording is handed to the editor as a Blob in IndexedDB. If that editor tab
+// was never opened - the browser was closed, it crashed - the Blob would sit
+// there for good, so anything left over from a previous day is cleared out.
+if (self.CapStore && self.CapStore.sweepPending) {
+    self.CapStore.sweepPending().catch(() => { /* nothing to clean, or DB busy */ });
+}
+
 // Clicking the toolbar icon opens the side panel (the extension's main surface)
 if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => { });

@@ -324,7 +324,10 @@ input[type="number"]:focus {
    the little box) and the whole drawing toolbar both painted for a beat before
    the JS hid them again. Boot hidden; reveal only once there is something real
    to show. */
-body.booting .tools { display: none; }
+/* !important, because .tools is itself declared `display: flex !important` above -
+   a plain `display: none` here loses to it and the toolbar paints anyway. That is
+   the same reason the video-mode rule below is written with !important. */
+body.booting .tools { display: none !important; }
 body.booting #canvasContainer { visibility: hidden; }
 
 #canvasContainer {

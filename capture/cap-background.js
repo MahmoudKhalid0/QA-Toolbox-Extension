@@ -298,7 +298,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Handle video data from capture page
   if (request.type === 'recording-stopped' && request.target === 'background') {
-    handleRecordingFinished(request.videoDataUrl);
+    handleRecordingFinished(request.captureId);
     return true;
   }
 
@@ -420,34 +420,29 @@ function handleDelayedCapture(sendResponse) {
 }
 
 // Video Recording Logic
-async function handleRecordingFinished(videoDataUrl) {
-  if (!videoDataUrl) return;
+// The recorder has already put the Blob in IndexedDB and sends only its id, so
+// nothing large travels through here any more. This used to receive the whole
+// recording as a base64 string and write it into chrome.storage.local, which is
+// what made Stop feel like it hung: a long take was tens of megabytes being
+// re-encoded, serialised and written before the editor could open.
+async function handleRecordingFinished(captureId) {
+  if (!captureId) return;
   isRecordingInProgress = false;
-  chrome.storage.local.set({ isRecordingInProgress: false });
+  chrome.storage.local.set({ isRecordingInProgress: false, recordingPaused: false });
 
   chrome.storage.local.get(['tempTabTitle', 'tempTabId'], (result) => {
     const tabTitle = result.tempTabTitle || "recording";
     const tabId = result.tempTabId;
-    const captureId = Date.now().toString();
-    // Notify all tabs to hide the control UI
     broadcastHideControl();
     stopBadgeTimer();
-
-    // A long recording can take real, visible time to hand off to storage
-    // before the editor tab opens - say so, or it reads as the capture
-    // silently doing nothing right after the control UI disappears.
-    chrome.action.setBadgeText({ text: '...' });
-    chrome.action.setBadgeBackgroundColor({ color: '#3b82f6' });
 
     // The gallery only ever holds what has been shared to Drive - see the
     // editor's cloud button. A recording that is never shared must never
     // appear here, same rule already applied to screenshots - so nothing is
-    // written to CapStore at capture time. ctx is still stored for the
+    // written to the library at capture time. ctx is still stored for the
     // editor to pick up later (context drawer, and the eventual Share/Save).
     const openEditor = (ctx) => {
-      chrome.storage.local.set({
-        [captureId]: videoDataUrl, isVideo: true, [`ctx_${captureId}`]: ctx || null
-      }, () => {
+      chrome.storage.local.set({ [`ctx_${captureId}`]: ctx || null }, () => {
         chrome.tabs.create({
           url: chrome.runtime.getURL(`capture/editor.html?id=${captureId}&title=${encodeURIComponent(tabTitle)}&type=video`)
         });

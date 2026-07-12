@@ -376,6 +376,9 @@
         <button class="ctx-copy" id="ctxCopy"><i class="fas fa-file-lines"></i> Copy bug report</button>
     </aside>
 
+    <!-- Reads the recording straight out of IndexedDB as a Blob (see cap-store.js);
+         a module script defers, so this classic one is ready before editor.js runs. -->
+    <script src="cap-store.js"></script>
     <script type="module" src="editor.js"></script>
 </body>
 
