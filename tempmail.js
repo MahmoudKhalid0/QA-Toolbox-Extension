@@ -150,17 +150,82 @@
                 <div class="tm-bottom">
                     <p class="tm-intro" title="${esc(msg.intro || '')}">${esc(truncate(msg.intro || '', 80))}</p>
                     <button class="tm-dl" title="Download EML"><i class="fas fa-download"></i></button>
+                    <button class="tm-del" title="Delete this email"><i class="fas fa-trash"></i></button>
                 </div>`;
             item.addEventListener('click', (e) => {
-                if (e.target.closest('.tm-dl')) return;
+                if (e.target.closest('.tm-dl, .tm-del')) return;
                 openMessage(msg);
             });
             item.querySelector('.tm-dl').addEventListener('click', (e) => {
                 e.stopPropagation();
                 downloadEML(msg.id, msg.subject || 'email');
             });
+            item.querySelector('.tm-del').addEventListener('click', (e) => {
+                e.stopPropagation();
+                item.classList.add('deleting');       // it is going; say so at once
+                deleteMessage(msg);
+            });
             listEl.appendChild(item);
         }
+    }
+
+    // ── deleting ────────────────────────────────────────────────────────────
+    // On the SERVER, not just here. Deleting only our own copy would look right for
+    // about ten seconds: the next fetch sees a message the local store does not have
+    // and puts it straight back (see fetchMessages). The inbox lives at mail.tm; a
+    // message is only gone once it is gone from there.
+    async function deleteOnServer(id) {
+        const res = await fetch(`${API_URL}/messages/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${state.token}` },
+        });
+        // 404 = already gone. That is the outcome we wanted anyway.
+        if (!res.ok && res.status !== 404) throw new Error(`mail.tm said ${res.status}`);
+    }
+
+    async function deleteMessage(msg) {
+        try {
+            await deleteOnServer(msg.id);
+            await dbOp('delete', msg.id);
+            state.messages = state.messages.filter((m) => m.id !== msg.id);
+            renderMessages();
+            updateCounts();
+        } catch (e) {
+            console.error('Could not delete the message:', e);
+            tmToast('Could not delete that message', true);
+        }
+    }
+
+    async function deleteAll() {
+        const msgs = activeMessages();
+        if (!msgs.length) return;
+
+        const btn = document.getElementById('tm-clear-btn');
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+
+        let failed = 0;
+        for (const m of msgs) {
+            try {
+                await deleteOnServer(m.id);
+                await dbOp('delete', m.id);
+            } catch (e) {
+                failed++;
+            }
+        }
+        state.messages = (await dbOp('getAll')) || [];
+        renderMessages();
+        updateCounts();
+
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash"></i>'; }
+        if (failed) tmToast(`${failed} message${failed > 1 ? 's' : ''} could not be deleted`, true);
+        else tmToast(`Deleted ${msgs.length} message${msgs.length > 1 ? 's' : ''}`);
+    }
+
+    // A word from the tool itself. The panel's own toast lives in popup.js and this
+    // file is loaded after it, so it is there - but not worth crashing over if the
+    // mail tab is ever used somewhere else.
+    function tmToast(text, isError) {
+        if (typeof showToastMessage === 'function') showToastMessage(text, isError ? 'error' : 'success');
     }
 
     async function openMessage(msg) {
@@ -254,6 +319,17 @@
         copyBtn.addEventListener('click', copyAddress);
         newBtn.addEventListener('click', createNewAccount);
         refreshBtn.addEventListener('click', fetchMessages);
+
+        // Delete every email. Asked first: this is not undoable - the messages go
+        // from mail.tm itself, not just from our copy of the list.
+        const clearBtn = $('tm-clear-btn');
+        if (clearBtn) clearBtn.addEventListener('click', () => {
+            const n = activeMessages().length;
+            if (!n) return;
+            const ok = window.confirm(
+                `Delete all ${n} email${n > 1 ? 's' : ''} in this inbox?\n\nThey are deleted from the mail server too, so this cannot be undone.`);
+            if (ok) deleteAll();
+        });
 
         const has = await loadAccount();
         if (has && state.account) {

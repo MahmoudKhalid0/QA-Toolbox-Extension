@@ -1994,6 +1994,13 @@
                     #tab-mail .tm-intro { font-size: 11px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; flex: 1; min-width: 0; }
                     #tab-mail .tm-dl { flex-shrink: 0; background: rgba(255,255,255,0.06); border: none; color: #94a3b8; width: 26px; height: 26px; border-radius: 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
                     #tab-mail .tm-dl:hover { background: rgba(16,185,129,0.5); color: #fff; }
+                    #tab-mail .tm-del { flex-shrink: 0; background: rgba(255,255,255,0.06); border: none; color: #94a3b8; width: 26px; height: 26px; border-radius: 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+                    #tab-mail .tm-del:hover { background: rgba(239,68,68,0.5); color: #fff; }
+                    /* The row dims the moment you press delete, so the wait for the
+                       server round-trip does not read as nothing having happened. */
+                    #tab-mail .tm-msg.deleting { opacity: .4; pointer-events: none; }
+                    #tab-mail .tm-clear:hover { background: rgba(239,68,68,0.5); color: #fff; }
+                    #tab-mail .tm-clear:disabled { opacity: .5; cursor: not-allowed; }
                     #tab-mail .tm-empty { text-align: center; color: #64748b; padding: 30px 12px; font-size: 13px; }
                     #tab-mail .tm-empty i { font-size: 30px; opacity: .5; display: block; margin-bottom: 12px; }
                     #tab-mail .tm-spinner { width: 26px; height: 26px; border: 3px solid rgba(255,255,255,0.12); border-top-color: var(--tm-accent); border-radius: 50%; animation: ai-spin 0.8s linear infinite; margin: 0 auto 12px; }
@@ -2012,6 +2019,7 @@
                     <div class="tm-inbox-actions">
                         <span id="tm-unread" class="tm-unread">0</span>
                         <button id="tm-refresh-btn" class="tm-refresh" title="Refresh"><i class="fas fa-arrows-rotate"></i></button>
+                        <button id="tm-clear-btn" class="tm-refresh tm-clear" title="Delete every email in this inbox"><i class="fas fa-trash"></i></button>
                     </div>
                 </div>
                 <div id="tm-list" class="tm-list">
