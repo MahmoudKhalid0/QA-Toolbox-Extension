@@ -30,6 +30,30 @@ function capNotify(text, color) {
     setTimeout(() => chrome.action.setBadgeText({ text: '' }), 2500);
 }
 
+// A side panel takes its width out of the page. Photograph the tab while it is
+// still open and you get a page squeezed into what is left - a shot cut off down
+// one side, and a full-page capture that measured the wrong width entirely. So
+// every capture closes the panel FIRST, then waits for the page to reflow to its
+// real width before taking anything.
+//
+// The wait has to happen here, in the worker: the panel's own script dies the
+// instant it closes, so it cannot time anything after that.
+const CAP_PANEL_SETTLE_MS = 500;
+
+// Only the captures that photograph the TAB come through here. Screen and Record
+// take the screen instead, so the panel's width was never part of their picture.
+function capPerform(tab, act) {
+    if (act === 'capture') captureScreenshot();
+    else if (act === 'delayed') handleDelayedCapture();
+    else if (act === 'area') chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/area-selection.js'] });
+    else if (act === 'full') chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/full-page.js'] });
+}
+
+function capStartAfterPanelCloses(tab, act) {
+    chrome.runtime.sendMessage({ action: 'capClosePanel' }).catch(() => { });
+    setTimeout(() => capPerform(tab, act), CAP_PANEL_SETTLE_MS);
+}
+
 function capSafeCaptureVisible(tab, cb) {
     const restricted = tab.url && CAP_RESTRICTED.test(tab.url);
 
@@ -37,10 +61,12 @@ function capSafeCaptureVisible(tab, cb) {
         if (chrome.runtime.lastError || !dataUrl) {
             const msg = (chrome.runtime.lastError || {}).message || 'no image returned';
             console.error('capture failed:', msg);
-            // Only the activeTab grant unlocks Chrome's own pages, and a click
-            // inside the side panel never grants it. Point at what does.
+            // Chrome only lets an extension photograph its OWN pages (a new tab, the
+            // settings) under the activeTab grant, and activeTab is only granted when
+            // the extension is "invoked" - a toolbar click that opens a popup, a
+            // keyboard shortcut, a context-menu item. A click inside a side panel is
+            // none of those, which is the whole of why this fails here.
             capNotify('!', '#ef4444');
-            // tell whoever is listening (the side panel) why, in plain words
             chrome.runtime.sendMessage({
                 action: 'capCaptureFailed',
                 restricted,
@@ -140,28 +166,38 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const tab = sender.tab;
     if (!tab) return false;
     const act = request.act;
-    if (act === 'capture') captureScreenshot();
-    else if (act === 'delayed') handleDelayedCapture();
-    else if (act === 'area') chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/area-selection.js'] });
-    else if (act === 'full') chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/full-page.js'] });
-    else if (act === 'screen') capChooseAndCapture(tab, 'screenshot');
-    else if (act === 'record') {
-      chrome.storage.local.get(['isRecordingInProgress'], (r) => {
-        // Call the stop directly. This IS the service worker: a runtime.sendMessage
-        // it sends is delivered to every OTHER context but never back to its own
-        // listeners, so relaying 'requestStopRecording' to itself here reached
-        // nobody - which is why Stop from the floating menu did nothing at all.
-        if (r.isRecordingInProgress) { capStopRecording(); return; }
-        capChooseAndCapture(tab, 'record');
-      });
-    }
-    // Live controls from the floating menu. Same direct-call rule as Stop above:
-    // these run IN the worker, so they must not be routed through a message to it.
-    else if (act === 'pause') {
+
+    // Live controls first - they are not captures and must be instant.
+    // Same direct-call rule as Stop: these run IN the worker, so they must not be
+    // routed through a message to it (a worker never hears its own messages).
+    if (act === 'pause') {
       chrome.storage.local.get(['recordingPaused'], (r) => capSetPaused(!r.recordingPaused));
+      return false;
     }
-    else if (act === 'discard') capDiscardRecording();
+    if (act === 'discard') { capDiscardRecording(); return false; }
+    if (act === 'record' && isRecordingInProgress) { capStopRecording(); return false; }
+
+    // Screen and Record photograph the SCREEN, not the tab - the panel's width
+    // never entered into what they capture, and Chrome's picker gives it time to
+    // close anyway. They start at once; only the tab-based captures wait.
+    if (act === 'screen' || act === 'record') {
+      chrome.runtime.sendMessage({ action: 'capClosePanel' }).catch(() => { });
+      capChooseAndCapture(tab, act === 'record' ? 'record' : 'screenshot');
+      return false;
+    }
+
+    capStartAfterPanelCloses(tab, act);
     return false;
+  }
+
+  // The panel's own capture buttons. It sends this and shuts itself; the worker
+  // does the waiting, because the panel's script stops the moment it closes.
+  if (request.action === "capPanelAction") {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs && tabs[0];
+      if (tab) capStartAfterPanelCloses(tab, request.act);
+    });
+    return true;
   }
 
   if (request.action === "capEyeSetting") {

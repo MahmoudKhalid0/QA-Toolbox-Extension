@@ -1672,29 +1672,47 @@ chrome.runtime.onMessage.addListener((req) => {
     });
     const pageOk = (t) => t && t.url && !/^(chrome|chrome-extension|about|edge):/i.test(t.url);
 
-    // Only Area and Full page inject into the page. Visible and Delayed capture
-    // whatever the tab shows, chrome:// pages included - never disable those.
-    const pageOnly = ['capAreaBtn', 'capFullBtn'];
+    // None of these can work on a browser page (a new tab, the settings, the
+    // extensions list). Area and Full page have to inject a script into the page,
+    // which Chrome forbids there. Visible and Delayed photograph the tab, which
+    // Chrome only allows under the activeTab grant - and activeTab is given when
+    // the extension is *invoked* (a toolbar click that opens a popup, a shortcut, a
+    // context-menu item). Clicking inside an already-open side panel is none of
+    // those, so the grant never comes and the shot is refused. They used to sit
+    // there enabled and simply fail; better to say so than to lie about it.
+    const pageOnly = ['capVisibleBtn', 'capDelayedBtn', 'capAreaBtn', 'capFullBtn'];
     async function syncPageOnly() {
         const ok = pageOk(await activeTab());
         for (const id of pageOnly) {
             const b = $id(id);
             b.disabled = !ok;
-            b.title = ok ? '' : 'Open a website first';
+            b.title = ok ? '' : 'Open a website first - Chrome does not allow capturing its own pages from the side panel';
         }
     }
     syncPageOnly();
     chrome.tabs.onActivated.addListener(syncPageOnly);
     chrome.tabs.onUpdated.addListener((_id, info) => { if (info.status === 'complete' || info.url) syncPageOnly(); });
 
-    $id('capVisibleBtn').addEventListener('click', () => {
-        chrome.runtime.sendMessage({ action: 'capture' });
+    // Every capture closes the panel. The panel eats into the page's width, so a
+    // shot taken while it is open is of a page squeezed into what is left - cut off
+    // down one side. The worker does the capturing, and waits for the page to
+    // reflow to its real width before it does; all this has to do is get out of
+    // the way. (The waiting cannot live here: this script stops the moment the
+    // panel closes.)
+    const closePanel = (delay = 60) => setTimeout(() => window.close(), delay);
+    const capture = (act) => {
+        chrome.runtime.sendMessage({ action: 'capPanelAction', act });
+        closePanel();
+    };
+
+    // A capture started from the floating button on the page closes the panel too.
+    // The panel cannot see that click, so the worker tells it.
+    chrome.runtime.onMessage.addListener((msg) => {
+        if (msg && msg.action === 'capClosePanel') closePanel();
     });
 
-    $id('capDelayedBtn').addEventListener('click', () => {
-        chrome.runtime.sendMessage({ action: 'delayedCapture' });
-        showToastMessage('Capturing after the countdown…', 'success');
-    });
+    $id('capVisibleBtn').addEventListener('click', () => capture('capture'));
+    $id('capDelayedBtn').addEventListener('click', () => capture('delayed'));
 
     // Upload an image from the device and open it straight in the editor - the
     // same annotate/crop/share flow as a real capture, just sourced from a
@@ -1712,6 +1730,8 @@ chrome.runtime.onMessage.addListener((req) => {
         reader.onload = () => {
             const id = 'upload_' + Date.now();
             const title = (file.name || 'image').replace(/\.[^.]+$/, '');
+            // The panel stays open: Upload photographs nothing, so it is never in
+            // the way of a shot - which is the only reason the capture buttons close it.
             chrome.storage.local.set({ [id]: reader.result, isVideo: false }, () => {
                 chrome.tabs.create({
                     url: chrome.runtime.getURL(`capture/editor.html?id=${id}&title=${encodeURIComponent(title)}`)
@@ -1722,23 +1742,24 @@ chrome.runtime.onMessage.addListener((req) => {
         reader.readAsDataURL(file);
     });
 
+    // Full page is the one that suffered most: it measures the page to decide how
+    // far to scroll, and a panel-narrowed page measured wrong from the first tile.
     $id('capAreaBtn').addEventListener('click', async () => {
-        const t = await activeTab();
-        if (!pageOk(t)) { showToastMessage('Open a website first', 'error'); return; }
-        chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['capture/area-selection.js'] });
+        if (!pageOk(await activeTab())) { showToastMessage('Open a website first', 'error'); return; }
+        capture('area');
     });
 
     $id('capFullBtn').addEventListener('click', async () => {
-        const t = await activeTab();
-        if (!pageOk(t)) { showToastMessage('Open a website first', 'error'); return; }
-        showToastMessage('Scrolling & capturing the whole page…', 'success');
-        chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['capture/full-page.js'] });
+        if (!pageOk(await activeTab())) { showToastMessage('Open a website first', 'error'); return; }
+        capture('full');
     });
 
     // The worker raises Chrome's own picker over the page. It used to open a
     // 710x540 window of ours to host it, which framed the picker inside an
     // extension window and put an entry in the taskbar - and the screenshot then
     // had to minimise that window so it wouldn't appear in its own shot.
+    // No settle wait for these two: they photograph the SCREEN, not the tab, so the
+    // panel's width never entered into it - and the picker gives it time to go anyway.
     $id('capScreenBtn').addEventListener('click', () => {
         chrome.runtime.sendMessage({ action: 'capStartCapture', mode: 'screenshot' });
         window.close();
