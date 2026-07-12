@@ -164,7 +164,9 @@
     }
 
     async function openMessage(msg) {
-        chrome.tabs.create({ url: chrome.runtime.getURL(`mail-view.html?id=${encodeURIComponent(msg.id)}`) });
+        // Beside the tab you are on, like everything else the panel opens - not at
+        // the far end of the strip (see qaOpenTabBeside in popup.js).
+        qaOpenTabBeside(`mail-view.html?id=${encodeURIComponent(msg.id)}`);
         if (!msg.seen) {
             msg.seen = true;
             await dbOp('put', msg);

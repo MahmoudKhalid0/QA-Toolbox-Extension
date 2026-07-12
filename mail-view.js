@@ -18,10 +18,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // A sandboxed iframe can't open links itself; it posts the URL up to us.
 window.addEventListener('message', (event) => {
-    if (event.data && event.data.type === 'open_link' && event.data.url) {
-        try { chrome.tabs.create({ url: event.data.url }); }
-        catch (e) { window.open(event.data.url, '_blank'); }
-    }
+    if (!event.data || event.data.type !== 'open_link' || !event.data.url) return;
+    const url = event.data.url;
+    // Beside THIS tab. A link out of an email used to be dropped at the far end of
+    // the strip, so following one from the mail view meant losing the mail view.
+    // openerTabId also means closing the link brings you straight back to it.
+    chrome.tabs.getCurrent((me) => {
+        void chrome.runtime.lastError;
+        try {
+            if (me && typeof me.index === 'number') {
+                chrome.tabs.create({ url, index: me.index + 1, windowId: me.windowId, openerTabId: me.id });
+            } else {
+                chrome.tabs.create({ url });
+            }
+        } catch (e) {
+            window.open(url, '_blank');
+        }
+    });
 });
 
 function loadAccount() {
