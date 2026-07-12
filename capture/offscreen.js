@@ -86,7 +86,10 @@ async function startRecording(sId) {
         recorder.onstop = () => {
             console.log('Offscreen: Recorder stopped, data chunks:', data.length);
             if (data.length > 0) {
-                const blob = new Blob(data, { type: mimeType });
+                // Container type only - a codecs= list can contain a comma, which
+                // is what separates type from payload in a data: URL and would
+                // silently truncate the file. See entire-screen-page.js.
+                const blob = new Blob(data, { type: 'video/webm' });
                 const reader = new FileReader();
                 reader.onload = () => {
                     chrome.runtime.sendMessage({

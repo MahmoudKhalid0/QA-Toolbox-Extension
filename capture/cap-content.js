@@ -157,6 +157,35 @@ function showRecordingControl() {
                 transition: background 0.2s, color 0.2s;
             }
             .discard-btn:hover { background: rgba(255, 71, 87, 0.18); color: #ff6b81; }
+            /* Only present when the recording actually has a mic track. Muting
+               flips the live track off - the recording keeps running and the
+               timeline never shifts, it just goes silent. */
+            .mic-btn {
+                background: transparent;
+                color: #6ee7b7;
+                border: none;
+                width: 32px;
+                height: 32px;
+                border-radius: 10px;
+                cursor: pointer;
+                display: none;
+                align-items: center;
+                justify-content: center;
+                position: relative;
+                transition: background 0.2s, color 0.2s;
+            }
+            .mic-btn.show { display: flex; }
+            .mic-btn:hover { background: rgba(255, 255, 255, 0.18); }
+            .mic-btn.muted { color: rgba(255, 255, 255, 0.45); }
+            /* The slash that says "off" without needing a second icon. */
+            .mic-btn.muted::after {
+                content: '';
+                position: absolute;
+                left: 6px; right: 6px; top: 50%;
+                height: 2px; background: #ff6b81;
+                transform: rotate(-45deg);
+                border-radius: 2px;
+            }
             .point-wrap { position: relative; }
             .point-btn {
                 background: rgba(255, 255, 255, 0.08);
@@ -207,6 +236,9 @@ function showRecordingControl() {
                 <svg id="pause-icon" width="12" height="12" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
                 <span id="pause-btn-text">Pause</span>
             </button>
+            <button class="mic-btn" id="mic-rec-handle" title="Mute the microphone">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>
+            </button>
             <button class="discard-btn" id="discard-rec-handle" title="Discard recording">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z"/></svg>
             </button>
@@ -237,6 +269,7 @@ function showRecordingControl() {
 
         const isControlClick = (e) => e.composedPath().some(el =>
             el.id === 'stop-rec-handle' || el.id === 'pause-rec-handle' || el.id === 'discard-rec-handle' ||
+            el.id === 'mic-rec-handle' ||   // or muting would drag the bar instead
             (el.classList && el.classList.contains('point-wrap')));
 
         container.addEventListener('mousedown', (e) => {
@@ -301,10 +334,15 @@ function showRecordingControl() {
         const PAUSE_ICON_SVG = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
         const PLAY_ICON_SVG = '<polygon points="6,4 20,12 6,20"/>';
         let isPaused = false;
-        pauseBtn.onclick = () => {
-            if (!isPaused) {
-                chrome.runtime.sendMessage({ action: 'requestPauseRecording' });
-                isPaused = true;
+
+        // Paint from the shared flag, not from a private variable. Pause can be hit
+        // here OR in the popup, and this bar is what the user is actually looking
+        // at - if it kept counting and still said "Recording" after a pause from
+        // the popup, the pause looked broken even though the recorder had stopped.
+        const applyPaused = (paused) => {
+            if (paused === isPaused) return;
+            isPaused = paused;
+            if (paused) {
                 pauseStartedAt = Date.now();
                 clearInterval(recordingInterval);
                 pauseBtnText.textContent = 'Resume';
@@ -312,8 +350,6 @@ function showRecordingControl() {
                 recIndicator.classList.add('paused');
                 recText.textContent = 'Paused';
             } else {
-                chrome.runtime.sendMessage({ action: 'requestResumeRecording' });
-                isPaused = false;
                 if (pauseStartedAt) { pausedAccumMs += (Date.now() - pauseStartedAt); pauseStartedAt = null; }
                 pauseBtnText.textContent = 'Pause';
                 pauseIcon.innerHTML = PAUSE_ICON_SVG;
@@ -321,6 +357,40 @@ function showRecordingControl() {
                 recText.textContent = 'Recording';
                 startTicking();
             }
+        };
+
+        chrome.storage.local.get(['recordingPaused'], (r) => applyPaused(!!r.recordingPaused));
+        chrome.storage.onChanged.addListener((ch, area) => {
+            if (area === 'local' && ch.recordingPaused) applyPaused(!!ch.recordingPaused.newValue);
+        });
+
+        // The click only asks; the flag coming back is what actually repaints the
+        // bar, so this button and the popup's can never disagree.
+        pauseBtn.onclick = () => {
+            chrome.runtime.sendMessage({
+                action: isPaused ? 'requestResumeRecording' : 'requestPauseRecording'
+            });
+        };
+
+        // Mic Handler - mute/unmute the narration mid-recording. The button only
+        // exists if the recorder actually got a mic track (micActive), so it never
+        // offers to mute something that was never being recorded.
+        const micBtn = shadow.getElementById('mic-rec-handle');
+        const paintMic = (active, muted) => {
+            micBtn.classList.toggle('show', !!active);
+            micBtn.classList.toggle('muted', !!muted);
+            micBtn.title = muted ? 'Unmute the microphone' : 'Mute the microphone';
+        };
+        chrome.storage.local.get(['micActive', 'micMuted'], (r) => paintMic(r.micActive, r.micMuted));
+        chrome.storage.onChanged.addListener((ch, area) => {
+            if (area !== 'local') return;
+            if (ch.micActive || ch.micMuted) {
+                chrome.storage.local.get(['micActive', 'micMuted'], (r) => paintMic(r.micActive, r.micMuted));
+            }
+        });
+        micBtn.onclick = (e) => {
+            e.stopPropagation();
+            chrome.runtime.sendMessage({ action: 'requestToggleMic' });
         };
 
         // Discard Handler - separate from Stop, throws the recording away

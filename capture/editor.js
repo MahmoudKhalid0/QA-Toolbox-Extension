@@ -80,6 +80,12 @@ function toggleLoader(show, text = "Processing...") {
             loader.classList.remove('show');
         }
     }
+    // The page boots hidden (body.booting) so an empty canvas and the image
+    // toolbar cannot flash before we know whether this is a picture or a
+    // recording. Hiding the loader IS the moment there is something real to
+    // look at - and every load path, success or failure, comes through here,
+    // so nothing can get stranded behind a blank screen.
+    if (!show) document.body.classList.remove('booting');
 }
 
 // Helper to convert DataURL to File
@@ -400,13 +406,22 @@ async function initEditor() {
                 const videoFile = await dataURLtoFile(data, `${sanitizedTitle}.webm`);
                 window.pendingVideo = videoFile;
 
+                // Until the first frame decodes, a <video> has no idea how big it
+                // is and lays out at its default 300x150 - that was the little
+                // box flashing under the loader. Keep it out of the layout until
+                // it can size itself, then reveal it.
+                videoPlayer.style.visibility = 'hidden';
                 videoPlayer.src = URL.createObjectURL(videoFile);
                 videoPlayer.onerror = (e) => {
                     console.error("Video player error:", e);
+                    videoPlayer.style.visibility = 'visible';
                     toggleLoader(false);
                     showToast("Error loading video playback.");
                 };
-                videoPlayer.onloadeddata = () => toggleLoader(false);
+                videoPlayer.onloadeddata = () => {
+                    videoPlayer.style.visibility = 'visible';
+                    toggleLoader(false);
+                };
                 // A safety net, not a "must be done by now" cutoff - a large
                 // recording can legitimately still be decoding at 3s in. Hiding
                 // the loader unconditionally here made it look like loading had
@@ -439,6 +454,12 @@ async function initEditor() {
                 return;
             }
 
+            // Same flash as the video: an empty canvas lays out at its default
+            // 300x150 until the image arrives and gives it a real size. Hold it
+            // out of sight until there is something drawn on it.
+            canvas.style.visibility = 'hidden';
+            const reveal = () => { canvas.style.visibility = 'visible'; };
+
             const img = new Image();
             img.onload = () => {
                 const shouldCrop = urlParams.get('crop') === 'true' && result.cropArea;
@@ -458,6 +479,7 @@ async function initEditor() {
                         render();
                         saveHistory(false);
                         updateUndoRedoButtons();
+                        reveal();
                         toggleLoader(false);
                     };
                     croppedImg.src = tempCanvas.toDataURL();
@@ -468,6 +490,7 @@ async function initEditor() {
                     render();
                     saveHistory(false);
                     updateUndoRedoButtons();
+                    reveal();
                     toggleLoader(false);
                 }
                 // Sync session storage for fallback
@@ -475,6 +498,7 @@ async function initEditor() {
             };
             img.onerror = () => {
                 console.error("Image load error");
+                reveal();
                 toggleLoader(false);
                 showToast("Failed to load image.");
             };

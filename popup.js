@@ -1733,16 +1733,71 @@ chrome.runtime.onMessage.addListener((req) => {
     });
 
     const recBtn = $id('capRecordBtn');
+    const capCard = $id('capCard');
+    const capLive = $id('capLive');
+    const capLiveTimer = $id('capLiveTimer');
+    const capLiveText = $id('capLiveText');
+    const capLivePause = $id('capLivePause');
+
+    // While a recording runs the capture grid is swapped for its controls: taking
+    // a shot or opening the editor mid-take breaks the recording, so those options
+    // are removed rather than left there to be clicked by mistake.
+    let liveTicker = null;
+    const fmt = (ms) => {
+        const s = Math.max(0, Math.floor(ms / 1000));
+        return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    };
     const paintRecState = () => {
-        chrome.storage.local.get(['isRecordingInProgress'], (r) => {
+        chrome.storage.local.get(['isRecordingInProgress', 'recordingStartTime', 'recordingPaused'], (r) => {
             const on = !!r.isRecordingInProgress;
+            capCard.classList.toggle('recording', on);
             recBtn.classList.toggle('rec-on', on);
             recBtn.innerHTML = on ? '<i class="fas fa-stop"></i> Stop' : '<i class="fas fa-video"></i> Record';
+
+            const paused = !!r.recordingPaused;
+            capLive.classList.toggle('paused', paused);
+            capLiveText.textContent = paused ? 'Paused' : 'Recording';
+            capLivePause.innerHTML = paused
+                ? '<i class="fas fa-play"></i> Resume'
+                : '<i class="fas fa-pause"></i> Pause';
+
+            clearInterval(liveTicker);
+            liveTicker = null;
+            if (!on) { capLiveTimer.textContent = '00:00'; return; }
+            const start = r.recordingStartTime || Date.now();
+            const tick = () => { capLiveTimer.textContent = fmt(Date.now() - start); };
+            tick();
+            if (!paused) liveTicker = setInterval(tick, 500);
         });
     };
     paintRecState();
+
+    capLivePause.addEventListener('click', async () => {
+        const r = await chrome.storage.local.get(['recordingPaused']);
+        chrome.runtime.sendMessage({ action: r.recordingPaused ? 'requestResumeRecording' : 'requestPauseRecording' });
+    });
+    $id('capLiveStop').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'requestStopRecording' });
+    });
+    $id('capLiveDiscard').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'requestDiscardRecording' });
+    });
+
+    // Mic switch - the same `micEnabled` flag the page's floating menu writes, so
+    // arming the mic in either place shows up in the other.
+    const micToggle = $id('capMicToggle');
+    const paintMicState = () => {
+        chrome.storage.local.get(['micEnabled'], (r) => { micToggle.checked = !!r.micEnabled; });
+    };
+    paintMicState();
+    micToggle.addEventListener('change', () => {
+        chrome.storage.local.set({ micEnabled: micToggle.checked });
+    });
+
     chrome.storage.onChanged.addListener((ch, area) => {
-        if (area === 'local' && ch.isRecordingInProgress) paintRecState();
+        if (area !== 'local') return;
+        if (ch.isRecordingInProgress || ch.recordingPaused || ch.recordingStartTime) paintRecState();
+        if (ch.micEnabled) paintMicState();
     });
 
     recBtn.addEventListener('click', async () => {

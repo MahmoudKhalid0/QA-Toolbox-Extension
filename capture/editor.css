@@ -318,6 +318,15 @@ input[type="number"]:focus {
   background-size: 24px 24px;
 }
 
+/* Until initEditor has read the URL, the page does not know whether it is showing
+   an image or a recording. The markup defaults to the image case, so an empty
+   canvas (300x150 by default, inside this shadowed rounded container - that was
+   the little box) and the whole drawing toolbar both painted for a beat before
+   the JS hid them again. Boot hidden; reveal only once there is something real
+   to show. */
+body.booting .tools { display: none; }
+body.booting #canvasContainer { visibility: hidden; }
+
 #canvasContainer {
   position: relative;
   border-radius: 8px;

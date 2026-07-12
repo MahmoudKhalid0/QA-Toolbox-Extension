@@ -1479,6 +1479,43 @@
         .cap-grid button.rec-on { background: rgba(239,68,68,0.2); border-color: #ef4444; color: #fca5a5; }
         .cap-gallery { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 11px; color: #f59e0b; cursor: pointer; }
         .cap-gallery:hover { text-decoration: underline; }
+
+        /* Mic switch: arms narration for the NEXT recording, so it sits with the
+           capture buttons but must not read as one of them. */
+        .cap-mic { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11.5px; color: #cbd5e1; cursor: pointer; user-select: none; }
+        .cap-mic i { color: #94a3b8; font-size: 12px; }
+        .cap-mic span:first-of-type { flex: 1; }
+        .cap-mic input { position: absolute; opacity: 0; pointer-events: none; }
+        .cap-mic-sw { width: 32px; height: 18px; border-radius: 20px; background: rgba(255,255,255,0.14); position: relative; flex-shrink: 0; transition: background .18s; }
+        .cap-mic-sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .18s; }
+        .cap-mic input:checked ~ .cap-mic-sw { background: #10b981; }
+        .cap-mic input:checked ~ .cap-mic-sw::after { transform: translateX(14px); }
+        .cap-mic:has(input:checked) { color: #6ee7b7; }
+        .cap-mic:has(input:checked) i { color: #10b981; }
+        /* Says what the switch actually affects: a screenshot has no audio. */
+        .cap-mic-note { font-style: normal; font-size: 10px; color: #64748b; }
+        .cap-mic:has(input:checked) .cap-mic-note { color: #10b981; opacity: .8; }
+
+        /* Live recording controls - shown INSTEAD of the capture grid + mic switch,
+           so nothing that would ruin the take is reachable while it runs. */
+        .cap-live { display: none; }
+        .cap-card.recording .cap-live { display: block; }
+        .cap-card.recording .cap-grid,
+        .cap-card.recording .cap-mic { display: none; }
+        .cap-live-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; font-size: 12px; }
+        .cap-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; flex-shrink: 0; animation: capPulse 1.4s ease-in-out infinite; }
+        .cap-live.paused .cap-live-dot { animation: none; background: #f59e0b; }
+        @keyframes capPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+        .cap-live-text { color: #fca5a5; font-weight: 700; flex: 1; }
+        .cap-live.paused .cap-live-text { color: #fcd34d; }
+        .cap-live-timer { color: #cbd5e1; font-variant-numeric: tabular-nums; font-weight: 600; }
+        .cap-live-btns { display: flex; gap: 7px; }
+        .cap-live-btn { flex: 1; border: none; border-radius: 9px; padding: 9px; font-size: 12px; font-weight: 700; cursor: pointer; color: #cbd5e1; background: rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: center; gap: 6px; }
+        .cap-live-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+        .cap-live-btn.stop { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; }
+        .cap-live-btn.stop:hover { filter: brightness(1.1); }
+        .cap-live-btn.discard { flex: 0 0 38px; }
+        .cap-live-btn.discard:hover { background: rgba(239,68,68,0.35); color: #fff; }
     </style>
 </head>
 
@@ -1581,6 +1618,32 @@
                             <button id="capUploadBtn"><i class="fas fa-file-arrow-up"></i> Upload</button>
                         </div>
                         <input type="file" id="capUploadInput" accept="image/*" style="display:none;">
+                        <!-- Narration for the next recording. A switch, not an action:
+                             it changes what Record will do, it does not start anything. -->
+                        <label class="cap-mic" id="capMicRow" title="Applies to video recording only - screenshots have no audio">
+                            <i class="fas fa-microphone"></i>
+                            <span>Record my voice <em class="cap-mic-note">(video recording)</em></span>
+                            <input type="checkbox" id="capMicToggle">
+                            <span class="cap-mic-sw"></span>
+                        </label>
+
+                        <!-- Replaces the capture grid while a recording runs. Taking a
+                             shot or opening the editor mid-recording breaks the take,
+                             so those options are not merely disabled - they are gone,
+                             and what is left is what you actually need right now. -->
+                        <div class="cap-live" id="capLive">
+                            <div class="cap-live-head">
+                                <span class="cap-live-dot"></span>
+                                <span class="cap-live-text" id="capLiveText">Recording</span>
+                                <span class="cap-live-timer" id="capLiveTimer">00:00</span>
+                            </div>
+                            <div class="cap-live-btns">
+                                <button id="capLivePause" class="cap-live-btn"><i class="fas fa-pause"></i> Pause</button>
+                                <button id="capLiveStop" class="cap-live-btn stop"><i class="fas fa-stop"></i> Stop</button>
+                                <button id="capLiveDiscard" class="cap-live-btn discard" title="Discard recording"><i class="fas fa-trash"></i></button>
+                            </div>
+                        </div>
+
                         <a class="cap-gallery" id="capGalleryBtn"><i class="fas fa-images"></i> Gallery</a>
                     </div>
                 </div>

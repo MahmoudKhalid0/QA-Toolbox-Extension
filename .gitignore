@@ -6,3 +6,8 @@ config.js
 *.pem
 *.crx
 
+# Test tooling only (puppeteer-core, used to drive a real browser against the
+# extension). Nothing the extension itself loads - it must never be committed,
+# and it must never end up inside a packaged build.
+node_modules/
+

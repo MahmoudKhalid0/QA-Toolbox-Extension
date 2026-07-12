@@ -10,10 +10,32 @@ let recordingStartTimeRef = null;
 let pauseStartedAt = null;
 let isDiscarding = false;
 
+// The user's voice, if they turned the mic on. Grabbed BEFORE the screen picker
+// opens, because this window is minimised the moment a screen is chosen - a
+// permission prompt raised after that would be asked on a window nobody can see.
+// A refusal is never fatal: we record silently and say so.
+let micStream = null;
+let micDenied = false;
+
+async function acquireMic() {
+    const { micEnabled } = await chrome.storage.local.get(['micEnabled']);
+    if (!micEnabled) return null;
+    try {
+        return await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+        console.warn('Microphone unavailable, recording without it:', e);
+        micDenied = true;
+        return null;
+    }
+}
+
 async function startCapture() {
+    if (mode === 'record') micStream = await acquireMic();
+
     chrome.desktopCapture.chooseDesktopMedia(['screen', 'window', 'tab'], (streamId) => {
         if (!streamId) {
             console.log('User cancelled screen selection');
+            if (micStream) micStream.getTracks().forEach(t => t.stop());
             window.close();
             return;
         }
@@ -51,6 +73,16 @@ async function startVideoRecording(streamId) {
                 }
             }
         });
+
+        // Fold the voice track into the same stream, so one MediaRecorder muxes
+        // picture and narration into a single webm. Muting mid-recording is just
+        // `enabled = false` on this track: instant, and it re-encodes nothing.
+        if (micStream) {
+            micStream.getAudioTracks().forEach(t => recordingStream.addTrack(t));
+            chrome.storage.local.set({ micActive: true, micMuted: false });
+        } else {
+            chrome.storage.local.set({ micActive: false, micMuted: false, micDenied });
+        }
 
         const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
         const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
@@ -146,6 +178,10 @@ function pauseRecording() {
         mediaRecorder.pause();
         pauseStartedAt = Date.now();
         clearInterval(timerInterval);
+        // The popup's controls read this to know which face to show. Pause can be
+        // hit from the in-page bar OR the popup, so the truth has to live where
+        // both can see it, not in whichever one happened to press the button.
+        chrome.storage.local.set({ recordingPaused: true });
     }
 }
 
@@ -157,6 +193,9 @@ function resumeRecording() {
             pauseStartedAt = null;
         }
         startTimer();
+        // The popup's timer restarts from recordingStartTime, so it must be moved
+        // forward by the paused span too - otherwise the pause counts as elapsed.
+        chrome.storage.local.set({ recordingPaused: false, recordingStartTime: recordingStartTimeRef });
     }
 }
 
@@ -189,6 +228,17 @@ chrome.runtime.onMessage.addListener((request) => {
         resumeRecording();
     } else if (request.action === 'discardRecordingFromTab') {
         discardRecording();
+    } else if (request.action === 'toggleMicFromTab') {
+        // Muting is just switching the live track off. The track stays in the
+        // recording, so the webm keeps one continuous audio stream - it simply
+        // goes silent. Nothing is re-encoded and the timeline never shifts.
+        if (micStream) {
+            const track = micStream.getAudioTracks()[0];
+            if (track) {
+                track.enabled = !track.enabled;
+                chrome.storage.local.set({ micMuted: !track.enabled });
+            }
+        }
     }
 });
 
@@ -209,7 +259,14 @@ async function handleRecordingStopped() {
     }
 
     if (recordedChunks.length > 0) {
-        const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+        // Plain 'video/webm', NOT mediaRecorder.mimeType. With an audio track the
+        // recorder reports `video/webm;codecs="vp9,opus"` - and that comma is the
+        // very character a data: URL uses to separate the type from the payload.
+        // FileReader would emit `data:video/webm;codecs="vp9,opus";base64,...`,
+        // whose payload any parser truncates at the comma, leaving a corrupt file
+        // the editor waits on forever. The container type alone is all the <video>
+        // needs; Chrome reads the real codecs out of the file.
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
         const reader = new FileReader();
         reader.onload = () => {
             chrome.runtime.sendMessage({
@@ -227,6 +284,13 @@ async function handleRecordingStopped() {
     if (recordingStream) {
         recordingStream.getTracks().forEach(t => t.stop());
     }
+    // Release the mic, or Chrome keeps showing the "in use" indicator after the
+    // recording is long over. Clear the flags the control bar reads, too.
+    if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+    }
+    chrome.storage.local.set({ micActive: false, micMuted: false });
 }
 
 async function captureScreenshot(streamId) {

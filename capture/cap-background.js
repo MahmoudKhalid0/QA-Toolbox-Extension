@@ -152,13 +152,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     else if (act === 'record') {
       chrome.storage.local.get(['isRecordingInProgress'], (r) => {
-        if (r.isRecordingInProgress) { chrome.runtime.sendMessage({ action: 'requestStopRecording' }); return; }
+        // Call the stop directly. This IS the service worker: a runtime.sendMessage
+        // it sends is delivered to every OTHER context but never back to its own
+        // listeners, so relaying 'requestStopRecording' to itself here reached
+        // nobody - which is why Stop from the floating menu did nothing at all.
+        if (r.isRecordingInProgress) { capStopRecording(); return; }
         chrome.windows.create({
           url: chrome.runtime.getURL(`capture/entire-screen.html?mode=record&tabId=${tab.id}`),
           type: 'popup', width: 710, height: 540, focused: true
         });
       });
     }
+    // Live controls from the floating menu. Same direct-call rule as Stop above:
+    // these run IN the worker, so they must not be routed through a message to it.
+    else if (act === 'pause') {
+      chrome.storage.local.get(['recordingPaused'], (r) => capSetPaused(!r.recordingPaused));
+    }
+    else if (act === 'discard') capDiscardRecording();
     return false;
   }
 
@@ -254,42 +264,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "requestStopRecording") {
-    isRecordingInProgress = false;
-    chrome.storage.local.set({ isRecordingInProgress: false });
-    stopBadgeTimer();
-    broadcastHideControl(); // Hide UI immediately
-    // Relay to capture window
-    chrome.runtime.sendMessage({ action: 'stopRecordingFromTab' });
+    capStopRecording();
     return true;
   }
 
-  // Pause/resume: recording is still in progress, so the floating control
-  // stays up (it just switches its own button/timer state) - only the
-  // popup's actual MediaRecorder needs to hear about it.
+  // Pause/resume: recording is still in progress, so the floating control stays
+  // up - it just switches its own button/timer state. Pause can be hit from the
+  // in-page bar OR the popup, and each used to keep its own private idea of
+  // whether it was paused: pausing from one left the other still counting up and
+  // still saying "Recording", which read as "pause did nothing". The flag is
+  // written here, where every UI can see it, so all of them agree.
   if (request.action === "requestPauseRecording") {
-    chrome.runtime.sendMessage({ action: 'pauseRecordingFromTab' });
+    capSetPaused(true);
     return true;
   }
 
   if (request.action === "requestResumeRecording") {
-    chrome.runtime.sendMessage({ action: 'resumeRecordingFromTab' });
+    capSetPaused(false);
     return true;
   }
 
-  // Same shutdown as Stop, but the popup is told to throw the recording away
-  // instead of saving it - no editor tab opens for a discarded recording.
   if (request.action === "requestDiscardRecording") {
-    isRecordingInProgress = false;
-    chrome.storage.local.set({ isRecordingInProgress: false });
-    // The normal stop-and-save path clears this too. Skipping it here left a
-    // stale recordingStartTime behind, and a race in how the floating control
-    // reads it (it can run slightly before the NEXT recording writes its own
-    // fresh timestamp) meant a new recording after a discard would show the
-    // timer picking up from the discarded session's elapsed time.
-    chrome.storage.local.remove(['recordingStartTime']);
-    stopBadgeTimer();
-    broadcastHideControl();
-    chrome.runtime.sendMessage({ action: 'discardRecordingFromTab' });
+    capDiscardRecording();
+    return true;
+  }
+
+  // Mute/unmute the narration while the recording runs. The control bar lives in
+  // the page; the recorder lives in the capture window - this is the bridge.
+  if (request.action === "requestToggleMic") {
+    chrome.runtime.sendMessage({ action: 'toggleMicFromTab' });
     return true;
   }
 
@@ -456,6 +459,45 @@ async function handleRecordingFinished(videoDataUrl) {
     if (tabId) chrome.tabs.get(tabId, (t) => openEditor(t ? capCollectContext(t) : null));
     else openEditor(null);
   });
+}
+
+// Stop-and-save. Kept as a function rather than a message because the service
+// worker itself has to trigger it (the floating menu's Stop routes through here),
+// and a runtime.sendMessage from the worker never reaches the worker's own
+// listeners. Message handlers call this too, so both paths do the same thing.
+function capStopRecording() {
+  isRecordingInProgress = false;
+  // Clear the paused flag too, or the next recording's controls open showing
+  // "Resume" for a recording that is actually running.
+  chrome.storage.local.set({ isRecordingInProgress: false, recordingPaused: false });
+  stopBadgeTimer();
+  broadcastHideControl();                                    // hide the in-page bar at once
+  chrome.runtime.sendMessage({ action: 'stopRecordingFromTab' });  // -> the capture window
+}
+
+// Pause/resume. The flag is written HERE, where the in-page bar, the popup and
+// the floating menu can all see it - each used to keep its own private idea of
+// whether it was paused, so pausing in one left the others still counting up and
+// still saying "Recording", which read as "pause did nothing".
+function capSetPaused(paused) {
+  chrome.storage.local.set({ recordingPaused: !!paused });
+  chrome.runtime.sendMessage({ action: paused ? 'pauseRecordingFromTab' : 'resumeRecordingFromTab' });
+}
+
+// Same shutdown as Stop, but the capture window is told to throw the recording
+// away instead of saving it - no editor tab opens for a discarded recording.
+function capDiscardRecording() {
+  isRecordingInProgress = false;
+  chrome.storage.local.set({ isRecordingInProgress: false, recordingPaused: false });
+  // The normal stop-and-save path clears this too. Skipping it here left a stale
+  // recordingStartTime behind, and a race in how the floating control reads it
+  // (it can run slightly before the NEXT recording writes its own fresh
+  // timestamp) meant a new recording after a discard would show the timer
+  // picking up from the discarded session's elapsed time.
+  chrome.storage.local.remove(['recordingStartTime']);
+  stopBadgeTimer();
+  broadcastHideControl();
+  chrome.runtime.sendMessage({ action: 'discardRecordingFromTab' });
 }
 
 function broadcastHideControl() {

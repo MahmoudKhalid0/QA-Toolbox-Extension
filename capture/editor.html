@@ -7,7 +7,12 @@
     <link rel="stylesheet" href="editor.css">
 </head>
 
-<body>
+<!-- Boots hidden: the markup defaults to the image case, so an empty 300x150
+     canvas and the drawing toolbar would paint for a beat before initEditor
+     works out this is a recording and hides them. Cleared the moment there is
+     something real on screen (see toggleLoader). -->
+
+<body class="booting">
     <div class="toolbar">
         <div class="logo">QA Toolkit</div>
 
