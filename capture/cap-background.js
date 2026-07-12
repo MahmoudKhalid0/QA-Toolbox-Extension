@@ -144,12 +144,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     else if (act === 'delayed') handleDelayedCapture();
     else if (act === 'area') chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/area-selection.js'] });
     else if (act === 'full') chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/full-page.js'] });
-    else if (act === 'screen') {
-      chrome.windows.create({
-        url: chrome.runtime.getURL(`capture/entire-screen.html?tabId=${tab.id}`),
-        type: 'popup', width: 710, height: 540, focused: true
-      });
-    }
+    else if (act === 'screen') capChooseAndCapture(tab, 'screenshot');
     else if (act === 'record') {
       chrome.storage.local.get(['isRecordingInProgress'], (r) => {
         // Call the stop directly. This IS the service worker: a runtime.sendMessage
@@ -157,10 +152,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // listeners, so relaying 'requestStopRecording' to itself here reached
         // nobody - which is why Stop from the floating menu did nothing at all.
         if (r.isRecordingInProgress) { capStopRecording(); return; }
-        chrome.windows.create({
-          url: chrome.runtime.getURL(`capture/entire-screen.html?mode=record&tabId=${tab.id}`),
-          type: 'popup', width: 710, height: 540, focused: true
-        });
+        capChooseAndCapture(tab, 'record');
       });
     }
     // Live controls from the floating menu. Same direct-call rule as Stop above:
@@ -292,11 +284,62 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Mute/unmute the narration while the recording runs. The control bar lives in
   // the page; the recorder lives in the capture window - this is the bridge.
   if (request.action === "requestToggleMic") {
-    chrome.runtime.sendMessage({ action: 'toggleMicFromTab' });
+    chrome.runtime.sendMessage({ target: 'offscreen', type: 'toggle-mic' });
     return true;
   }
 
-  // Handle video data from capture page
+  // The popup's Screen / Record buttons. The picker has to be raised from HERE,
+  // with the target tab, so Chrome shows it over the page instead of inside a
+  // window of ours (the popup itself closes the moment it loses focus, so it
+  // cannot host the picker either).
+  if (request.action === "capStartCapture") {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs && tabs[0];
+      if (!tab) return;
+      if (request.mode === 'record') {
+        chrome.storage.local.get(['isRecordingInProgress'], (r) => {
+          if (r.isRecordingInProgress) { capStopRecording(); return; }
+          capChooseAndCapture(tab, 'record');
+        });
+      } else {
+        capChooseAndCapture(tab, 'screenshot');
+      }
+    });
+    return true;
+  }
+
+  // The recorder cannot write to chrome.storage (an offscreen document has no
+  // access to it), so it reports its state and this writes it - which is where
+  // the control bar and the popup read the mic's state from.
+  if (request.type === 'recorder-state' && request.target === 'background') {
+    const patch = {};
+    if ('micActive' in request) patch.micActive = request.micActive;
+    if ('micMuted' in request) patch.micMuted = request.micMuted;
+    if ('systemAudioOn' in request) patch.systemAudioOn = request.systemAudioOn;
+    if (Object.keys(patch).length) chrome.storage.local.set(patch);
+    return true;
+  }
+
+  // The picker has been answered and the stream is open: count the user in.
+  if (request.type === 'show-countdown' && request.target === 'background') {
+    capShowCountdown(request.tabId, request.seconds);
+    return true;
+  }
+
+  // The picker was dismissed. Nothing was ever started, so there is nothing to
+  // tear down - and nothing to tell the user off about either.
+  if (request.type === 'recording-cancelled' && request.target === 'background') {
+    chrome.storage.local.remove(['tempTabTitle', 'tempTabId']);
+    return true;
+  }
+
+  // The offscreen recorder is rolling.
+  if (request.type === 'recording-started' && request.target === 'background') {
+    capOnRecordingStarted();
+    return true;
+  }
+
+  // ...and it has finished: the Blob is already in IndexedDB, only the id travels.
   if (request.type === 'recording-stopped' && request.target === 'background') {
     handleRecordingFinished(request.captureId);
     return true;
@@ -460,6 +503,97 @@ async function handleRecordingFinished(captureId) {
 // worker itself has to trigger it (the floating menu's Stop routes through here),
 // and a runtime.sendMessage from the worker never reaches the worker's own
 // listeners. Message handlers call this too, so both paths do the same thing.
+// ── starting a capture ──────────────────────────────────────────────────────
+// Chrome's own picker, raised straight over the user's tab. It used to be hosted
+// inside a 710x540 extension window we opened for the purpose, which is why the
+// picker appeared framed inside a window of ours AND put an entry in the taskbar -
+// and why the screenshot path then had to minimise that window so it would not
+// appear in its own screenshot. Passing the tab here means no window exists at all.
+//
+// 'audio' among the sources is what makes Chrome offer "Also share system audio";
+// it hands the audio over only if the user actually ticks it.
+// The picker is raised by the offscreen recorder itself (getDisplayMedia), not
+// from here. A service worker cannot ask without naming a target tab, and the
+// stream that comes back is then locked to that tab's renderer - the recorder is
+// refused it. Asking from the document that consumes it is also what gives us
+// Chrome's own picker with no window of ours around it, no taskbar entry, and the
+// "Also share system audio" toggle.
+// chrome.offscreen.createDocument() resolves as soon as the document exists - not
+// when its script has run and registered a listener. A start-recording sent into
+// that gap is delivered to nobody and silently lost, which is exactly what made
+// the recording never begin. Wait until it answers before asking it for anything.
+async function capOffscreenReady(tries = 30) {
+  for (let i = 0; i < tries; i++) {
+    const pong = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ping' }).catch(() => null);
+    if (pong && pong.ready) return true;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return false;
+}
+
+async function capChooseAndCapture(tab, mode) {
+  try {
+    await setupOffscreenDocument();
+    await capOffscreenReady();
+
+    if (mode !== 'record') {
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'capture-screen' });
+      return;
+    }
+
+    // The editor is titled after the page the recording was taken from, and the
+    // control bar has to appear in that same tab - remember which one it was.
+    if (tab) chrome.storage.local.set({ tempTabTitle: tab.title || 'recording', tempTabId: tab.id });
+
+    // The recorder has no chrome.storage of its own, so everything it needs to
+    // know is handed to it here.
+    const BITRATE_BY_QUALITY = { low: 1500000, medium: 3000000, high: 5000000, ultra: 8000000 };
+    const { micEnabled, videoQuality } = await chrome.storage.local.get(['micEnabled', 'videoQuality']);
+    chrome.runtime.sendMessage({
+      target: 'offscreen', type: 'start-recording',
+      micEnabled: !!micEnabled,
+      videoBitsPerSecond: BITRATE_BY_QUALITY[videoQuality] || BITRATE_BY_QUALITY.high,
+      countdownMs: 3000,
+      countdownTabId: tab ? tab.id : null   // counted in once the picker is answered
+    });
+  } catch (e) {
+    console.error('Could not start the capture:', e);
+  }
+}
+
+// The recorder has the stream and is about to count the user in - show them the
+// countdown in their own tab. It cannot happen any earlier: before this point the
+// picker is still up, and counting down behind it would be counting down nothing.
+function capShowCountdown(tabId, seconds) {
+  if (!tabId) return;
+  chrome.scripting.executeScript({ target: { tabId }, files: ['capture/cap-content.js'] })
+    .then(() => chrome.tabs.sendMessage(tabId, { action: 'showCountdown', seconds }).catch(() => { }))
+    .catch(() => { /* a chrome:// tab has no countdown; record anyway */ });
+}
+
+// The offscreen recorder is rolling: light everything up. This used to be the
+// capture window's job (notifyRecordingStartedInTab), and there is no such window
+// any more.
+function capOnRecordingStarted() {
+  chrome.storage.local.get(['tempTabId'], ({ tempTabId }) => {
+    isRecordingInProgress = true;
+    currentRecordingTabId = tempTabId || null;
+    chrome.storage.local.set({
+      isRecordingInProgress: true,
+      recordingPaused: false,
+      recordingStartTime: Date.now()
+    }, () => {
+      startBadgeTimer();
+      if (!tempTabId) return;
+      chrome.tabs.sendMessage(tempTabId, { action: 'startRecordingInTab' }).catch(() => {
+        chrome.scripting.executeScript({ target: { tabId: tempTabId }, files: ['capture/cap-content.js'] })
+          .then(() => chrome.tabs.sendMessage(tempTabId, { action: 'startRecordingInTab' }))
+          .catch(() => { });
+      });
+    });
+  });
+}
+
 function capStopRecording() {
   isRecordingInProgress = false;
   // Clear the paused flag too, or the next recording's controls open showing
@@ -467,7 +601,7 @@ function capStopRecording() {
   chrome.storage.local.set({ isRecordingInProgress: false, recordingPaused: false });
   stopBadgeTimer();
   broadcastHideControl();                                    // hide the in-page bar at once
-  chrome.runtime.sendMessage({ action: 'stopRecordingFromTab' });  // -> the capture window
+  chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop-recording' });
 }
 
 // Pause/resume. The flag is written HERE, where the in-page bar, the popup and
@@ -476,11 +610,11 @@ function capStopRecording() {
 // still saying "Recording", which read as "pause did nothing".
 function capSetPaused(paused) {
   chrome.storage.local.set({ recordingPaused: !!paused });
-  chrome.runtime.sendMessage({ action: paused ? 'pauseRecordingFromTab' : 'resumeRecordingFromTab' });
+  chrome.runtime.sendMessage({ target: 'offscreen', type: paused ? 'pause-recording' : 'resume-recording' });
 }
 
-// Same shutdown as Stop, but the capture window is told to throw the recording
-// away instead of saving it - no editor tab opens for a discarded recording.
+// Same shutdown as Stop, but the recorder is told to throw the recording away
+// instead of saving it - no editor tab opens for a discarded recording.
 function capDiscardRecording() {
   isRecordingInProgress = false;
   chrome.storage.local.set({ isRecordingInProgress: false, recordingPaused: false });
@@ -492,7 +626,7 @@ function capDiscardRecording() {
   chrome.storage.local.remove(['recordingStartTime']);
   stopBadgeTimer();
   broadcastHideControl();
-  chrome.runtime.sendMessage({ action: 'discardRecordingFromTab' });
+  chrome.runtime.sendMessage({ target: 'offscreen', type: 'discard-recording' });
 }
 
 function broadcastHideControl() {
@@ -526,8 +660,10 @@ async function setupOffscreenDocument() {
 
   await chrome.offscreen.createDocument({
     url: chrome.runtime.getURL('capture/offscreen.html'),
-    reasons: ['USER_MEDIA'],
-    justification: 'Capture screen recording'
+    // DISPLAY_MEDIA: this document raises Chrome's screen picker itself, with
+    // getDisplayMedia. USER_MEDIA: and it opens the microphone for narration.
+    reasons: ['DISPLAY_MEDIA', 'USER_MEDIA'],
+    justification: 'Record and screenshot the screen, with optional narration'
   });
 
   await new Promise(resolve => setTimeout(resolve, 500));

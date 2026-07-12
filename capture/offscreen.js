@@ -1,33 +1,36 @@
+// The recorder. This document has no window and no taskbar entry, which is the
+// whole point of it: the screen picker is raised by the service worker straight
+// over the user's own tab, so there is no extension window between them and it -
+// no frame around the picker, and nothing extra in the taskbar. (The old path
+// opened a real 710x540 popup window just to host the picker, and then had to
+// minimise itself so it wouldn't appear in its own screenshot.)
 let recorder = null;
 let data = [];
 let stream = null;
+let micStream = null;
+let discarding = false;
 
-// Read streamId from URL immediately
-const urlParams = new URLSearchParams(window.location.search);
-const streamId = urlParams.get('streamId');
-
-if (streamId) {
-    startRecording(streamId);
-}
-
-// Still listen for messages
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.target !== 'offscreen') return false;
 
-    if (message.type === 'start-recording') {
-        startRecording(message.streamId);
-        sendResponse({ success: true });
-        return true;
-    }
+    // createDocument() resolves before this script has necessarily run, so the
+    // worker pings until this answers. Without it the very first start-recording
+    // was landing on a document with no listener yet and simply vanishing.
+    if (message.type === 'ping') { sendResponse({ ready: true }); return true; }
 
-    if (message.type === 'stop-recording') {
-        stopRecording();
+    if (message.type === 'start-recording') {
+        startRecording(message);
         sendResponse({ success: true });
         return true;
     }
+    if (message.type === 'stop-recording') { stopRecording(false); sendResponse({ success: true }); return true; }
+    if (message.type === 'discard-recording') { stopRecording(true); sendResponse({ success: true }); return true; }
+    if (message.type === 'pause-recording') { pauseRecording(); sendResponse({ success: true }); return true; }
+    if (message.type === 'resume-recording') { resumeRecording(); sendResponse({ success: true }); return true; }
+    if (message.type === 'toggle-mic') { toggleMic(); sendResponse({ success: true }); return true; }
 
     if (message.type === 'capture-screen') {
-        captureScreenshot(message.streamId);
+        captureScreenshot();
         sendResponse({ success: true });
         return true;
     }
@@ -40,116 +43,199 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
 });
 
-async function startRecording(sId) {
-    try {
-        console.log('Offscreen: Starting recording for streamId:', sId);
-        await new Promise(r => setTimeout(r, 200));
+// An offscreen document does NOT get chrome.storage - reaching for it here threw
+// "Cannot read properties of undefined (reading 'local')" and killed the start
+// before it had begun. Everything this document knows is passed in with the
+// message, and everything it needs recorded is reported back to the worker.
+function reportState(state) {
+    chrome.runtime.sendMessage(Object.assign({ type: 'recorder-state', target: 'background' }, state))
+        .catch(() => { });
+}
 
-        stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: {
-                mandatory: {
-                    chromeMediaSource: 'desktop',
-                    chromeMediaSourceId: sId,
-                    maxWidth: 4000,
-                    maxHeight: 4000
-                }
-            }
+async function startRecording({ micEnabled, countdownMs = 0, countdownTabId = null, videoBitsPerSecond = 5000000 }) {
+    try {
+        discarding = false;
+
+        // THIS document asks Chrome for the screen. Not the service worker: from a
+        // worker, chooseDesktopMedia demands a target tab, and the stream it then
+        // returns is bound to that tab's renderer - handing it here got a flat
+        // "AbortError: Error starting tab capture" every time, whatever the source.
+        //
+        // Asking with getDisplayMedia from the document that will actually consume
+        // the stream is what every other recorder does, and it is what gives us all
+        // three of the things we were missing: Chrome's own picker with nothing of
+        // ours framing it, no window and so no taskbar entry, and the "Also share
+        // system audio" toggle - which only appears because audio is asked for here.
+        stream = await navigator.mediaDevices.getDisplayMedia({
+            audio: true,                        // -> Chrome offers to share the audio too
+            systemAudio: 'include',             // ...and offers the SYSTEM's audio, not just a tab's
+            // Opens the picker already on "Entire Screen" rather than "Chrome Tab".
+            // It is a preference, not a lock: the user can still pick a tab or a
+            // window. Note this is a getDisplayMedia hint - a width/height/frameRate
+            // set here would be a precondition, and the request would just be refused.
+            video: { displaySurface: 'monitor' }
         });
 
-        const types = [
-            'video/webm;codecs=vp9',
-            'video/webm;codecs=vp8',
-            'video/webm'
-        ];
+        // The cap goes on afterwards, on the track itself, where it is a request and
+        // not a precondition. Uncapped, the display hands over frames as fast as it
+        // makes them - up to 60/s - and every one has to be encoded; 30 is plenty
+        // for showing a bug and roughly halves the encoder's work, which is most of
+        // what made recording feel heavy.
+        try {
+            await stream.getVideoTracks()[0].applyConstraints({
+                frameRate: { max: 30 }, width: { max: 1920 }, height: { max: 1080 }
+            });
+        } catch (e) {
+            console.warn('Offscreen: could not cap the frame rate, recording as-is:', e);
+        }
+
+        const systemAudio = stream.getAudioTracks().length > 0;   // only if they ticked it
+
+        // The user's voice, if they armed the mic. An offscreen document cannot
+        // raise a permission prompt (it has no UI), so the popup asks for it when
+        // the switch is turned on; here we only use a permission already given.
+        micStream = null;
+        if (micEnabled) {
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                micStream.getAudioTracks().forEach(t => stream.addTrack(t));
+            } catch (e) {
+                console.warn('Offscreen: microphone unavailable, recording without it:', e);
+            }
+        }
+        reportState({ micActive: !!micStream, micMuted: false, systemAudioOn: !!systemAudio });
+
+        // VP8 first, NOT VP9: VP9's encoder is software-only and far slower, and it
+        // was being picked every time - that is what ate the CPU while recording.
+        const types = ['video/webm;codecs=vp8', 'video/webm', 'video/webm;codecs=vp9'];
         const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
 
-        // Set in Settings > Screenshot & Record. Lower bitrates make the base64
-        // handoff to the editor meaningfully faster for long recordings.
-        const BITRATE_BY_QUALITY = { low: 1500000, medium: 3000000, high: 5000000, ultra: 8000000 };
-        const { videoQuality } = await chrome.storage.local.get(['videoQuality']);
-        const videoBitsPerSecond = BITRATE_BY_QUALITY[videoQuality] || BITRATE_BY_QUALITY.high;
-
-        recorder = new MediaRecorder(stream, {
-            mimeType,
-            videoBitsPerSecond
-        });
-
+        recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond });
         data = [];
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) data.push(e.data); };
+        recorder.onstop = onRecorderStopped;
 
-        recorder.ondataavailable = (e) => {
-            if (e.data.size > 0) {
-                data.push(e.data);
-            }
-        };
+        // Stopping the capture from Chrome's own "Stop sharing" bar has to end the
+        // recording too, or it would run on against a dead track and save nothing.
+        stream.getVideoTracks()[0].addEventListener('ended', () => stopRecording(false));
 
-        recorder.onstop = () => {
-            console.log('Offscreen: Recorder stopped, data chunks:', data.length);
-            if (data.length > 0) {
-                // Container type only - a codecs= list can contain a comma, which
-                // is what separates type from payload in a data: URL and would
-                // silently truncate the file. See entire-screen-page.js.
-                const blob = new Blob(data, { type: 'video/webm' });
-                const reader = new FileReader();
-                reader.onload = () => {
-                    chrome.runtime.sendMessage({
-                        type: 'recording-stopped',
-                        target: 'background',
-                        videoDataUrl: reader.result
-                    }).catch(e => console.error('Offscreen: Failed to send recording-stopped:', e));
-                };
-                reader.readAsDataURL(blob);
-            } else {
-                console.warn('Offscreen: No data recorded');
-                chrome.runtime.sendMessage({
-                    type: 'recording-error',
-                    target: 'background',
-                    error: 'No data recorded'
-                });
-            }
+        // Count the user in only now: until the picker was answered it was still on
+        // screen, and a countdown behind it would have been counting down nothing.
+        if (countdownMs > 0) {
+            chrome.runtime.sendMessage({
+                type: 'show-countdown', target: 'background',
+                tabId: countdownTabId, seconds: Math.round(countdownMs / 1000)
+            }).catch(() => { });
+            await new Promise(r => setTimeout(r, countdownMs));
+        }
+        if (!recorder) return;                 // stopped while we were counting
 
-            if (stream) stream.getTracks().forEach(t => t.stop());
-            recorder = null;
-            stream = null;
-        };
+        recorder.start(1000);   // flush a chunk a second instead of one huge buffer
 
-        // Collect data more frequently to avoid empty data on short recordings
-        recorder.start(500);
-
-        chrome.runtime.sendMessage({
-            type: 'recording-started',
-            target: 'background'
-        }).catch(() => { });
-
+        chrome.runtime.sendMessage({ type: 'recording-started', target: 'background' }).catch(() => { });
     } catch (err) {
-        console.error('Offscreen execution error:', err);
+        releaseTracks();
+        // Always say what happened, even when we then choose to stay quiet about it:
+        // treating every NotAllowedError as "the user cancelled" is what hid a
+        // rejected constraint set and made the recording look like it just never ran.
+        console.error('Offscreen: could not start recording:', err);
+        // Dismissing the picker is a choice, not a fault - leave no half-started
+        // recording behind and do not nag about it.
+        if (err && err.name === 'NotAllowedError') {
+            chrome.runtime.sendMessage({ type: 'recording-cancelled', target: 'background' }).catch(() => { });
+            return;
+        }
         chrome.runtime.sendMessage({
-            type: 'recording-error',
-            target: 'background',
+            type: 'recording-error', target: 'background',
             error: err.name + ': ' + err.message
         }).catch(() => { });
     }
 }
 
-function stopRecording() {
-    if (recorder && recorder.state === 'recording') {
-        recorder.stop();
+function onRecorderStopped() {
+    const chunks = data;
+    data = [];
+    releaseTracks();
+    reportState({ micActive: false, micMuted: false });
+
+    if (discarding) {                       // thrown away on purpose: save nothing
+        discarding = false;
+        return;
+    }
+    if (!chunks.length) {
+        chrome.runtime.sendMessage({
+            type: 'recording-error', target: 'background', error: 'No data recorded'
+        }).catch(() => { });
+        return;
+    }
+
+    // Container type only, NOT recorder.mimeType: with an audio track that reads
+    // video/webm;codecs="vp8,opus", and a comma there is fatal to anything that
+    // parses it as a data: URL.
+    const blob = new Blob(chunks, { type: 'video/webm' });
+
+    // The Blob goes to the editor through IndexedDB, and only its id travels in a
+    // message. It used to be re-encoded into a base64 string a third larger again,
+    // pushed through a message, written into chrome.storage.local and parsed back
+    // out - tens of megabytes copied four times over before a single frame could be
+    // shown. That was the whole of the wait after pressing Stop.
+    const captureId = Date.now().toString();
+    CapStore.putPending(captureId, blob)
+        .then(() => chrome.runtime.sendMessage({
+            type: 'recording-stopped', target: 'background', captureId
+        }).catch(() => { }))
+        .catch((err) => chrome.runtime.sendMessage({
+            type: 'recording-error', target: 'background',
+            error: 'Could not store the recording: ' + ((err && err.message) || err)
+        }).catch(() => { }));
+}
+
+function releaseTracks() {
+    // Release the mic too, or Chrome keeps showing the "in use" indicator long
+    // after the recording is over.
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    stream = null;
+    micStream = null;
+    recorder = null;
+}
+
+function stopRecording(discard) {
+    discarding = !!discard;
+    if (recorder && (recorder.state === 'recording' || recorder.state === 'paused')) {
+        recorder.stop();                      // onstop does the rest
+    } else {
+        releaseTracks();
     }
 }
 
-// Capture Screenshot from Stream
-async function captureScreenshot(streamId) {
-    try {
-        await new Promise(r => setTimeout(r, 200));
+function pauseRecording() {
+    if (recorder && recorder.state === 'recording') recorder.pause();
+}
 
-        const captureStream = await navigator.mediaDevices.getUserMedia({
+function resumeRecording() {
+    if (recorder && recorder.state === 'paused') recorder.resume();
+}
+
+// Muting is switching the live track off. The track stays in the recording, so
+// the webm keeps one continuous audio stream that simply goes silent - nothing is
+// re-encoded and the timeline never shifts.
+function toggleMic() {
+    if (!micStream) return;
+    const track = micStream.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    reportState({ micMuted: !track.enabled });
+}
+
+// One frame of the screen. Same reasoning as the recorder: this document asks for
+// the screen itself, so there is no window of ours to appear in the very shot it
+// is taking (the old path opened a 710x540 window and then had to minimise it).
+async function captureScreenshot() {
+    try {
+        const captureStream = await navigator.mediaDevices.getDisplayMedia({
             audio: false,
-            video: {
-                mandatory: {
-                    chromeMediaSource: 'desktop',
-                    chromeMediaSourceId: streamId
-                }
-            }
+            video: { displaySurface: 'monitor' }   // opens on "Entire Screen"
         });
 
         // Create video element to capture frame
@@ -189,6 +275,8 @@ async function captureScreenshot(streamId) {
         }).catch(() => { });
 
     } catch (err) {
+        // Dismissing the picker is a choice, not a fault.
+        if (err && (err.name === 'NotAllowedError' || err.name === 'AbortError')) return;
         console.error('Screenshot capture error:', err);
         chrome.runtime.sendMessage({
             type: 'screenshot-error',

@@ -27,6 +27,9 @@
         <h2>Recording in progress...</h2>
         <p>This tab is recording your screen.</p>
     </div>
+    <!-- The recording is handed to the editor as a Blob through IndexedDB, never
+         as a base64 data URL. Must load before offscreen.js. -->
+    <script src="cap-store.js"></script>
     <script src="offscreen.js"></script>
 </body>
 

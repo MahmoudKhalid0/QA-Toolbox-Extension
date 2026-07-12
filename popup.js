@@ -1724,12 +1724,13 @@ chrome.runtime.onMessage.addListener((req) => {
         chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['capture/full-page.js'] });
     });
 
-    $id('capScreenBtn').addEventListener('click', async () => {
-        const t = await activeTab();
-        chrome.windows.create({
-            url: chrome.runtime.getURL(`capture/entire-screen.html?tabId=${t ? t.id : ''}`),
-            type: 'popup', width: 710, height: 540, focused: true
-        });
+    // The worker raises Chrome's own picker over the page. It used to open a
+    // 710x540 window of ours to host it, which framed the picker inside an
+    // extension window and put an entry in the taskbar - and the screenshot then
+    // had to minimise that window so it wouldn't appear in its own shot.
+    $id('capScreenBtn').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'capStartCapture', mode: 'screenshot' });
+        window.close();
     });
 
     const recBtn = $id('capRecordBtn');
@@ -1790,8 +1791,25 @@ chrome.runtime.onMessage.addListener((req) => {
         chrome.storage.local.get(['micEnabled'], (r) => { micToggle.checked = !!r.micEnabled; });
     };
     paintMicState();
-    micToggle.addEventListener('change', () => {
-        chrome.storage.local.set({ micEnabled: micToggle.checked });
+    micToggle.addEventListener('change', async () => {
+        if (!micToggle.checked) {
+            chrome.storage.local.set({ micEnabled: false });
+            return;
+        }
+        // The recorder runs in an offscreen document, which has no UI and so can
+        // never raise the microphone prompt. Ask for it HERE, the moment the
+        // switch is turned on - a popup can show the prompt, and once granted the
+        // recorder simply uses it. Without this, arming the mic would appear to
+        // work and then record silence.
+        try {
+            const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+            s.getTracks().forEach(t => t.stop());          // we only wanted the permission
+            chrome.storage.local.set({ micEnabled: true });
+        } catch (e) {
+            micToggle.checked = false;
+            chrome.storage.local.set({ micEnabled: false });
+            showToastMessage('Microphone access was denied - recordings will have no voice', 'error');
+        }
     });
 
     chrome.storage.onChanged.addListener((ch, area) => {
@@ -1806,11 +1824,8 @@ chrome.runtime.onMessage.addListener((req) => {
             chrome.runtime.sendMessage({ action: 'requestStopRecording' });
             return;
         }
-        const t = await activeTab();
-        chrome.windows.create({
-            url: chrome.runtime.getURL(`capture/entire-screen.html?mode=record&tabId=${t ? t.id : ''}`),
-            type: 'popup', width: 710, height: 540, focused: true
-        });
+        chrome.runtime.sendMessage({ action: 'capStartCapture', mode: 'record' });
+        window.close();
     });
 
     $id('capGalleryBtn').addEventListener('click', () => {
