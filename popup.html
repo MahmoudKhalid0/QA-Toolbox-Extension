@@ -1480,6 +1480,16 @@
         .cap-gallery { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 11px; color: #f59e0b; cursor: pointer; }
         .cap-gallery:hover { text-decoration: underline; }
 
+        /* One group per kind of thing - a still, a recording, an image you already
+           have. They were only ever in one grid because they shared a container. */
+        .cap-group-label { font-size: 10px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: #64748b; margin: 12px 0 7px; }
+        .cap-group-label:first-of-type { margin-top: 4px; }
+        .cap-grid-1 { grid-template-columns: 1fr; }
+        .cap-card.recording .cap-group-label { display: none; }
+
+        /* The gallery belongs to the whole card, not to the section above it. */
+        .cap-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07); }
+
         /* Mic switch: arms narration for the NEXT recording, so it sits with the
            capture buttons but must not read as one of them. */
         .cap-mic { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11.5px; color: #cbd5e1; cursor: pointer; user-select: none; }
@@ -1601,23 +1611,38 @@
 
             <!-- Tools tab -->
             <div class="tab-page hidden" id="tab-tools">
-                <div class="tool-card cap-card" id="capCard">
+                <!-- Same shape as every other expandable tool (see Inspector below):
+                     a tool-card header, a tool-options panel, and a place in the one
+                     accordion - so opening this closes the others, and opening one of
+                     the others closes this. It was a card of its own making before,
+                     which is why it neither looked nor behaved like its neighbours. -->
+                <button class="tool-card" id="capToolBtn" title="Screenshot &amp; Record">
                     <div class="tool-card-icon" style="background: linear-gradient(135deg, #f59e0b, #ef4444);">
                         <i class="fas fa-camera"></i>
                     </div>
                     <div class="tool-card-info">
                         <h4>Screenshot &amp; Record</h4>
                         <p>Capture, annotate and report &mdash; visible area, selection, full page, entire screen or video</p>
+                    </div>
+                    <i class="fas fa-chevron-down tool-card-chevron"></i>
+                </button>
+                <div class="tool-options hidden cap-card" id="capOptions">
+                        <!-- Stills. Every one of these produces an image. -->
+                        <div class="cap-group-label">Screenshot</div>
                         <div class="cap-grid">
                             <button id="capVisibleBtn"><i class="fas fa-display"></i> Visible</button>
                             <button id="capAreaBtn"><i class="fas fa-crop-simple"></i> Area</button>
                             <button id="capFullBtn"><i class="fas fa-arrows-up-down"></i> Full page</button>
                             <button id="capScreenBtn"><i class="fas fa-desktop"></i> Screen</button>
                             <button id="capDelayedBtn"><i class="fas fa-clock"></i> Delayed</button>
-                            <button id="capRecordBtn"><i class="fas fa-video"></i> Record</button>
-                            <button id="capUploadBtn"><i class="fas fa-file-arrow-up"></i> Upload</button>
                         </div>
-                        <input type="file" id="capUploadInput" accept="image/*" style="display:none;">
+
+                        <!-- A recording, not a still. Its own section, with the switch
+                             that belongs to it sitting directly underneath. -->
+                        <div class="cap-group-label">Video</div>
+                        <div class="cap-grid cap-grid-1">
+                            <button id="capRecordBtn"><i class="fas fa-video"></i> Record</button>
+                        </div>
                         <!-- Narration for the next recording. A switch, not an action:
                              it changes what Record will do, it does not start anything. -->
                         <label class="cap-mic" id="capMicRow" title="Applies to video recording only - screenshots have no audio">
@@ -1626,6 +1651,14 @@
                             <input type="checkbox" id="capMicToggle">
                             <span class="cap-mic-sw"></span>
                         </label>
+
+                        <!-- An image that already exists - it captures nothing at all,
+                             so it belongs with neither of the two above. -->
+                        <div class="cap-group-label">Upload</div>
+                        <div class="cap-grid cap-grid-1">
+                            <button id="capUploadBtn"><i class="fas fa-file-arrow-up"></i> Upload an image</button>
+                        </div>
+                        <input type="file" id="capUploadInput" accept="image/*" style="display:none;">
 
                         <!-- Replaces the capture grid while a recording runs. Taking a
                              shot or opening the editor mid-recording breaks the take,
@@ -1644,9 +1677,15 @@
                             </div>
                         </div>
 
-                        <a class="cap-gallery" id="capGalleryBtn"><i class="fas fa-images"></i> Gallery</a>
-                    </div>
-                </div>
+                        <!-- The Gallery holds everything - shots, recordings, uploads -
+                             so it hangs off the card as a whole rather than sitting at
+                             the tail of whichever section it happened to follow. It
+                             stays reachable mid-recording, unlike the capture options:
+                             opening the gallery cannot spoil a take. -->
+                        <div class="cap-foot">
+                            <a class="cap-gallery" id="capGalleryBtn"><i class="fas fa-images"></i> Gallery</a>
+                        </div>
+                </div><!-- /#capOptions -->
 
                 <button class="tool-card" id="inspectorToolBtn" title="Inspector">
                     <div class="tool-card-icon" style="background: linear-gradient(135deg, #0ea5e9, #06b6d4);">

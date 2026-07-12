@@ -371,6 +371,7 @@ document.getElementById('addBtn').addEventListener('click', () => {
 
 // Tools tab accordion: opening one expandable tool collapses the others
 const TOOL_SECTIONS = [
+    { card: 'capToolBtn', panel: 'capOptions' },
     { card: 'inspectorToolBtn', panel: 'inspectorOptions' },
     { card: 'autorefreshToolBtn', panel: 'autorefreshOptions' }
 ];
@@ -378,6 +379,16 @@ function toggleToolSection(cardId, panelId) {
     const willOpen = document.getElementById(panelId).classList.contains('hidden');
     TOOL_SECTIONS.forEach(s => {
         const open = s.panel === panelId && willOpen;
+        document.getElementById(s.card).classList.toggle('open', open);
+        document.getElementById(s.panel).classList.toggle('hidden', !open);
+    });
+}
+
+// Open one outright, rather than toggling it. Used when a recording starts: its
+// Stop button must not be sitting behind a fold.
+function openToolSection(panelId) {
+    TOOL_SECTIONS.forEach(s => {
+        const open = s.panel === panelId;
         document.getElementById(s.card).classList.toggle('open', open);
         document.getElementById(s.panel).classList.toggle('hidden', !open);
     });
@@ -1734,8 +1745,14 @@ chrome.runtime.onMessage.addListener((req) => {
     });
 
     const recBtn = $id('capRecordBtn');
-    const capCard = $id('capCard');
+    const capCard = $id('capOptions');      // the panel carries the recording state
     const capLive = $id('capLive');
+
+    // Expand/collapse through the shared accordion, exactly as Inspector and Auto
+    // Refresh do - so opening this closes them, and opening one of them closes this.
+    $id('capToolBtn').addEventListener('click', () => {
+        toggleToolSection('capToolBtn', 'capOptions');
+    });
     const capLiveTimer = $id('capLiveTimer');
     const capLiveText = $id('capLiveText');
     const capLivePause = $id('capLivePause');
@@ -1744,6 +1761,7 @@ chrome.runtime.onMessage.addListener((req) => {
     // a shot or opening the editor mid-take breaks the recording, so those options
     // are removed rather than left there to be clicked by mistake.
     let liveTicker = null;
+    let wasRecording = null;   // so the section is opened on the change, not on every paint
     const fmt = (ms) => {
         const s = Math.max(0, Math.floor(ms / 1000));
         return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
@@ -1751,6 +1769,11 @@ chrome.runtime.onMessage.addListener((req) => {
     const paintRecState = () => {
         chrome.storage.local.get(['isRecordingInProgress', 'recordingStartTime', 'recordingPaused'], (r) => {
             const on = !!r.isRecordingInProgress;
+            // A recording is running and its Stop button lives in this panel - open
+            // it, whatever the accordion was left set to. Done on the transition only,
+            // so it is not forced back open every time the timer ticks.
+            if (on && wasRecording !== true) openToolSection('capOptions');
+            wasRecording = on;
             capCard.classList.toggle('recording', on);
             recBtn.classList.toggle('rec-on', on);
             recBtn.innerHTML = on ? '<i class="fas fa-stop"></i> Stop' : '<i class="fas fa-video"></i> Record';

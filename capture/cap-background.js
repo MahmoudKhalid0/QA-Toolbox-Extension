@@ -320,6 +320,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // How loud the narration is right now. Straight through to the tab holding the
+  // control bar - never into storage: this arrives ten times a second, and storage
+  // writes at that rate would be both wasteful and heard by every listener there is.
+  if (request.type === 'mic-level' && request.target === 'background') {
+    if (currentRecordingTabId != null) {
+      chrome.tabs.sendMessage(currentRecordingTabId, { action: 'micLevel', level: request.level })
+        .catch(() => { /* the tab was closed or navigated away */ });
+    }
+    return true;
+  }
+
   // The picker has been answered and the stream is open: count the user in.
   if (request.type === 'show-countdown' && request.target === 'background') {
     capShowCountdown(request.tabId, request.seconds);

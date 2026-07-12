@@ -52,6 +52,56 @@ function reportState(state) {
         .catch(() => { });
 }
 
+// How loudly the user is actually speaking, so the mic button in the control bar
+// can react instead of just sitting there. The stream only exists here, so the
+// level is measured here and sent on - ten times a second, which is enough for the
+// eye and cheap enough not to matter next to encoding video.
+let micMeter = null;
+
+function startMicMeter() {
+    stopMicMeter();
+    if (!micStream) return;
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    ctx.createMediaStreamSource(micStream).connect(analyser);
+    const buf = new Uint8Array(analyser.fftSize);
+
+    const timer = setInterval(() => {
+        const track = micStream && micStream.getAudioTracks()[0];
+        // Muted, or paused: nothing is being recorded, so show nothing. A meter
+        // twitching away while the take is paused would be a lie.
+        if (!track || !track.enabled || !recorder || recorder.state !== 'recording') {
+            sendMicLevel(0);
+            return;
+        }
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+            const v = (buf[i] - 128) / 128;      // -1..1 around silence
+            sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        sendMicLevel(Math.min(1, rms * 5));      // speech sits low in RMS; lift it to something visible
+    }, 100);
+
+    micMeter = { ctx, timer };
+}
+
+function stopMicMeter() {
+    if (!micMeter) return;
+    clearInterval(micMeter.timer);
+    micMeter.ctx.close().catch(() => { });
+    micMeter = null;
+    sendMicLevel(0);
+}
+
+function sendMicLevel(level) {
+    chrome.runtime.sendMessage({
+        type: 'mic-level', target: 'background', level: Math.round(level * 100) / 100
+    }).catch(() => { });
+}
+
 async function startRecording({ micEnabled, countdownMs = 0, countdownTabId = null, videoBitsPerSecond = 5000000 }) {
     try {
         discarding = false;
@@ -131,6 +181,7 @@ async function startRecording({ micEnabled, countdownMs = 0, countdownTabId = nu
         if (!recorder) return;                 // stopped while we were counting
 
         recorder.start(1000);   // flush a chunk a second instead of one huge buffer
+        startMicMeter();        // the mic button now reacts to the voice going in
 
         chrome.runtime.sendMessage({ type: 'recording-started', target: 'background' }).catch(() => { });
     } catch (err) {
@@ -191,6 +242,7 @@ function onRecorderStopped() {
 }
 
 function releaseTracks() {
+    stopMicMeter();
     // Release the mic too, or Chrome keeps showing the "in use" indicator long
     // after the recording is over.
     if (stream) stream.getTracks().forEach(t => t.stop());

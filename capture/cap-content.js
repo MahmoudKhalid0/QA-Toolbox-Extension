@@ -13,10 +13,21 @@ let tabRecorder = null;
 let recordedChunks = [];
 let recordingStream = null;
 let recordingInterval = null;
+// The mic button in the control bar's shadow root. Held here so the level coming
+// in from the recorder can reach it - nothing else can see inside that shadow.
+let qaRecMicBtn = null;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'ping') {
         sendResponse({ success: true });
+    } else if (request.action === 'micLevel') {
+        // How loud the narration is, right now, 0..1. Straight onto a custom
+        // property - the button's own CSS turns it into a glow. No layout, no
+        // re-render: this arrives ten times a second.
+        if (qaRecMicBtn) {
+            const lvl = Math.max(0, Math.min(1, Number(request.level) || 0));
+            qaRecMicBtn.style.setProperty('--lvl', lvl);
+        }
     } else if (request.action === 'showCountdown') {
         showCountdown(request.seconds);
         sendResponse({ success: true });
@@ -177,6 +188,22 @@ function showRecordingControl() {
             .mic-btn.show { display: flex; }
             .mic-btn:hover { background: rgba(255, 255, 255, 0.18); }
             .mic-btn.muted { color: rgba(255, 255, 255, 0.45); }
+            /* Reacts to the voice actually going into the recording, so you can see
+               at a glance that you are being heard - and, just as importantly, that
+               you are NOT. --lvl is 0..1, pushed in from the recorder ten times a
+               second. Behind the icon, so it never obscures it. */
+            .mic-btn .mic-lvl {
+                position: absolute;
+                inset: 0;
+                border-radius: 10px;
+                background: rgba(16, 185, 129, calc(var(--lvl, 0) * 0.30));
+                box-shadow: 0 0 0 calc(var(--lvl, 0) * 5px) rgba(16, 185, 129, calc(var(--lvl, 0) * 0.22));
+                transition: background .09s linear, box-shadow .09s linear;
+                pointer-events: none;
+                z-index: 0;
+            }
+            .mic-btn svg { position: relative; z-index: 1; }
+            .mic-btn.muted .mic-lvl { display: none; }   /* muted: nothing is going in */
             /* The slash that says "off" without needing a second icon. */
             .mic-btn.muted::after {
                 content: '';
@@ -237,6 +264,7 @@ function showRecordingControl() {
                 <span id="pause-btn-text">Pause</span>
             </button>
             <button class="mic-btn" id="mic-rec-handle" title="Mute the microphone">
+                <span class="mic-lvl"></span>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>
             </button>
             <button class="discard-btn" id="discard-rec-handle" title="Discard recording">
@@ -376,6 +404,10 @@ function showRecordingControl() {
         // exists if the recorder actually got a mic track (micActive), so it never
         // offers to mute something that was never being recorded.
         const micBtn = shadow.getElementById('mic-rec-handle');
+        // The recorder measures how loud you actually are and pushes it here. Kept
+        // on the module so the message listener at the top of the file can reach it -
+        // the button lives in a shadow root it has no other handle on.
+        qaRecMicBtn = micBtn;
         const paintMic = (active, muted) => {
             micBtn.classList.toggle('show', !!active);
             micBtn.classList.toggle('muted', !!muted);
