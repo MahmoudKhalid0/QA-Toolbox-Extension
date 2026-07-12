@@ -510,11 +510,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const reuseId = request.replace ? rec.cloudFileId : null;
                 // A replace keeps whatever workspace the file already lives in;
                 // only a first share is filed into the one the user picked.
-                const { id, url, workspace } = await CloudSync.driveShareBlob(blob, name, true, reuseId, request.workspace);
+                const { id, url, workspace, recreated } = await CloudSync.driveShareBlob(blob, name, true, reuseId, request.workspace);
                 const patch = { cloudUrl: url, cloudFileId: id, sharedAt: Date.now() };
                 if (workspace) patch.workspace = workspace;
                 await CapStore.patch(request.id, patch);
-                sendResponse({ success: true, url, workspace: workspace || rec.workspace });
+                // `recreated` = the old Drive file was gone for good, so this is a
+                // new file with a NEW link - the editor must say so, not "same link".
+                sendResponse({ success: true, url, workspace: workspace || rec.workspace, recreated });
             } catch (err) {
                 sendResponse({ success: false, error: String(err.message || err) });
             }

@@ -467,10 +467,14 @@ async function remove(id) {
     });
     if (!yes) return;
 
-    // A shared capture's delete is a Drive round trip (revoke, then trash),
-    // same reasoning as bulk-delete: show something moving, not a dead click.
-    const btn = document.querySelector(`.del[data-del="${CSS.escape(id)}"]`);
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+    // A shared capture's delete is a Drive round trip (revoke, then trash), so
+    // show something moving rather than a dead click. The whole card is what is
+    // going away - put the spinner on the card, not on the little trash button.
+    const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+    if (card) {
+        card.classList.add('deleting');
+        card.insertAdjacentHTML('beforeend', '<div class="card-busy"><i class="fas fa-spinner fa-spin"></i></div>');
+    }
 
     const res = await chrome.runtime.sendMessage({ action: 'deleteCapture', id }).catch(() => null);
     picked.delete(id);

@@ -2501,7 +2501,9 @@ if (cloudUploadBtn) {
             }
 
             await navigator.clipboard.writeText(res.url).catch(() => { });
-            showToast(updating ? 'Updated - same link' : 'Link copied to clipboard');
+            showToast(res.recreated
+                ? 'The old Drive file was deleted - uploaded a new copy. New link copied.'
+                : (updating ? 'Updated - same link' : 'Link copied to clipboard'));
         } catch (err) {
             console.error('Share failed:', err);
             showToast('Could not share: ' + (err.message || err));

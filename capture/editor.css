@@ -512,6 +512,15 @@ body.video-mode .logo {
   grid-column: 1 / -1;
 }
 
+/* The two-column grid above exists for the bug-report form (#bugModal). The
+   simple modals are a plain stack of full-width fields - the grid would
+   otherwise put the intro text and the first field side by side in separate
+   columns, which is what made Share look misaligned. */
+#shareModal .modal-body,
+#customModal .modal-body {
+  display: block;
+}
+
 #dynamicFieldsContainer,
 #jiraFieldsContainer {
   display: grid;

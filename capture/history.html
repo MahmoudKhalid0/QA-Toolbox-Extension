@@ -154,6 +154,19 @@
         }
         .card:hover { border-color: rgba(102,126,234,0.55); transform: translateY(-2px); }
 
+        /* Deleting takes a Drive round trip for a shared capture. The whole card
+           is what's going away, so it dims as a whole and the spinner sits over
+           it - not swapped into the little trash button, which read as if only
+           that button was busy. Clicks are blocked while it runs. */
+        .card.deleting { pointer-events: none; opacity: .55; }
+        .card.deleting:hover { transform: none; }
+        .card .card-busy {
+            position: absolute; inset: 0; z-index: 3;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(11,11,26,0.55); backdrop-filter: blur(1px);
+            color: #fff; font-size: 22px;
+        }
+
         .thumb { position: relative; aspect-ratio: 16/10; background: #0b0b1a; cursor: pointer; overflow: hidden; }
         .thumb img, .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
         .thumb .ph { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #2f2f4a; font-size: 34px; }

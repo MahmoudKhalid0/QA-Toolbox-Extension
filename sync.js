@@ -537,8 +537,22 @@ async function driveShareBlob(blob, name, interactive = true, replaceFileId = nu
         // only a brand-new share needs to be filed into one.
         let file;
         let resolvedWorkspace = null;
+        let recreated = false;
         if (replaceFileId) {
-            file = await driveReplaceShared(replaceFileId, blob);
+            try {
+                file = await driveReplaceShared(replaceFileId, blob);
+            } catch (err) {
+                // Deleting in Drive only trashes a file, so a replace normally
+                // still works. A 404 means it was purged for good (trash emptied)
+                // - there is nothing left to update. Upload a fresh copy instead
+                // of leaving the caller stuck retrying a file that cannot return.
+                if (!/Drive API 404/.test(String((err && err.message) || err))) throw err;
+                const ws = await driveWorkspaceFolderId(workspaceName);
+                resolvedWorkspace = ws.name;
+                file = await driveUploadShared(blob, name, ws.id);
+                replaceFileId = null;   // a brand-new file: it needs the grant below
+                recreated = true;       // and the caller must publish the new link
+            }
         } else {
             const ws = await driveWorkspaceFolderId(workspaceName);
             resolvedWorkspace = ws.name;
@@ -551,7 +565,8 @@ async function driveShareBlob(blob, name, interactive = true, replaceFileId = nu
         return {
             id: file.id,
             url: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
-            workspace: resolvedWorkspace
+            workspace: resolvedWorkspace,
+            recreated
         };
     } catch (err) {
         throw new Error(syncExplain(err));
