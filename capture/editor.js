@@ -5134,6 +5134,10 @@ function buildBrowserFrame(img, url, title, themeName) {
     // tall whatever the window size, and drawing at the picture's own pixel density
     // is what keeps the text and icons as sharp as the page under them.
     const k = Math.min(3, Math.max(1, frameDpr || 1));
+    // Snap every coordinate to a whole pixel. k is often fractional (a 125% Windows
+    // display gives 1.25), and canvas antialiases anything drawn on a half pixel -
+    // which is exactly why the chrome looked soft next to the crisp page under it.
+    const R = Math.round;
 
     const stripH = Math.round(35 * k);   // slimmer strip -> a shorter tab
     const barH = Math.round(44 * k);
@@ -5158,42 +5162,42 @@ function buildBrowserFrame(img, url, title, themeName) {
 
     ['#ff5f57', '#febc2e', '#28c840'].forEach((col, i) => {
         c.beginPath();
-        c.arc(17 * k + i * 19 * k, stripH / 2, 6 * k, 0, Math.PI * 2);
+        c.arc(R(17 * k + i * 19 * k), R(stripH / 2), R(6 * k), 0, Math.PI * 2);
         c.fillStyle = col;
         c.fill();
     });
 
     // active tab - its bottom sits on the toolbar so the two merge, like Chrome
-    const tabX = 78 * k;
-    const tabW = Math.min(280 * k, Math.max(170 * k, W * 0.30));
-    const tabY = 5 * k;
+    const tabX = R(78 * k);
+    const tabW = R(Math.min(280 * k, Math.max(170 * k, W * 0.30)));
+    const tabY = R(5 * k);
     const tabH = stripH - tabY;          // ~30k tall, not the chunky 34k of before
     frameTabPath(c, tabX, tabY, tabW, tabH + 2, k);
     c.fillStyle = t.tab;
     c.fill();
 
-    const tabMid = tabY + tabH / 2;
+    const tabMid = R(tabY + tabH / 2);
     // The favicon and the close button STAY PUT (favicon left, close right) - only
     // the TITLE flips its alignment: an Arabic title hugs the right of the text
     // area, a Latin one hugs the left.
-    const pad = 9 * k + 11 * k;              // shoulder + inner padding
-    const faviX = tabX + pad + 6 * k;
-    const closeX = tabX + tabW - pad - 4 * k;
+    const pad = R(9 * k + 11 * k);           // shoulder + inner padding
+    const faviX = R(tabX + pad + 6 * k);
+    const closeX = R(tabX + tabW - pad - 4 * k);
 
     // the site's real favicon if Chrome has one cached, otherwise the grey dot
     if (frameFavicon && frameFavicon.naturalWidth) {
-        const fs = 14 * k;
-        c.drawImage(frameFavicon, faviX - fs / 2, tabMid - fs / 2, fs, fs);
+        const fs = R(14 * k);
+        c.drawImage(frameFavicon, R(faviX - fs / 2), R(tabMid - fs / 2), fs, fs);
     } else {
         c.beginPath();
-        c.arc(faviX, tabMid, 6 * k, 0, Math.PI * 2);
+        c.arc(faviX, tabMid, R(6 * k), 0, Math.PI * 2);
         c.fillStyle = t.dim;
         c.fill();
     }
 
     const rtl = /[؀-ۿݐ-ݿ]/.test(title || '');
-    const textL = faviX + 13 * k;            // text area between favicon and ×
-    const textR = closeX - 10 * k;
+    const textL = R(faviX + 13 * k);         // text area between favicon and ×
+    const textR = R(closeX - 10 * k);
     const titleMax = Math.max(20 * k, textR - textL);
 
     c.fillStyle = t.tabText;
@@ -5205,28 +5209,28 @@ function buildBrowserFrame(img, url, title, themeName) {
     }
     c.textAlign = rtl ? 'right' : 'left';
     c.direction = rtl ? 'rtl' : 'ltr';
-    c.fillText(tt, rtl ? textR : textL, tabMid + 0.5);
+    c.fillText(tt, rtl ? textR : textL, tabMid);
     c.textAlign = 'left';
     c.direction = 'ltr';
 
-    frameIcon(c, 'close', closeX, tabMid, 13 * k, t.dim);
-    frameIcon(c, 'plus', tabX + tabW + 14 * k, tabMid, 14 * k, t.newTab);
+    frameIcon(c, 'close', closeX, tabMid, R(13 * k), t.dim);
+    frameIcon(c, 'plus', R(tabX + tabW + 14 * k), tabMid, R(14 * k), t.newTab);
 
     // ── toolbar ──
     c.fillStyle = t.bar;
     c.fillRect(0, stripH, W, barH);
-    const midY = stripH + barH / 2;
+    const midY = R(stripH + barH / 2);
 
-    frameIcon(c, 'back', 22 * k, midY, 18 * k, t.icon);
-    frameIcon(c, 'forward', 50 * k, midY, 18 * k, t.icon);
-    frameIcon(c, 'reload', 78 * k, midY, 18 * k, t.icon);
+    frameIcon(c, 'back', R(22 * k), midY, R(18 * k), t.icon);
+    frameIcon(c, 'forward', R(50 * k), midY, R(18 * k), t.icon);
+    frameIcon(c, 'reload', R(78 * k), midY, R(18 * k), t.icon);
 
     // ── URL pill ──
-    const pillX = 100 * k;
-    const rightPad = 96 * k;
-    const pillW = Math.max(120 * k, W - pillX - rightPad);
-    const pillH = Math.round(28 * k);
-    const pillY = midY - pillH / 2;
+    const pillX = R(100 * k);
+    const rightPad = R(96 * k);
+    const pillW = R(Math.max(120 * k, W - pillX - rightPad));
+    const pillH = R(28 * k);
+    const pillY = R(midY - pillH / 2);
     frameRoundRect(c, pillX, pillY, pillW, pillH, pillH / 2);
     c.fillStyle = t.pill;
     c.fill();
@@ -5234,8 +5238,8 @@ function buildBrowserFrame(img, url, title, themeName) {
     c.lineWidth = Math.max(1, 1 * k);
     c.stroke();
 
-    const lx = pillX + 16 * k;
-    frameIcon(c, 'lock', lx, midY, 13 * k, t.dim);
+    const lx = R(pillX + 16 * k);
+    frameIcon(c, 'lock', lx, midY, R(13 * k), t.dim);
 
     c.fillStyle = t.text;
     c.font = Math.round(12.5 * k) + 'px -apple-system, "Segoe UI", Arial, sans-serif';
@@ -5245,12 +5249,12 @@ function buildBrowserFrame(img, url, title, themeName) {
         while (c.measureText(u + '…').width > maxU && u.length > 1) u = u.slice(0, -1);
         u += '…';
     }
-    c.fillText(u, lx + 13 * k, midY + 0.5);
+    c.fillText(u, R(lx + 13 * k), midY);
 
     // ── right-hand icons: star, avatar, kebab ──
-    frameIcon(c, 'star', W - 74 * k, midY, 17 * k, t.icon);
-    frameIcon(c, 'account', W - 46 * k, midY, 18 * k, t.icon);
-    frameIcon(c, 'kebab', W - 20 * k, midY, 18 * k, t.icon);
+    frameIcon(c, 'star', R(W - 74 * k), midY, R(17 * k), t.icon);
+    frameIcon(c, 'account', R(W - 46 * k), midY, R(18 * k), t.icon);
+    frameIcon(c, 'kebab', R(W - 20 * k), midY, R(18 * k), t.icon);
 
     // ── the screenshot ──
     c.drawImage(img, 0, chromeH);
