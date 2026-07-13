@@ -5034,9 +5034,11 @@ const FRAME_THEMES = {
     // Light: Chrome's light window under a dark title strip - the look that reads
     // best in a report. Dark: Chrome's dark theme throughout.
     light: {
-        strip: '#2d2d2d', tab: '#ffffff', bar: '#ffffff', pill: '#f1f3f4',
+        // The tab strip is light too, just a shade DEEPER than the white toolbar
+        // under it - the way Chrome's own light theme layers them.
+        strip: '#dee1e6', tab: '#ffffff', bar: '#ffffff', pill: '#f1f3f4',
         pillEdge: '#e4e6e9', text: '#202124', dim: '#5f6368', icon: '#5f6368',
-        tabText: '#202124', newTab: '#c8c8c8',
+        tabText: '#202124', newTab: '#5f6368',
     },
     dark: {
         strip: '#1c1d1f', tab: '#35363a', bar: '#35363a', pill: '#202124',
