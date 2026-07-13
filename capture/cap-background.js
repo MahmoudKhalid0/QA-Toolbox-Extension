@@ -144,21 +144,25 @@ function capOpenEditor(tab, dataUrl, extra) {
     // fake browser frame must not be offered there.
     const { mode, ...rest } = extra || {};
     ctx.mode = mode || 'visible';
-    const payload = Object.assign({
-        [captureId]: dataUrl,
-        isVideo: false,
-        [`ctx_${captureId}`]: ctx
-    }, rest);
+    // Fill in the viewport (which carries the device pixel ratio) BEFORE writing.
+    // The old code stored ctx and only then mutated it, so `viewport` was written
+    // empty every single time - the DPR never reached the editor or the report.
+    capAttachViewport(tab, ctx).catch(() => ctx).then(() => {
+        const payload = Object.assign({
+            [captureId]: dataUrl,
+            isVideo: false,
+            [`ctx_${captureId}`]: ctx
+        }, rest);
 
-    chrome.storage.local.set(payload, () => {
-        chrome.tabs.create(capEditorTabProps(tab,
-            `capture/editor.html?id=${captureId}&title=${encodeURIComponent(tab.title || 'screenshot')}` + ((extra && extra.cropArea) ? '&crop=true' : '')));
+        chrome.storage.local.set(payload, () => {
+            chrome.tabs.create(capEditorTabProps(tab,
+                `capture/editor.html?id=${captureId}&title=${encodeURIComponent(tab.title || 'screenshot')}` + ((extra && extra.cropArea) ? '&crop=true' : '')));
+        });
     });
 
     // The gallery only ever holds what has been shared to Drive - see the
     // editor's cloud button. A capture that is never shared must never appear
     // here, so nothing is written to CapStore at capture time.
-    capAttachViewport(tab, ctx).catch(e => console.error('viewport attach failed:', e));
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

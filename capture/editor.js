@@ -473,6 +473,9 @@ async function initEditor() {
             framePageUrl = ctx0.url || '';
             framePageTitle = ctx0.title || '';
             frameCaptureMode = ctx0.mode || 'visible';
+            // viewport looks like "1512x845 @2x" - the trailing number is the DPR.
+            const dm = /@([\d.]+)x/.exec(ctx0.viewport || '');
+            frameDpr = dm ? Math.max(1, parseFloat(dm[1]) || 1) : 1;
             frameApplyModeRules();
 
             const data = result[idToGet] || sessionStorage.getItem('currentScreenshot');
@@ -4992,18 +4995,38 @@ let framePageTitle = '';
 let framePreSrc = null;      // the image as it was BEFORE a frame was applied
 let frameLastH = 0;          // height of the framed image we produced (used to detect it)
 let frameCaptureMode = '';   // which capture mode this shot came from
+let frameDpr = 1;            // device pixel ratio the shot was taken at
 
-// An "entire screen" shot already CONTAINS the real browser window - putting a
-// fake one around it would be a frame inside a frame. So the button is turned off
-// for that mode (and the remembered frame is not auto-applied either).
-function frameIsPointless() { return frameCaptureMode === 'screen'; }
+// A shot is taken at the screen's pixel density: on a 2x display a 600-CSS-px area
+// comes back 1200px wide. Drawing the chrome from the IMAGE width made it half-size
+// and soft next to the crisp page beneath it. Scaling by the DPR instead renders it
+// at a real browser's size AND at the picture's own resolution, so it stays sharp.
+const FRAME_MIN_CSS_W = 480;   // below this a browser window makes no sense
+
+function frameCssWidth() {
+    return baseImage ? baseImage.width / (frameDpr || 1) : 0;
+}
+
+// An "entire screen" shot already CONTAINS the real browser window (a frame inside
+// a frame), and a tiny crop has no room for one. Both turn the button off.
+function frameIsPointless() {
+    if (frameCaptureMode === 'screen') return true;
+    const w = frameCssWidth();
+    return w > 0 && w < FRAME_MIN_CSS_W;
+}
 
 function frameApplyModeRules() {
     const btn = document.getElementById('frameBtn');
     if (!btn) return;
-    if (frameIsPointless()) {
+    if (frameCaptureMode === 'screen') {
         btn.disabled = true;
         btn.title = 'Not needed here - this shot is of the whole screen, so the real browser window is already in the picture';
+    } else if (frameIsPointless()) {
+        btn.disabled = true;
+        btn.title = `This crop is too small for a browser window (needs at least ${FRAME_MIN_CSS_W}px wide)`;
+    } else {
+        btn.disabled = false;
+        btn.title = 'Wrap in a browser window (shows the page URL)';
     }
 }
 
@@ -5082,7 +5105,10 @@ function frameTabPath(c, x, y, w, h, k) {
 function buildBrowserFrame(img, url, title, themeName) {
     const t = FRAME_THEMES[themeName] || FRAME_THEMES.light;
     const W = img.width;
-    const k = Math.min(1.9, Math.max(0.62, W / 1280));
+    // Scale by the shot's DPR, not its width: a real browser's chrome is ~84 CSS px
+    // tall whatever the window size, and drawing at the picture's own pixel density
+    // is what keeps the text and icons as sharp as the page under them.
+    const k = Math.min(3, Math.max(1, frameDpr || 1));
 
     const stripH = Math.round(35 * k);   // slimmer strip -> a shorter tab
     const barH = Math.round(44 * k);
@@ -5232,7 +5258,8 @@ function frameCommit(src, theme) {
 // On a fresh capture, put the user's last chosen frame straight on. Runs after the
 // shot's own first history entry, so Undo still peels the frame off.
 function frameAutoApply() {
-    if (frameIsPointless()) return;      // a screen shot already has the real chrome
+    frameApplyModeRules();               // the image size is known now, so re-judge
+    if (frameIsPointless()) return;      // whole-screen shot, or too small for a window
     try {
         chrome.storage.local.get(['qaFrameTheme'], (r) => {
             const th = r && r.qaFrameTheme;
