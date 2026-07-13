@@ -97,6 +97,11 @@ function capCollectContext(tab) {
     return {
         url: tab.url || '',
         title: tab.title || '',
+        // Whether the page actually HAS a favicon. Chrome's /_favicon/ store hands
+        // back a generic placeholder when it doesn't, and that placeholder is pale -
+        // invisible on a white tab. Knowing this up front lets the editor fall back
+        // to its own dot instead of drawing nothing.
+        hasFavicon: !!tab.favIconUrl,
         capturedAt: new Date().toISOString(),
         browser: brand || ua,
         platform: (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '',

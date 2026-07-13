@@ -476,6 +476,7 @@ async function initEditor() {
             // viewport looks like "1512x845 @2x" - the trailing number is the DPR.
             const dm = /@([\d.]+)x/.exec(ctx0.viewport || '');
             frameDpr = dm ? Math.max(1, parseFloat(dm[1]) || 1) : 1;
+            frameHasFavicon = ('hasFavicon' in ctx0) ? !!ctx0.hasFavicon : null;
             frameApplyModeRules();
             frameLoadFavicon();     // start fetching the site's icon right away
 
@@ -4998,6 +4999,7 @@ let frameLastH = 0;          // height of the framed image we produced (used to 
 let frameCaptureMode = '';   // which capture mode this shot came from
 let frameDpr = 1;            // device pixel ratio the shot was taken at
 let frameFavicon = null;     // the site's REAL favicon, once it has loaded
+let frameHasFavicon = null;  // did the page have one at all? (null = unknown)
 let frameFaviconP = null;    // ...and the promise for it
 
 // Chrome's own favicon store, served from OUR origin (chrome-extension://.../_favicon/).
@@ -5007,6 +5009,9 @@ let frameFaviconP = null;    // ...and the promise for it
 function frameLoadFavicon() {
     frameFaviconP = new Promise((resolve) => {
         if (!framePageUrl || !/^https?:/i.test(framePageUrl)) return resolve(null);
+        // The page had no icon of its own - don't ask for Chrome's pale placeholder,
+        // it would be invisible on a white tab. Use our own dot instead.
+        if (frameHasFavicon === false) return resolve(null);
         try {
             const u = new URL(chrome.runtime.getURL('/_favicon/'));
             u.searchParams.set('pageUrl', framePageUrl);
@@ -5084,6 +5089,40 @@ const FRAME_ICONS = {
     close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
     plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
 };
+
+// Chrome does NOT put an ellipsis on a tab title that is too long - it FADES the
+// text out at the edge it overflows. Reproduced by drawing the full title on its
+// own little canvas and rubbing out the trailing edge with an alpha gradient
+// (destination-out), then stamping that over the tab. An Arabic title runs the
+// other way, so it fades on the LEFT instead.
+function frameDrawTabTitle(c, title, textL, textR, tabMid, rtl, font, color, k) {
+    const w = Math.max(1, Math.round(textR - textL));
+    const h = Math.ceil(30 * k);
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    const tc = tmp.getContext('2d');
+    tc.font = font;
+    tc.textBaseline = 'middle';
+    tc.fillStyle = color;
+    tc.direction = rtl ? 'rtl' : 'ltr';
+    tc.textAlign = rtl ? 'right' : 'left';
+    tc.fillText(title, rtl ? w : 0, Math.round(h / 2));
+
+    if (tc.measureText(title).width > w) {          // only fade when it really overflows
+        const fade = Math.min(w, Math.round(28 * k));
+        const g = rtl
+            ? tc.createLinearGradient(0, 0, fade, 0)         // overflow is on the left
+            : tc.createLinearGradient(w, 0, w - fade, 0);    // overflow is on the right
+        g.addColorStop(0, 'rgba(0,0,0,1)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        tc.globalCompositeOperation = 'destination-out';
+        tc.fillStyle = g;
+        tc.fillRect(0, 0, w, h);
+        tc.globalCompositeOperation = 'source-over';
+    }
+    c.drawImage(tmp, Math.round(textL), Math.round(tabMid - h / 2));
+}
 
 // Stamp one of those icons, centred at (cx, cy), `size` px across.
 function frameIcon(c, name, cx, cy, size, color) {
@@ -5198,20 +5237,9 @@ function buildBrowserFrame(img, url, title, themeName) {
     const rtl = /[؀-ۿݐ-ݿ]/.test(title || '');
     const textL = R(faviX + 13 * k);         // text area between favicon and ×
     const textR = R(closeX - 10 * k);
-    const titleMax = Math.max(20 * k, textR - textL);
 
-    c.fillStyle = t.tabText;
-    c.font = Math.round(12 * k) + 'px -apple-system, "Segoe UI", Arial, sans-serif';
-    let tt = title || 'Page';
-    if (c.measureText(tt).width > titleMax) {
-        while (c.measureText(tt + '…').width > titleMax && tt.length > 1) tt = tt.slice(0, -1);
-        tt += '…';
-    }
-    c.textAlign = rtl ? 'right' : 'left';
-    c.direction = rtl ? 'rtl' : 'ltr';
-    c.fillText(tt, rtl ? textR : textL, tabMid);
-    c.textAlign = 'left';
-    c.direction = 'ltr';
+    const tabFont = Math.round(12 * k) + 'px -apple-system, "Segoe UI", Arial, sans-serif';
+    frameDrawTabTitle(c, title || 'Page', textL, textR, tabMid, rtl, tabFont, t.tabText, k);
 
     frameIcon(c, 'close', closeX, tabMid, R(13 * k), t.dim);
     frameIcon(c, 'plus', R(tabX + tabW + 14 * k), tabMid, R(14 * k), t.newTab);
