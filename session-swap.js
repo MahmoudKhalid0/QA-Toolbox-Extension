@@ -114,16 +114,30 @@
         return { ok: true };
     }
 
-    // Is a saved snapshot still the one actually logged in right now? Compare the
-    // snapshot's AUTH cookies (HttpOnly - the session/identity ones) against the
-    // browser's live cookies. On logout the auth cookie is cleared/changed, so
-    // this turns false and the "CURRENT" mark disappears.
-    function stillLoggedIn(snapCookies, live) {
+    // Is a saved snapshot still the one actually logged in right now? Check each
+    // of the snapshot's AUTH cookies (HttpOnly - the session/identity ones) AT ITS
+    // OWN domain+path, not against the current tab's URL. That distinction matters:
+    // a path-scoped auth cookie is only returned by getAll({url}) when the tab is
+    // on that exact path, so the old check made "CURRENT" appear only on the page
+    // the login was saved on and vanish everywhere else. Checking each cookie where
+    // it actually lives ties "CURRENT" to the SESSION, independent of the URL.
+    async function stillLoggedIn(snapCookies) {
         if (!snapCookies || !snapCookies.length) return false;
-        const now = new Map((live || []).map((c) => [c.name, c.value]));
         const authCookies = snapCookies.filter((c) => c.httpOnly);
         const check = authCookies.length ? authCookies : snapCookies;
-        return check.every((c) => now.get(c.name) === c.value);
+        for (const c of check) {
+            const live = await new Promise((res) => chrome.cookies.get(
+                { url: cookieUrl(c), name: c.name, storeId: c.storeId },
+                (r) => { void chrome.runtime.lastError; res(r); }));
+            // "Still logged in" means the auth cookie still EXISTS with a value -
+            // NOT that its value equals what we saved. Many servers rotate/refresh
+            // the session cookie on every request (sliding sessions), so a value
+            // match turned "CURRENT" off a moment after Update for those sites (the
+            // "have to click Update twice" bug, seen only on some users' sessions).
+            // Logout clears/empties the cookie, which this still catches.
+            if (!live || !live.value) return false;
+        }
+        return true;
     }
 
     async function listFor(url) {
@@ -131,12 +145,11 @@
         const all = await getStore();
         const snaps = all[origin] || [];
         let active = (await getActive())[origin];
-        // Validate the stored "current" against live cookies - clear it if the
-        // user has since logged out (so nothing shows as CURRENT anymore).
+        // Validate the stored "current" against the live session cookies - clear it
+        // if the user has since logged out (so nothing shows as CURRENT anymore).
         if (active) {
             const snap = snaps.find((s) => s.id === active);
-            const live = await new Promise((res) => chrome.cookies.getAll({ url }, (c) => { void chrome.runtime.lastError; res(c || []); }));
-            if (!snap || !stillLoggedIn(snap.cookies, live)) { active = null; await setActive(origin, null); }
+            if (!snap || !(await stillLoggedIn(snap.cookies))) { active = null; await setActive(origin, null); }
         }
         return snaps.map((s) => ({ id: s.id, name: s.name, count: s.cookies.length, createdAt: s.createdAt, active: s.id === active }));
     }
@@ -205,8 +218,24 @@
         // snapshots without a url fall back to the site root.
         await setActive(origin, id);   // this snapshot is now the current login
         const dest = snap.url || (origin + '/');
-        if (tab.id != null) chrome.tabs.update(tab.id, { url: dest });
-        notifyTabs(origin);
+        // Navigate, and REPORT whether it actually happened. A bad saved url (an
+        // old snapshot pointing at a page that no longer resolves, a non-http
+        // scheme, etc.) used to make tabs.update fail silently - the popup showed
+        // "Switching…" forever and nothing moved. Now we check, fall back to the
+        // site root, and only claim success once a navigation is under way.
+        if (tab.id != null) {
+            const navd = await new Promise((res) => {
+                chrome.tabs.update(tab.id, { url: dest }, () => {
+                    if (!chrome.runtime.lastError) return res(true);
+                    // dest was unusable - try the site root instead.
+                    chrome.tabs.update(tab.id, { url: origin + '/' }, () => res(!chrome.runtime.lastError));
+                });
+            });
+            notifyTabs(origin);
+            if (!navd) return { ok: false, error: 'could not navigate the tab' };
+        } else {
+            notifyTabs(origin);
+        }
         return { ok: true };
     }
 

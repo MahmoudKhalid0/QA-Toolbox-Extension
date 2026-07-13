@@ -4215,98 +4215,109 @@ function rvBuildOverlay() {
     o.id = 'qa-rv';
     o.innerHTML = `
         <style>
-            #qa-rv { position: fixed; inset: 0; z-index: 2147483647; background: #0d0d14; color: #d6d3e1; direction: ltr; text-align: left;
-                font-family: -apple-system, 'Segoe UI', Arial, sans-serif; display: flex; flex-direction: column; font-size: 12.5px; }
+            #qa-rv { --rv-bg:#0a0d14; --rv-panel:#111623; --rv-panel2:#0d111b; --rv-surface:#1a2130; --rv-surface-h:#232c3f;
+                --rv-border:#232c3d; --rv-text:#e6eaf2; --rv-sub:#95a1b6; --rv-muted:#5f6b80; --rv-accent:#6366f1; --rv-accent-2:#818cf8;
+                position: fixed; inset: 0; z-index: 2147483647; background: var(--rv-bg); color: var(--rv-text); direction: ltr; text-align: left;
+                font-family: -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; display: flex; flex-direction: column; font-size: 12.5px; }
             #qa-rv * { box-sizing: border-box; }
             /* ---- top bar ---- */
-            #qa-rv .rv-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #15131d; border-bottom: 1px solid #262335; flex-wrap: wrap; flex-shrink: 0; }
-            #qa-rv .rv-brand { font-weight: 700; font-size: 13px; color: #fff; display: flex; align-items: center; gap: 7px; padding-right: 4px; }
-            #qa-rv .rv-brand svg { color: #a78bfa; }
-            #qa-rv .rv-sep { width: 1px; height: 22px; background: #262335; margin: 0 3px; flex-shrink: 0; }
-            #qa-rv .rv-url { flex: 1; min-width: 180px; display: flex; gap: 6px; }
-            #qa-rv .rv-url input { flex: 1; background: #0f0e16; border: 1px solid #262335; border-radius: 9px; color: #fff; padding: 0 12px; height: 32px; font-size: 12.5px; outline: none; }
-            #qa-rv .rv-url input:focus { border-color: #7c3aed; }
-            #qa-rv .rv-btn { background: #1d1a28; border: 1px solid #262335; color: #d6d3e1; border-radius: 9px; padding: 0 11px; height: 32px; font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; display: inline-flex; align-items: center; gap: 6px; }
-            #qa-rv .rv-btn:hover { background: #262335; color: #fff; }
-            #qa-rv .rv-btn.ic { width: 32px; padding: 0; justify-content: center; }
-            #qa-rv .rv-btn.go { background: #7c3aed; border-color: #7c3aed; color: #fff; font-weight: 600; }
-            #qa-rv .rv-btn.go:hover { background: #6d28d9; }
-            #qa-rv .rv-btn.on { background: rgba(124,58,237,0.25); border-color: #7c3aed; color: #fff; }
-            #qa-rv .rv-btn.close:hover { background: #3a1d24; border-color: #7f1d1d; color: #f87171; }
-            #qa-rv select.rv-sel { background: #1d1a28; border: 1px solid #262335; color: #d6d3e1; border-radius: 9px; padding: 0 8px; height: 32px; font-size: 12.5px; outline: none; cursor: pointer; font-family: inherit; }
-            #qa-rv select.rv-sel:hover { background: #262335; }
-            #qa-rv select.rv-sel option { background: #15131d; color: #fff; }
-            #qa-rv .rv-zoomwrap { display: inline-flex; align-items: center; background: #1d1a28; border: 1px solid #262335; border-radius: 9px; height: 32px; padding: 0 8px 0 4px; }
-            #qa-rv .rv-zoomwrap input { width: 40px; background: none; border: none; color: #fff; font-size: 12.5px; outline: none; text-align: right; font-family: inherit; }
-            #qa-rv .rv-zoomwrap b { color: #8b8898; font-weight: 400; font-size: 12px; }
+            #qa-rv .rv-bar { display: flex; align-items: center; gap: 7px; padding: 9px 14px; background: var(--rv-panel); border-bottom: 1px solid var(--rv-border); flex-wrap: wrap; flex-shrink: 0; }
+            #qa-rv .rv-brand { font-weight: 700; font-size: 13px; color: #fff; display: flex; align-items: center; gap: 8px; padding-right: 6px; letter-spacing: .2px; }
+            #qa-rv .rv-brand svg { color: var(--rv-accent-2); }
+            #qa-rv .rv-sep { width: 1px; height: 20px; background: var(--rv-border); margin: 0 4px; flex-shrink: 0; }
+            #qa-rv .rv-url { flex: 1; min-width: 190px; display: flex; gap: 6px; }
+            #qa-rv .rv-url input { flex: 1; background: var(--rv-panel2); border: 1px solid var(--rv-border); border-radius: 10px; color: #fff; padding: 0 13px; height: 34px; font-size: 12.5px; outline: none; transition: border-color .15s, box-shadow .15s; }
+            #qa-rv .rv-url input:focus { border-color: var(--rv-accent); box-shadow: 0 0 0 3px rgba(99,102,241,0.18); }
+            #qa-rv .rv-btn { background: var(--rv-surface); border: 1px solid var(--rv-border); color: var(--rv-text); border-radius: 10px; padding: 0 12px; height: 34px; font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; display: inline-flex; align-items: center; gap: 6px; transition: background .15s, border-color .15s, color .15s; }
+            #qa-rv .rv-btn:hover { background: var(--rv-surface-h); border-color: #33405a; color: #fff; }
+            #qa-rv .rv-btn.ic { width: 34px; padding: 0; justify-content: center; color: var(--rv-sub); }
+            #qa-rv .rv-btn.ic:hover { color: #fff; }
+            #qa-rv .rv-btn.go { background: linear-gradient(135deg, var(--rv-accent), #8b5cf6); border-color: transparent; color: #fff; font-weight: 600; }
+            #qa-rv .rv-btn.go:hover { filter: brightness(1.1); }
+            #qa-rv .rv-btn.on { background: rgba(99,102,241,0.22); border-color: var(--rv-accent); color: #fff; box-shadow: inset 0 0 0 1px rgba(99,102,241,0.4); }
+            #qa-rv .rv-btn.close:hover { background: rgba(239,68,68,0.16); border-color: rgba(239,68,68,0.5); color: #f87171; }
+            #qa-rv select.rv-sel { background: var(--rv-surface); border: 1px solid var(--rv-border); color: var(--rv-text); border-radius: 10px; padding: 0 9px; height: 34px; font-size: 12.5px; outline: none; cursor: pointer; font-family: inherit; transition: background .15s, border-color .15s; }
+            #qa-rv select.rv-sel:hover { background: var(--rv-surface-h); border-color: #33405a; }
+            #qa-rv select.rv-sel option { background: var(--rv-panel); color: #fff; }
+            #qa-rv .rv-zoomwrap { display: inline-flex; align-items: center; background: var(--rv-surface); border: 1px solid var(--rv-border); border-radius: 10px; height: 34px; padding: 0 9px 0 5px; }
+            #qa-rv .rv-zoomwrap input { width: 40px; background: none; border: none; color: #fff; font-size: 12.5px; outline: none; text-align: right; font-family: inherit; font-variant-numeric: tabular-nums; }
+            #qa-rv .rv-zoomwrap b { color: var(--rv-muted); font-weight: 400; font-size: 12px; }
             /* ---- tabs ---- */
-            #qa-rv .rv-tabs { display: flex; align-items: center; gap: 5px; padding: 7px 12px; background: #110f18; border-bottom: 1px solid #262335; flex-shrink: 0; overflow-x: auto; }
-            #qa-rv .rv-tab { display: flex; align-items: center; gap: 6px; background: #1d1a28; border: 1px solid transparent; color: #a9a6b8; border-radius: 8px; padding: 5px 11px; font-size: 12px; cursor: pointer; white-space: nowrap; }
-            #qa-rv .rv-tab:hover { color: #fff; }
-            #qa-rv .rv-tab.active { background: rgba(124,58,237,0.18); border-color: #7c3aed; color: #fff; }
+            #qa-rv .rv-tabs { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: var(--rv-panel2); border-bottom: 1px solid var(--rv-border); flex-shrink: 0; overflow-x: auto; }
+            #qa-rv .rv-tab { display: flex; align-items: center; gap: 7px; background: var(--rv-surface); border: 1px solid transparent; color: var(--rv-sub); border-radius: 9px; padding: 6px 12px; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s, border-color .15s; }
+            #qa-rv .rv-tab:hover { color: #fff; background: var(--rv-surface-h); }
+            #qa-rv .rv-tab.active { background: rgba(99,102,241,0.16); border-color: var(--rv-accent); color: #fff; }
             #qa-rv .rv-tabname { outline: none; }
-            #qa-rv .rv-tabname[contenteditable="true"] { background: rgba(255,255,255,0.1); border-radius: 4px; padding: 0 4px; }
-            #qa-rv .rv-tabx, #qa-rv .rv-tabedit { background: none; border: none; color: #6b6878; cursor: pointer; font-size: 12px; padding: 0 1px; }
+            #qa-rv .rv-tabname[contenteditable="true"] { background: rgba(255,255,255,0.12); border-radius: 4px; padding: 0 4px; }
+            #qa-rv .rv-tabx, #qa-rv .rv-tabedit { background: none; border: none; color: var(--rv-muted); cursor: pointer; font-size: 12px; padding: 0 1px; transition: color .15s; }
             #qa-rv .rv-tabx { font-size: 14px; }
             #qa-rv .rv-tabx:hover { color: #f87171; }
-            #qa-rv .rv-tabedit:hover { color: #a78bfa; }
-            #qa-rv .rv-tabadd { background: #1d1a28; border: 1px solid #262335; color: #8b8898; cursor: pointer; border-radius: 8px; width: 27px; height: 27px; font-size: 15px; flex-shrink: 0; }
-            #qa-rv .rv-tabadd:hover { background: #262335; color: #fff; }
+            #qa-rv .rv-tabedit:hover { color: var(--rv-accent-2); }
+            #qa-rv .rv-tabadd { background: var(--rv-surface); border: 1px solid var(--rv-border); color: var(--rv-sub); cursor: pointer; border-radius: 9px; width: 29px; height: 29px; font-size: 16px; flex-shrink: 0; transition: background .15s, color .15s; }
+            #qa-rv .rv-tabadd:hover { background: var(--rv-surface-h); color: #fff; }
             /* ---- breakpoints ---- */
-            #qa-rv .rv-bps { display: flex; align-items: center; gap: 5px; padding: 6px 12px; background: #110f18; border-bottom: 1px solid #262335; flex-shrink: 0; overflow-x: auto; }
-            #qa-rv .rv-bps-l { font-size: 10.5px; color: #8b8898; text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0; margin-right: 3px; }
-            #qa-rv .rv-bps-l.dim { margin-left: 8px; }
-            #qa-rv .rv-bp { background: #1d1a28; border: 1px solid #262335; color: #a9a6b8; border-radius: 20px; padding: 3px 10px; font-size: 11px; cursor: pointer; font-family: Consolas, monospace; flex-shrink: 0; }
-            #qa-rv .rv-bp:hover { background: #262335; color: #fff; }
-            #qa-rv .rv-bp.det { border-color: rgba(124,58,237,0.55); color: #c4b5fd; }
-            #qa-rv .rv-bp.det:hover { background: rgba(124,58,237,0.2); }
+            /* Breakpoints live in a popover now (a dropdown off the toolbar button),
+               not a long inline row. */
+            #qa-rv .rv-bp-pop { position: absolute; z-index: 20; display: none; width: 300px; max-height: 300px; overflow-y: auto;
+                background: var(--rv-panel); border: 1px solid var(--rv-border); border-radius: 12px; padding: 13px; box-shadow: 0 18px 46px rgba(0,0,0,0.55); }
+            #qa-rv .rv-bp-pop.show { display: block; }
+            #qa-rv .rv-bps-l { display: block; font-size: 10px; color: var(--rv-muted); text-transform: uppercase; letter-spacing: .7px; font-weight: 700; margin: 0 0 8px; }
+            #qa-rv .rv-bps-l.dim { margin-top: 14px; }
+            #qa-rv .rv-bp-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+            #qa-rv .rv-bp-empty { color: var(--rv-muted); font-size: 12px; }
+            #qa-rv .rv-bp { background: var(--rv-surface); border: 1px solid var(--rv-border); color: var(--rv-sub); border-radius: 8px; padding: 5px 10px; font-size: 11.5px; cursor: pointer; font-family: Consolas, monospace; font-variant-numeric: tabular-nums; transition: background .15s, color .15s, border-color .15s; }
+            #qa-rv .rv-bp:hover { background: var(--rv-surface-h); color: #fff; }
+            #qa-rv .rv-bp.det { border-color: rgba(99,102,241,0.5); color: var(--rv-accent-2); }
+            #qa-rv .rv-bp.det:hover { background: rgba(99,102,241,0.18); color: #fff; }
+            #qa-rv #rv-bp-caret { font-size: 9px; opacity: .7; }
             /* ---- stage ---- */
-            #qa-rv .rv-iso { display: none; padding: 7px 12px; background: rgba(124,58,237,0.14); border-bottom: 1px solid rgba(124,58,237,0.35); font-size: 12px; color: #c4b5fd; flex-shrink: 0; }
-            #qa-rv .rv-stage { flex: 1; overflow: auto; padding: 20px; }
-            #qa-rv .rv-row { display: flex; gap: 22px; align-items: flex-start; min-width: min-content; }
+            #qa-rv .rv-iso { display: none; padding: 8px 14px; background: rgba(99,102,241,0.12); border-bottom: 1px solid rgba(99,102,241,0.3); font-size: 12px; color: var(--rv-accent-2); flex-shrink: 0; }
+            #qa-rv .rv-stage { flex: 1; overflow: auto; padding: 26px; background:
+                radial-gradient(circle at 1px 1px, rgba(255,255,255,0.028) 1px, transparent 0) 0 0 / 22px 22px, var(--rv-bg); }
+            #qa-rv .rv-row { display: flex; gap: 26px; align-items: flex-start; min-width: min-content; }
             #qa-rv .rv-row.stack { flex-direction: column; align-items: center; }
-            #qa-rv .rv-fhead { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; color: #cbd5e1; overflow: hidden; }
-            #qa-rv .rv-fname { font-weight: 600; font-size: 12.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: grab; }
+            #qa-rv .rv-fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--rv-text); overflow: hidden; }
+            #qa-rv .rv-fname { font-weight: 600; font-size: 13px; color: #fff; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: grab; }
             #qa-rv .rv-fname:active { cursor: grabbing; }
-            #qa-rv .rv-fdim { font-size: 11px; color: #6b6878; font-family: Consolas, monospace; flex-shrink: 0; cursor: text; }
-            #qa-rv .rv-fdim:hover { color: #93c5fd; }
-            #qa-rv .rv-fdim[contenteditable="true"] { background: rgba(255,255,255,0.1); border-radius: 4px; padding: 0 4px; color: #fff; }
-            #qa-rv .rv-fact { display: flex; gap: 3px; flex-shrink: 0; }
-            #qa-rv .rv-fact button { background: #1d1a28; border: 1px solid #262335; color: #8b8898; cursor: pointer; width: 25px; height: 23px; border-radius: 6px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
-            #qa-rv .rv-fact button:hover { background: #262335; color: #fff; }
-            #qa-rv .rv-screen { background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 28px rgba(0,0,0,0.55); }
+            #qa-rv .rv-fdim { font-size: 10.5px; color: var(--rv-sub); font-family: Consolas, monospace; font-variant-numeric: tabular-nums; flex-shrink: 0; cursor: text; background: var(--rv-surface); border: 1px solid var(--rv-border); border-radius: 6px; padding: 2px 7px; }
+            #qa-rv .rv-fdim:hover { color: #fff; border-color: #33405a; }
+            #qa-rv .rv-fdim[contenteditable="true"] { background: rgba(99,102,241,0.16); border-color: var(--rv-accent); color: #fff; }
+            #qa-rv .rv-fact { display: flex; gap: 4px; flex-shrink: 0; }
+            #qa-rv .rv-fact button { background: var(--rv-surface); border: 1px solid var(--rv-border); color: var(--rv-sub); cursor: pointer; width: 27px; height: 25px; border-radius: 7px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; transition: background .15s, color .15s, border-color .15s; }
+            #qa-rv .rv-fact button:hover { background: var(--rv-accent); border-color: var(--rv-accent); color: #fff; }
+            #qa-rv .rv-screen { background: #fff; border-radius: 14px; overflow: hidden; box-shadow: 0 1px 0 rgba(255,255,255,0.04), 0 12px 34px rgba(0,0,0,0.5); }
             #qa-rv .rv-inner { overflow: hidden; position: relative; }
             #qa-rv .rv-screen iframe { border: 0; display: block; background: #fff; }
             #qa-rv .rv-grid { position: absolute; inset: 0; pointer-events: none; z-index: 3;
                 background-image:
-                    repeating-linear-gradient(to right, rgba(139,92,246,0.18) 0 1px, transparent 1px 20px),
-                    repeating-linear-gradient(to bottom, rgba(139,92,246,0.18) 0 1px, transparent 1px 20px),
-                    repeating-linear-gradient(to right, rgba(139,92,246,0.4) 0 1px, transparent 1px 100px),
-                    repeating-linear-gradient(to bottom, rgba(139,92,246,0.4) 0 1px, transparent 1px 100px); }
-            #qa-rv .rv-rt, #qa-rv .rv-rl { position: absolute; pointer-events: none; z-index: 4; background: rgba(15,15,23,0.82); color: #93c5fd; font: 9px/1 Consolas, monospace; }
+                    repeating-linear-gradient(to right, rgba(129,140,248,0.18) 0 1px, transparent 1px 20px),
+                    repeating-linear-gradient(to bottom, rgba(129,140,248,0.18) 0 1px, transparent 1px 20px),
+                    repeating-linear-gradient(to right, rgba(129,140,248,0.4) 0 1px, transparent 1px 100px),
+                    repeating-linear-gradient(to bottom, rgba(129,140,248,0.4) 0 1px, transparent 1px 100px); }
+            #qa-rv .rv-rt, #qa-rv .rv-rl { position: absolute; pointer-events: none; z-index: 4; background: rgba(10,13,20,0.85); color: var(--rv-accent-2); font: 9px/1 Consolas, monospace; }
             #qa-rv .rv-rt { top: 0; left: 0; right: 0; height: 14px; border-bottom: 1px solid rgba(255,255,255,0.15); }
             #qa-rv .rv-rl { top: 0; left: 0; bottom: 0; width: 22px; border-right: 1px solid rgba(255,255,255,0.15); }
             #qa-rv .rv-rt span { position: absolute; top: 2px; transform: translateX(2px); }
             #qa-rv .rv-rl span { position: absolute; left: 2px; }
-            #qa-rv .rv-rt i, #qa-rv .rv-rl i { position: absolute; background: rgba(147,197,253,0.5); }
+            #qa-rv .rv-rt i, #qa-rv .rv-rl i { position: absolute; background: rgba(129,140,248,0.5); }
             #qa-rv .rv-rt i { top: 0; width: 1px; height: 5px; }
             #qa-rv .rv-rl i { left: 0; height: 1px; width: 5px; }
-            #qa-rv .rv-screen.mock { background: #0b0b12; padding: 16px 9px; border-radius: 32px; box-shadow: 0 10px 34px rgba(0,0,0,0.6), inset 0 0 0 2px #2c2c3a; position: relative; }
-            #qa-rv .rv-screen.mock .rv-inner { border-radius: 16px; }
-            #qa-rv .rv-screen.mock::before { content:''; position:absolute; top:7px; left:50%; transform:translateX(-50%); width:46px; height:7px; background:#2c2c3a; border-radius:5px; }
-            #qa-rv .rv-empty { color: #6b6878; text-align: center; padding: 60px 20px; width: 100%; }
+            #qa-rv .rv-screen.mock { background: #05060a; padding: 14px 8px; border-radius: 34px; box-shadow: 0 12px 38px rgba(0,0,0,0.6), inset 0 0 0 2px #222838; position: relative; }
+            #qa-rv .rv-screen.mock .rv-inner { border-radius: 18px; }
+            #qa-rv .rv-screen.mock::before { content:''; position:absolute; top:6px; left:50%; transform:translateX(-50%); width:44px; height:6px; background:#222838; border-radius:5px; }
+            #qa-rv .rv-empty { color: var(--rv-muted); text-align: center; padding: 60px 20px; width: 100%; }
             /* ---- custom device dialog ---- */
-            #qa-rv .rv-dlg { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 5; }
-            #qa-rv .rv-dlg-box { background: #17151f; border: 1px solid #262335; border-radius: 14px; padding: 18px; width: 300px; box-shadow: 0 14px 44px rgba(0,0,0,0.6); }
-            #qa-rv .rv-dlg-box h4 { margin: 0 0 12px; font-size: 14px; color: #fff; }
-            #qa-rv .rv-dlg-box label { display: block; font-size: 11px; color: #8b8898; margin: 8px 0 3px; }
-            #qa-rv .rv-dlg-box input { width: 100%; background: #0f0e16; border: 1px solid #262335; border-radius: 8px; color: #fff; padding: 8px; font-size: 13px; outline: none; }
-            #qa-rv .rv-dlg-box input:focus { border-color: #7c3aed; }
+            #qa-rv .rv-dlg { position: fixed; inset: 0; background: rgba(4,6,11,0.66); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; z-index: 5; }
+            #qa-rv .rv-dlg-box { background: var(--rv-panel); border: 1px solid var(--rv-border); border-radius: 16px; padding: 20px; width: 300px; box-shadow: 0 20px 54px rgba(0,0,0,0.6); }
+            #qa-rv .rv-dlg-box h4 { margin: 0 0 14px; font-size: 14px; color: #fff; }
+            #qa-rv .rv-dlg-box label { display: block; font-size: 11px; color: var(--rv-sub); margin: 8px 0 4px; }
+            #qa-rv .rv-dlg-box input { width: 100%; background: var(--rv-panel2); border: 1px solid var(--rv-border); border-radius: 9px; color: #fff; padding: 9px 10px; font-size: 13px; outline: none; transition: border-color .15s, box-shadow .15s; }
+            #qa-rv .rv-dlg-box input:focus { border-color: var(--rv-accent); box-shadow: 0 0 0 3px rgba(99,102,241,0.18); }
             #qa-rv .rv-dlg-row { display: flex; gap: 8px; }
-            #qa-rv .rv-dlg-btns { display: flex; gap: 8px; margin-top: 16px; }
-            #qa-rv .rv-dlg-btns button { flex: 1; border: none; border-radius: 8px; padding: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
-            #qa-rv .rv-cd-item { display: flex; align-items: center; justify-content: space-between; background: #0f0e16; border: 1px solid #262335; border-radius: 8px; padding: 7px 10px; margin-bottom: 5px; font-size: 12.5px; }
-            #qa-rv .rv-cd-item button { background: none; border: none; color: #6b6878; cursor: pointer; font-size: 16px; }
+            #qa-rv .rv-dlg-btns { display: flex; gap: 8px; margin-top: 18px; }
+            #qa-rv .rv-dlg-btns button { flex: 1; border: none; border-radius: 9px; padding: 10px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+            #qa-rv .rv-cd-item { display: flex; align-items: center; justify-content: space-between; background: var(--rv-panel2); border: 1px solid var(--rv-border); border-radius: 9px; padding: 8px 11px; margin-bottom: 6px; font-size: 12.5px; }
+            #qa-rv .rv-cd-item button { background: none; border: none; color: var(--rv-muted); cursor: pointer; font-size: 16px; transition: color .15s; }
             #qa-rv .rv-cd-item button:hover { color: #f87171; }
         </style>
         <div class="rv-bar">
@@ -4314,6 +4325,7 @@ function rvBuildOverlay() {
             <div class="rv-url"><input type="text" id="rv-url" spellcheck="false"><button class="rv-btn go" id="rv-go">Go</button></div>
             <span class="rv-sep"></span>
             <select class="rv-sel" id="rv-add" title="Add a device"><option value="">+ Add device</option></select>
+            <button class="rv-btn" id="rv-bp-btn" title="Add a device at one of this page's breakpoints">Breakpoints <span id="rv-bp-caret">▾</span></button>
             <button class="rv-btn ic" id="rv-rotate" title="Rotate all devices">${RV_ICON.rotate}</button>
             <button class="rv-btn ic" id="rv-reload" title="Reload all devices">${RV_ICON.reload}</button>
             <span class="rv-sep"></span>
@@ -4321,17 +4333,15 @@ function rvBuildOverlay() {
             <button class="rv-btn" id="rv-fit" title="Auto-zoom so every device fits in view">Fit</button>
             <span class="rv-sep"></span>
             <select class="rv-sel" id="rv-ua" title="User-Agent"><option value="desktop">UA: Desktop</option><option value="iphone">UA: iPhone</option><option value="android">UA: Android</option></select>
-            <select class="rv-sel" id="rv-layout" title="Layout"><option value="row">Side by side</option><option value="stack">Stacked</option></select>
             <span class="rv-sep"></span>
             <button class="rv-btn" id="rv-mockup" title="Device frame">Mockup</button>
-            <button class="rv-btn" id="rv-sync" title="Sync scroll, clicks, typing & hover across devices">${RV_ICON.link} Sync</button>
-            <button class="rv-btn" id="rv-touch" title="Touch cursor">${RV_ICON.touch}</button>
+            <button class="rv-btn" id="rv-sync" title="Sync scroll, clicks & typing across devices">${RV_ICON.link} Sync</button>
             <button class="rv-btn" id="rv-scrollbar" title="Show/hide the scrollbar inside devices (on = shown)">Scrollbar</button>
             <span class="rv-sep"></span>
             <button class="rv-btn ic" id="rv-shot" title="Screenshot the whole view">${RV_ICON.camera}</button>
             <button class="rv-btn ic close" id="rv-close" title="Close">${RV_ICON.close}</button>
         </div>
-        <div class="rv-bps" id="rv-bps" style="display:none;"></div>
+        <div class="rv-bp-pop" id="rv-bp-pop"></div>
         <div class="rv-tabs" id="rv-tabs"></div>
         <div class="rv-iso" id="rv-iso">Isolation — showing one screen. <button class="rv-btn" id="rv-isoexit" style="margin-left:8px;padding:3px 9px;">Show all</button></div>
         <div class="rv-stage"><div class="rv-row" id="rv-row"></div></div>`;
@@ -4340,13 +4350,11 @@ function rvBuildOverlay() {
     o.querySelector('#rv-url').value = rvState.url;
     o.querySelector('#rv-zoom').value = Math.round(rvState.zoom * 100);
     o.querySelector('#rv-ua').value = rvState.ua;
-    o.querySelector('#rv-layout').value = rvState.layout;
     o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup);
     o.querySelector('#rv-sync').classList.toggle('on', rvState.sync);
-    o.querySelector('#rv-touch').classList.toggle('on', rvState.touch);
     o.querySelector('#rv-scrollbar').classList.toggle('on', !rvState.hideScroll);
     rvFillAddMenu();
-    rvRenderBps();
+    rvLoadBreakpoints();
     rvRender();
     rvUaHint();
 
@@ -4365,10 +4373,8 @@ function rvBuildOverlay() {
         rvState.zoom = pct / 100; rvSave(); rvApplyGeometry();
     });
     o.querySelector('#rv-ua').addEventListener('change', (e) => { rvState.ua = e.target.value; rvSave(); rvUaHint(); chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true, ua: rvState.ua }, () => setTimeout(reloadAll, 150)); });
-    o.querySelector('#rv-layout').addEventListener('change', (e) => { rvState.layout = e.target.value; rvSave(); rvApplyGeometry(); });
     o.querySelector('#rv-mockup').addEventListener('click', () => { rvState.mockup = !rvState.mockup; o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup); rvSave(); rvApplyGeometry(); });
     o.querySelector('#rv-sync').addEventListener('click', () => { rvState.sync = !rvState.sync; o.querySelector('#rv-sync').classList.toggle('on', rvState.sync); rvSave(); });
-    o.querySelector('#rv-touch').addEventListener('click', () => { rvState.touch = !rvState.touch; o.querySelector('#rv-touch').classList.toggle('on', rvState.touch); rvSave(); rvWireFrames(); });
     o.querySelector('#rv-scrollbar').addEventListener('click', () => { rvState.hideScroll = !rvState.hideScroll; o.querySelector('#rv-scrollbar').classList.toggle('on', !rvState.hideScroll); rvSave(); rvWireFrames(); });
     o.querySelector('#rv-add').addEventListener('change', (e) => {
         const v = e.target.value; e.target.value = '';
@@ -4406,10 +4412,29 @@ function rvBuildOverlay() {
         o.querySelector('#rv-zoom').value = Math.round(z * 100);
         rvSave(); rvApplyGeometry();
     });
-    o.querySelector('#rv-bps').addEventListener('click', (e) => {
+    // Breakpoints dropdown: the button opens a popover positioned under it; a chip
+    // adds a device at that width; clicking elsewhere closes it.
+    const bpBtn = o.querySelector('#rv-bp-btn'), bpPop = o.querySelector('#rv-bp-pop');
+    bpBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = bpPop.classList.toggle('show');
+        bpBtn.classList.toggle('on', open);
+        if (open) {
+            const r = bpBtn.getBoundingClientRect();
+            bpPop.style.left = Math.min(r.left, innerWidth - 316) + 'px';
+            bpPop.style.top = (r.bottom + 6) + 'px';
+        }
+    });
+    bpPop.addEventListener('click', (e) => {
         const bp = e.target.closest('.rv-bp'); if (!bp) return;
         const w = +bp.dataset.bp; if (!w) return;
         rvAddScreenLive({ id: rvState.nextScreen++, name: `${w}px`, w, h: 900, rotated: false });
+        bpPop.classList.remove('show'); bpBtn.classList.remove('on');
+    });
+    o.addEventListener('click', (e) => {
+        if (bpPop.classList.contains('show') && !bpPop.contains(e.target) && e.target !== bpBtn && !bpBtn.contains(e.target)) {
+            bpPop.classList.remove('show'); bpBtn.classList.remove('on');
+        }
     });
     o.querySelector('#rv-close').addEventListener('click', closeResponsiveOverlay);
 
@@ -4589,39 +4614,90 @@ function rvScreenshot(rect, name) {
     });
 }
 
-// Read the page's own CSS @media rules and extract its real breakpoints, so
-// the user can test at the exact widths the site was designed around.
-function rvDetectBreakpoints() {
-    const found = new Set();
+// The page's REAL breakpoints, read from its own @media rules. Two things make
+// this accurate instead of a wall of near-duplicate numbers:
+//   1. A boundary written as `max-width:767px` is the same line as `min-width:768px`
+//      - the layout flips at 768. So every max-width is normalised to value+1,
+//      which collapses the 767/768, 991/992, 1023/1024/1025 … pairs into one.
+//   2. Cross-origin (CDN) stylesheets can't be read from a content script; their
+//      text is fetched through the worker and parsed, so CDN breakpoints aren't
+//      silently missed.
+const RV_BP_MIN = 240, RV_BP_MAX = 2600;
+
+// Pull min/max-width values out of a media-query string, normalising max to the
+// boundary where the next layout begins.
+function rvBpsFromMediaText(text, out) {
+    for (const m of text.matchAll(/(min|max)-width:\s*([\d.]+)px/gi)) {
+        let v = Math.round(parseFloat(m[2]));
+        if (m[1].toLowerCase() === 'max') v += 1;
+        if (v >= RV_BP_MIN && v <= RV_BP_MAX) out.add(v);
+    }
+}
+function rvBpsFromCssText(css, out) {
+    for (const mm of css.matchAll(/@media[^{]+/gi)) rvBpsFromMediaText(mm[0], out);
+}
+
+// Same-origin / readable sheets now; returns the hrefs of the ones we couldn't
+// read so the caller can fetch them cross-origin.
+function rvCollectReadableBps(out) {
+    const external = [];
     for (const sheet of document.styleSheets) {
-        let rules; try { rules = sheet.cssRules; } catch (e) { continue; }   // cross-origin sheets
-        if (!rules) continue;
+        let rules; try { rules = sheet.cssRules; } catch (e) { if (sheet.href) external.push(sheet.href); continue; }
+        if (!rules) { if (sheet.href) external.push(sheet.href); continue; }
         const walk = (rs) => {
             for (const r of rs) {
                 try {
-                    if (r.media && r.media.mediaText) {
-                        for (const m of r.media.mediaText.matchAll(/(?:min|max)-width:\s*([\d.]+)px/g)) {
-                            const v = Math.round(parseFloat(m[1]));
-                            if (v >= 240 && v <= 2600) found.add(v);
-                        }
-                    }
+                    if (r.media && r.media.mediaText) rvBpsFromMediaText(r.media.mediaText, out);
                     if (r.cssRules) walk(r.cssRules);
                 } catch (e) { }
             }
         };
         try { walk(rules); } catch (e) { }
     }
-    return [...found].sort((a, b) => a - b).slice(0, 14);
+    return external;
 }
 
-function rvRenderBps() {
-    const el = document.querySelector('#qa-rv #rv-bps'); if (!el) return;
-    const det = rvDetectBreakpoints();
-    const common = [320, 480, 768, 1024, 1280, 1440].filter(v => !det.includes(v));
-    const chip = (v, cls) => `<button class="rv-bp ${cls}" data-bp="${v}" title="Add a ${v}px-wide screen">${v}</button>`;
-    el.style.display = 'flex';
-    el.innerHTML = (det.length ? `<span class="rv-bps-l">Page breakpoints</span>` + det.map(v => chip(v, 'det')).join('') : '')
-        + `<span class="rv-bps-l dim">Presets</span>` + common.map(v => chip(v, '')).join('');
+const rvBpChip = (v, cls) => `<button class="rv-bp ${cls}" data-bp="${v}" title="Add a ${v}px-wide screen">${v}</button>`;
+
+// Collapse values within `tol` px of the one before them - so a site that writes
+// 768 AND 769 (max-width:767 → 768 next to min-width:769) shows ONE clean 768,
+// not both. Keeps the list short and readable.
+function rvMergeClose(sorted, tol) {
+    const out = [];
+    for (const v of sorted) if (!out.length || v - out[out.length - 1] > tol) out.push(v);
+    return out;
+}
+
+let rvBpsPage = [];   // detected page breakpoints (merged), filled by rvLoadBreakpoints
+
+// Render the popover contents from the current rvBpsPage + presets.
+function rvRenderBpPop() {
+    const pop = document.querySelector('#qa-rv #rv-bp-pop'); if (!pop) return;
+    const presets = [320, 480, 768, 1024, 1280, 1440].filter(v => !rvBpsPage.includes(v));
+    pop.innerHTML =
+        `<span class="rv-bps-l">Page breakpoints</span>`
+        + (rvBpsPage.length
+            ? `<div class="rv-bp-wrap">${rvBpsPage.map(v => rvBpChip(v, 'det')).join('')}</div>`
+            : `<div class="rv-bp-empty">None found in this page's CSS.</div>`)
+        + `<span class="rv-bps-l dim">Preset widths</span>`
+        + `<div class="rv-bp-wrap">${presets.map(v => rvBpChip(v, '')).join('')}</div>`;
+}
+
+// Detect the page's breakpoints (readable sheets first, then CDN sheets fetched
+// through the worker), merge near-duplicates, and refresh the popover.
+async function rvLoadBreakpoints() {
+    const det = new Set();
+    const external = rvCollectReadableBps(det);
+    rvBpsPage = rvMergeClose([...det].sort((a, b) => a - b), 3).slice(0, 30);
+    rvRenderBpPop();
+    if (!external.length) return;
+    const texts = await Promise.all(external.map((href) => new Promise((res) => {
+        try { chrome.runtime.sendMessage({ action: 'fetchText', url: href }, (r) => res(r && r.ok ? r.text : '')); }
+        catch (e) { res(''); }
+    })));
+    const before = det.size;
+    texts.forEach((css) => { if (css) rvBpsFromCssText(css, det); });
+    if (det.size !== before) { rvBpsPage = rvMergeClose([...det].sort((a, b) => a - b), 3).slice(0, 30); rvRenderBpPop(); }
 }
 
 // Full-page screenshot of one device: scroll its document step by step,
@@ -4770,7 +4846,6 @@ function rvFrameHtml(s) {
             <span class="rv-fact">
                 <button data-act="shot" title="Screenshot (visible)">${RV_ICON.camera}</button>
                 <button data-act="full" title="Full-page screenshot (whole scroll)"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 7v8"/><path d="m9 12 3 3 3-3"/></svg></button>
-                <button data-act="isolate" title="Isolate">${RV_ICON.eye}</button>
                 <button data-act="rotate" title="Rotate">${RV_ICON.rotate}</button>
                 <button data-act="reload" title="Reload">${RV_ICON.reload}</button>
                 <button data-act="remove" title="Remove">${RV_ICON.close}</button>
@@ -4778,7 +4853,12 @@ function rvFrameHtml(s) {
         </div>
         <div class="rv-screen ${rvState.mockup ? 'mock' : ''}">
             <div class="rv-inner" style="width:${sw}px;height:${sh}px;">
-                <iframe src="${encodeURI(rvState.url)}" style="width:${w}px;height:${h}px;transform:scale(${z});transform-origin:top left;"></iframe>
+                <!-- zoom (not transform:scale): renders the iframe NATIVELY at the
+                     scaled size instead of rasterising a full-size layer and scaling
+                     it on the GPU. The page still sees the real device width, but the
+                     rounded-corner clip is now antialiased (a scaled GPU layer never
+                     was) and scrolling is lighter. -->
+                <iframe src="${encodeURI(rvState.url)}" style="width:${w}px;height:${h}px;zoom:${z};"></iframe>
             </div>
         </div>
     </div>`;
@@ -4823,7 +4903,10 @@ function rvApplyGeometry() {
         const inner = node.querySelector('.rv-inner');
         inner.style.width = sw + 'px'; inner.style.height = sh + 'px';
         const f = node.querySelector('iframe');
-        f.style.width = w + 'px'; f.style.height = h + 'px'; f.style.transform = `scale(${z})`;
+        // MUST match rvFrameHtml (zoom, not transform:scale). Applying transform on
+        // top of the existing zoom double-scaled the frame and left a ghost render
+        // when geometry changed (e.g. toggling Mockup off/on).
+        f.style.width = w + 'px'; f.style.height = h + 'px'; f.style.transform = ''; f.style.zoom = z;
         const dim = node.querySelector('.rv-fdim');
         if (dim && !dim.isContentEditable) dim.textContent = `${w}×${h}`;
     });
@@ -4857,6 +4940,39 @@ function rvPath(el) {
     return p;
 }
 function rvResolve(doc, p) { let el = doc.body; for (const i of p) { if (!el) return null; el = el.children[i]; } return el; }
+
+// Find the element in ANOTHER device that corresponds to `el`. A raw child-index
+// path (rvResolve) only works when both devices render an identical DOM - but at
+// different widths responsive layouts add/drop/reorder nodes, so the same click
+// landed on the wrong element or nothing (the "click sync is imprecise, works
+// sometimes" bug). Match on stable signals first, fall back to the path.
+function rvFindMatch(el, otherDoc) {
+    if (!el || el.nodeType !== 1 || !otherDoc) return null;
+    const tag = el.tagName;
+    // 1) id - the strongest signal
+    if (el.id) { const m = otherDoc.getElementById(el.id); if (m) return m; }
+    // 2) a link - match by href (what the user is really after)
+    if (tag === 'A') {
+        const href = el.getAttribute('href');
+        if (href) { for (const a of otherDoc.getElementsByTagName('a')) if (a.getAttribute('href') === href) return a; }
+    }
+    // 3) a form control - match by name (+ type)
+    if (el.getAttribute && el.getAttribute('name')) {
+        const name = el.getAttribute('name'), type = el.getAttribute('type');
+        for (const c of otherDoc.getElementsByTagName(tag)) {
+            if (c.getAttribute('name') === name && (type == null || c.getAttribute('type') === type)) return c;
+        }
+    }
+    // 4) same tag + same trimmed text (buttons, links, menu items)
+    const text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (text) {
+        for (const c of otherDoc.getElementsByTagName(tag)) {
+            if ((c.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80) === text) return c;
+        }
+    }
+    // 5) last resort - the structural path
+    return rvResolve(otherDoc, rvPath(el));
+}
 // Some sites decide mobile/desktop from the User-Agent on the SERVER - if the
 // devices are phone-sized while the UA is still Desktop, nudge the user.
 function rvUaHint() {
@@ -4903,10 +5019,28 @@ function rvApplyCursor(doc, on) {
 function rvHideScrollbar(doc, hide) {
     try {
         let st = doc.getElementById('rv-sb-style');
-        if (hide) {
-            if (!st) { st = doc.createElement('style'); st.id = 'rv-sb-style'; doc.head.appendChild(st); }
-            st.textContent = `::-webkit-scrollbar{width:0 !important;height:0 !important;background:transparent !important;} html{scrollbar-width:none !important;}`;
-        } else if (st) { st.remove(); }
+        if (!st) { st = doc.createElement('style'); st.id = 'rv-sb-style'; doc.head.appendChild(st); }
+        // Hidden = no bar (phone look). Shown = a THIN, rounded, translucent bar on
+        // both axes - like a mobile overlay scrollbar, not the chunky desktop one.
+        st.textContent = hide
+            ? `::-webkit-scrollbar{width:0 !important;height:0 !important;background:transparent !important;} html{scrollbar-width:none !important;}`
+            : `::-webkit-scrollbar{width:7px !important;height:7px !important;}
+               ::-webkit-scrollbar-track{background:transparent !important;}
+               ::-webkit-scrollbar-thumb{background:rgba(120,124,140,0.55) !important;border-radius:8px !important;border:2px solid transparent !important;background-clip:content-box !important;}
+               ::-webkit-scrollbar-thumb:hover{background:rgba(120,124,140,0.85) !important;}
+               ::-webkit-scrollbar-corner{background:transparent !important;}
+               html{scrollbar-width:thin !important;scrollbar-color:rgba(120,124,140,0.6) transparent !important;}`;
+    } catch (e) { }
+}
+// A page with `scroll-behavior:smooth` makes a programmatic scrollTo animate over
+// ~300ms - fine when a user clicks an anchor, but for scroll SYNC it means the
+// mirrored device eases toward each position and trails the one you're driving.
+// Force instant scrolling inside every device so sync is 1:1.
+function rvNoSmoothScroll(doc) {
+    try {
+        let st = doc.getElementById('rv-smooth-style');
+        if (!st) { st = doc.createElement('style'); st.id = 'rv-smooth-style'; doc.head.appendChild(st); }
+        st.textContent = `html,body{scroll-behavior:auto !important;}`;
     } catch (e) { }
 }
 function rvApplyOutline(doc, on) {
@@ -4925,69 +5059,81 @@ function rvWireFrames() {
             let doc, win;
             try { doc = f.contentDocument; win = f.contentWindow; } catch (e) { return; }
             if (!doc || !win) return;
-            rvApplyCursor(doc, rvState.touch);
+            // Touch MEDIA emulation stays (hover:none, coarse pointer, maxTouchPoints
+            // - so sites render their real mobile UI), but NOT the circle touch-cursor
+            // gimmick, which was removed.
             rvPatchTouchMedia(win);
             rvApplyOutline(doc, rvState.outline);
             rvHideScrollbar(doc, rvState.hideScroll); // optional: hide scrollbar like a phone
+            rvNoSmoothScroll(doc);                    // kill CSS smooth-scroll so sync is instant
             if (doc.__rvBound) return;
             doc.__rvBound = true;
-            win.addEventListener('scroll', () => {
-                if (!rvState.sync || rvSyncing) return;
-                rvSyncing = true;
-                const sx = win.scrollX, sy = win.scrollY;
-                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { other.contentWindow.scrollTo(sx, sy); } catch (e) { } } });
-                requestAnimationFrame(() => { rvSyncing = false; });
-            }, true);
+            // Scroll sync is NOT done here per-frame any more - see rvStartSyncLoop.
+            // The old scroll-event approach had a shared `rvSyncing` guard that
+            // dropped every other frame's update, so the mirrored device trailed and
+            // looked slow. A single rAF loop that reads whichever frame moved and
+            // mirrors it to the others - with no echo guard blocking the source -
+            // keeps them in lockstep.
             win.addEventListener('click', (e) => {
                 if (!rvState.sync || rvClicking || !e.isTrusted) return;
                 rvClicking = true;
-                const path = rvPath(e.target);
-                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvResolve(other.contentDocument, path); if (el) el.click(); } catch (e) { } } });
+                const target = e.target;
+                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvFindMatch(target, other.contentDocument); if (el) el.click(); } catch (e) { } } });
                 setTimeout(() => { rvClicking = false; }, 80);
-            }, true);
-            win.addEventListener('mouseover', (e) => {
-                if (!rvState.sync || !e.isTrusted) return;
-                // climb past tiny inline targets to the nearest stable block
-                let t = e.target;
-                while (t && t !== doc.body && t.parentElement) {
-                    let cs; try { cs = win.getComputedStyle(t); } catch (err) { break; }
-                    if (cs.display !== 'inline' && t.offsetWidth > 8 && t.offsetHeight > 8) break;
-                    t = t.parentElement;
-                }
-                if (!t || t === doc.body) return;
-                const path = rvPath(t);
-                const tr = t.getBoundingClientRect();
-                const relX = (tr.left + tr.width / 2) / Math.max(1, win.innerWidth);
-                const relY = tr.top + tr.height / 2;   // viewport Y (scroll is synced)
-                o.querySelectorAll('iframe').forEach(other => {
-                    if (other === f) return;
-                    try {
-                        const od = other.contentDocument, ow = other.contentWindow;
-                        // 1) exact DOM path; 2) same relative viewport point as fallback
-                        let el = rvResolve(od, path);
-                        if (!el || el === od.body) el = od.elementFromPoint(Math.round(relX * ow.innerWidth), Math.round(Math.min(relY, ow.innerHeight - 2)));
-                        if (!el || el === od.body || el === od.documentElement) return;
-                        if (el.getAttribute('data-rv-hover') === '1') return;   // already lit - keep it steady
-                        od.querySelectorAll('[data-rv-hover]').forEach(x => { x.style.outline = x.__rvPrevOl || ''; x.style.boxShadow = x.__rvPrevSh || ''; x.removeAttribute('data-rv-hover'); });
-                        el.__rvPrevOl = el.style.outline; el.__rvPrevSh = el.style.boxShadow;
-                        el.style.setProperty('outline', '2px solid #a78bfa', 'important');
-                        el.style.setProperty('box-shadow', '0 0 0 2px rgba(167,139,250,0.55) inset', 'important');
-                        el.setAttribute('data-rv-hover', '1');
-                    } catch (err) { }
-                });
             }, true);
             win.addEventListener('input', (e) => {
                 if (!rvState.sync || rvClicking || !e.isTrusted) return;
                 const t = e.target; if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                 rvClicking = true;
-                const path = rvPath(t), val = t.value;
-                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvResolve(other.contentDocument, path); if (el && 'value' in el) { el.value = val; el.dispatchEvent(new other.contentWindow.Event('input', { bubbles: true })); } } catch (e) { } } });
+                const val = t.value;
+                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvFindMatch(t, other.contentDocument); if (el && 'value' in el) { el.value = val; el.dispatchEvent(new other.contentWindow.Event('input', { bubbles: true })); } } catch (e) { } } });
                 setTimeout(() => { rvClicking = false; }, 40);
             }, true);
         };
         if (!f.__rvLoadBound) { f.__rvLoadBound = true; f.addEventListener('load', decorate); }
         decorate();
     });
+    rvStartSyncLoop();
+}
+
+// One rAF loop mirrors scroll across devices. Each tick it finds the frame whose
+// scroll changed since last tick (the one the user is scrolling) and writes that
+// position to every other frame, marking the followers' new position as "seen" so
+// their own scroll doesn't echo back. No per-frame scroll listeners, no shared
+// guard that skips frames - so the mirrored device tracks the driven one every
+// single frame instead of trailing behind and looking slow. Stops itself when the
+// overlay closes.
+let rvSyncLoopOn = false;
+function rvStartSyncLoop() {
+    if (rvSyncLoopOn) return;
+    rvSyncLoopOn = true;
+    const tick = () => {
+        const o = document.getElementById('qa-rv');
+        if (!o) { rvSyncLoopOn = false; return; }   // overlay gone - stop the loop
+        if (rvState && rvState.sync) {
+            const frames = o.querySelectorAll('iframe');
+            for (const f of frames) {
+                let w, sx, sy;
+                try { w = f.contentWindow; if (!w) continue; sx = w.scrollX; sy = w.scrollY; }
+                catch (e) { continue; }             // cross-origin frame - skip
+                if (f.__rvSX === undefined) { f.__rvSX = sx; f.__rvSY = sy; continue; }
+                if (sx === f.__rvSX && sy === f.__rvSY) continue;   // this frame didn't move
+                // f moved → it's the one being scrolled. Mirror to the rest.
+                for (const g of frames) {
+                    if (g === f) continue;
+                    try {
+                        const gw = g.contentWindow;
+                        if (gw.scrollX !== sx || gw.scrollY !== sy) gw.scrollTo({ left: sx, top: sy, behavior: 'instant' });
+                        g.__rvSX = sx; g.__rvSY = sy;   // mark as seen so it isn't treated as the mover
+                    } catch (e) { }
+                }
+                f.__rvSX = sx; f.__rvSY = sy;
+                break;                                // one mover per tick
+            }
+        }
+        requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
 }
 
 // ==================== Image Text Extractor (OCR) ====================

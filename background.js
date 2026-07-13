@@ -1418,11 +1418,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 { header: 'content-security-policy-report-only', operation: 'remove' }
             ]
         };
-        if (RV_UA[request.ua]) action.requestHeaders = [{ header: 'user-agent', operation: 'set', value: RV_UA[request.ua] }];
+        if (RV_UA[request.ua]) {
+            // Modern sites decide mobile-vs-desktop from Client Hints, not just the
+            // UA string. Without these a "mobile" UA still gets the desktop layout.
+            const plat = request.ua === 'iphone' ? '"iOS"' : '"Android"';
+            action.requestHeaders = [
+                { header: 'user-agent', operation: 'set', value: RV_UA[request.ua] },
+                { header: 'sec-ch-ua-mobile', operation: 'set', value: '?1' },
+                { header: 'sec-ch-ua-platform', operation: 'set', value: plat },
+            ];
+        }
         chrome.declarativeNetRequest.updateSessionRules({
             removeRuleIds: [RV_DNR_ID],
             addRules: [{ id: RV_DNR_ID, priority: 1, action, condition: { resourceTypes: ['sub_frame'] } }]
         }).then(() => sendResponse({ success: true })).catch(() => sendResponse({ success: false }));
+        return true;
+    }
+
+    // Fetch text (used by the Responsive Viewer to read a page's CROSS-ORIGIN
+    // stylesheets - a content script can't, but the worker can with <all_urls>
+    // host permission - so breakpoint detection sees CDN-hosted CSS too).
+    if (request.action === 'fetchText') {
+        fetch(request.url, { credentials: 'omit' })
+            .then((r) => r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status)))
+            .then((text) => sendResponse({ ok: true, text: text.slice(0, 2_000_000) })) // cap huge sheets
+            .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
         return true;
     }
 
@@ -2699,6 +2719,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const SW = self.SessionSwap;
     if (!request || !request.action || !SW) return false;
     switch (request.action) {
+        case 'swapPing':
+            // Just proves the worker is awake - the popup pings before every real
+            // action so a sleeping worker doesn't drop it (see sessions.js).
+            sendResponse({ ok: true });
+            return true;
         case 'swapList':
             SW.listFor(request.url).then((snaps) => sendResponse({ snaps }));
             return true;   // async

@@ -371,11 +371,11 @@ async function downloadEML(id, subject) {
 }
 
 async function closeTab() {
+    // Close this tab through the tabs API only - never window.close().
     try {
         const tab = await chrome.tabs.getCurrent();
-        if (tab && tab.id) await chrome.tabs.remove(tab.id);
-        else window.close();
-    } catch (e) { window.close(); }
+        if (tab && tab.id != null) chrome.tabs.remove(tab.id);
+    } catch (e) { /* leave the tab open rather than force-close */ }
 }
 
 function showError() {

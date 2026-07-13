@@ -11,7 +11,21 @@
     if (!swList || !tabBtn) return;
 
     const esc = (t) => { const d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; };
-    const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r || {}); }));
+
+    // A dormant MV3 service worker drops the FIRST message it gets after going to
+    // sleep (~30s idle) - the callback returns nothing and the click looks dead,
+    // so you press again and the second works. THIS was the "click twice" bug.
+    // Poke the worker awake first (that throwaway message absorbs the drop and
+    // starts it), then send the real one to a worker that's now running - so the
+    // real action runs exactly once, on the first click.
+    const wake = () => new Promise((res) => {
+        try { chrome.runtime.sendMessage({ action: 'swapPing' }, () => { void chrome.runtime.lastError; res(); }); }
+        catch (e) { res(); }
+    });
+    const send = async (msg) => {
+        await wake();
+        return new Promise((res) => chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r || {}); }));
+    };
     const activeTab = () => new Promise((res) => chrome.tabs.query({ active: true, currentWindow: true }, (t) => res(t && t[0])));
     const hostOf = (u) => { try { return new URL(u).hostname; } catch (e) { return ''; } };
     const timeAgo = (ts) => {
@@ -84,9 +98,14 @@
             });
             const goBtn = card.querySelector('.sw-go');
             if (goBtn) goBtn.addEventListener('click', async () => {
+                goBtn.disabled = true; goBtn.textContent = 'Switching…';
                 const r = await send({ action: 'swapRestore', tab: { id: t.id, url }, id: s.id });
-                if (r && r.ok) { showToastMessage(`Switching to "${s.name}"…`, 'success'); window.close(); }
-                else showToastMessage('Could not switch: ' + ((r && r.error) || 'unknown'), 'error');
+                // Re-render instead of closing the panel: the tab navigates beside
+                // the panel and the list updates to show the new Current. (This runs
+                // in the side panel; closing it programmatically is a no-op here and
+                // left "Switching…" frozen on screen.)
+                if (r && r.ok) { showToastMessage(`Switched to "${s.name}"`, 'success'); render(); }
+                else { showToastMessage('Could not switch: ' + ((r && r.error) || 'unknown'), 'error'); render(); }
             });
             card.querySelector('.sw-del').addEventListener('click', async () => {
                 await send({ action: 'swapDelete', url, id: s.id });
