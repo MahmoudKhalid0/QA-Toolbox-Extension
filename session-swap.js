@@ -129,13 +129,10 @@
             const live = await new Promise((res) => chrome.cookies.get(
                 { url: cookieUrl(c), name: c.name, storeId: c.storeId },
                 (r) => { void chrome.runtime.lastError; res(r); }));
-            // "Still logged in" means the auth cookie still EXISTS with a value -
-            // NOT that its value equals what we saved. Many servers rotate/refresh
-            // the session cookie on every request (sliding sessions), so a value
-            // match turned "CURRENT" off a moment after Update for those sites (the
-            // "have to click Update twice" bug, seen only on some users' sessions).
-            // Logout clears/empties the cookie, which this still catches.
-            if (!live || !live.value) return false;
+            // The value must MATCH what we saved. Existence alone is not enough: if
+            // you log in as a DIFFERENT user the cookie still exists (new value), and
+            // an existence-only check wrongly kept showing this snapshot as CURRENT.
+            if (!live || live.value !== c.value) return false;
         }
         return true;
     }

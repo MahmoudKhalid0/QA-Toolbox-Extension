@@ -12,21 +12,43 @@
 
     const esc = (t) => { const d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; };
 
-    // A dormant MV3 service worker drops the FIRST message it gets after going to
-    // sleep (~30s idle) - the callback returns nothing and the click looks dead,
-    // so you press again and the second works. THIS was the "click twice" bug.
-    // Poke the worker awake first (that throwaway message absorbs the drop and
-    // starts it), then send the real one to a worker that's now running - so the
-    // real action runs exactly once, on the first click.
-    const wake = () => new Promise((res) => {
-        try { chrome.runtime.sendMessage({ action: 'swapPing' }, () => { void chrome.runtime.lastError; res(); }); }
-        catch (e) { res(); }
+    // One attempt. Returns null when the worker gave us NOTHING (dormant MV3 worker
+    // that swallowed the message, mid-restart, port closed…), so the caller can tell
+    // "no answer" apart from a real reply.
+    const sendOnce = (msg) => new Promise((res) => {
+        try {
+            chrome.runtime.sendMessage(msg, (r) => {
+                const dead = chrome.runtime.lastError || r === undefined;
+                res(dead ? null : r);
+            });
+        } catch (e) { res(null); }
     });
-    const send = async (msg) => {
-        await wake();
-        return new Promise((res) => chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r || {}); }));
+
+    // The click-twice bug: an idle MV3 worker can drop the first message, so the
+    // first press did nothing and you pressed again. Waking it first was not enough.
+    // Now we simply RETRY when there was no answer. Every action we retry is
+    // idempotent - updating re-captures the same cookies, restoring re-lays the same
+    // ones, deleting the same id twice is a no-op - so a repeat can't do damage.
+    // SAVE is the one exception (it would create a duplicate) and never retries.
+    const send = async (msg, { retries = 3 } = {}) => {
+        for (let i = 0; i <= retries; i++) {
+            const r = await sendOnce(msg);
+            if (r) return r;
+            await new Promise((s) => setTimeout(s, 120));   // let the worker boot
+        }
+        return {};
     };
     const activeTab = () => new Promise((res) => chrome.tabs.query({ active: true, currentWindow: true }, (t) => res(t && t[0])));
+
+    // The tab to act on, resolved AT CLICK TIME. The old code captured the tab when
+    // the list was rendered and reused it - so if you'd since switched tab or the
+    // page had navigated, Update/Switch ran against a stale tab id and appeared to do
+    // nothing. Always ask for the live one.
+    async function currentSite() {
+        const t = await activeTab();
+        if (!t || !/^https?:/i.test(t.url || '')) return null;
+        return t;
+    }
     const hostOf = (u) => { try { return new URL(u).hostname; } catch (e) { return ''; } };
     const timeAgo = (ts) => {
         const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
@@ -91,24 +113,33 @@
                 ${rightBtn}
                 <button class="sw-x sw-upd" title="Update this saved login with the session you're logged in as now"><i class="fas fa-rotate"></i></button>
                 <button class="sw-x sw-del" title="Delete"><i class="fas fa-trash"></i></button>`;
-            card.querySelector('.sw-upd').addEventListener('click', async () => {
-                const r = await send({ action: 'swapUpdate', tab: { id: t.id, url }, id: s.id });
+            const updBtn = card.querySelector('.sw-upd');
+            updBtn.addEventListener('click', async () => {
+                if (updBtn.disabled) return;
+                updBtn.disabled = true;
+                const site = await currentSite();          // LIVE tab, not the one from render
+                if (!site) { showToastMessage('Open the website first', 'error'); updBtn.disabled = false; return; }
+                const r = await send({ action: 'swapUpdate', tab: { id: site.id, url: site.url }, id: s.id });
                 if (r && r.ok) { showToastMessage(`Updated "${s.name}"`, 'success'); render(); }
-                else showToastMessage('Could not update: ' + ((r && r.error) || 'unknown'), 'error');
+                else { showToastMessage('Could not update: ' + ((r && r.error) || 'no response'), 'error'); updBtn.disabled = false; }
             });
             const goBtn = card.querySelector('.sw-go');
             if (goBtn) goBtn.addEventListener('click', async () => {
+                if (goBtn.disabled) return;
                 goBtn.disabled = true; goBtn.textContent = 'Switching…';
-                const r = await send({ action: 'swapRestore', tab: { id: t.id, url }, id: s.id });
-                // Re-render instead of closing the panel: the tab navigates beside
-                // the panel and the list updates to show the new Current. (This runs
-                // in the side panel; closing it programmatically is a no-op here and
-                // left "Switching…" frozen on screen.)
-                if (r && r.ok) { showToastMessage(`Switched to "${s.name}"`, 'success'); render(); }
-                else { showToastMessage('Could not switch: ' + ((r && r.error) || 'unknown'), 'error'); render(); }
+                const site = await currentSite();          // LIVE tab
+                if (!site) { showToastMessage('Open the website first', 'error'); render(); return; }
+                const r = await send({ action: 'swapRestore', tab: { id: site.id, url: site.url }, id: s.id });
+                // Re-render instead of closing the panel: the tab navigates beside the
+                // panel and the list updates to show the new Current. (In the side panel
+                // closing programmatically is a no-op and froze "Switching…" on screen.)
+                if (r && r.ok) showToastMessage(`Switched to "${s.name}"`, 'success');
+                else showToastMessage('Could not switch: ' + ((r && r.error) || 'no response'), 'error');
+                render();
             });
             card.querySelector('.sw-del').addEventListener('click', async () => {
-                await send({ action: 'swapDelete', url, id: s.id });
+                const site = await currentSite();
+                await send({ action: 'swapDelete', url: site ? site.url : url, id: s.id });
                 render();
             });
             swList.appendChild(card);
@@ -116,15 +147,25 @@
     }
 
     swSaveBtn.addEventListener('click', async () => {
-        const t = await activeTab();
-        if (!t || !/^https?:/i.test(t.url || '')) { showToastMessage('Open a website first', 'error'); return; }
+        const t = await currentSite();
+        if (!t) { showToastMessage('Open a website first', 'error'); return; }
         const name = await swPrompt('');
         if (!name) return;
-        const r = await send({ action: 'swapSave', tab: { id: t.id, url: t.url }, name });
+        // No retry here: saving twice would create a duplicate snapshot.
+        const r = await send({ action: 'swapSave', tab: { id: t.id, url: t.url }, name }, { retries: 0 });
         if (r && r.ok) { showToastMessage(`Saved "${name}"`, 'success'); render(); }
-        else showToastMessage('Could not save: ' + ((r && r.error) || 'unknown'), 'error');
+        else showToastMessage('Could not save: ' + ((r && r.error) || 'no response'), 'error');
     });
 
     tabBtn.addEventListener('click', render);
     if (tabBtn.classList.contains('active')) render();
+
+    // Keep the list tied to the tab you're actually looking at. Without this the
+    // panel kept showing (and acting on) the site it was rendered for, so after
+    // switching tabs or logging in, Update/Switch ran against the wrong page.
+    const sessionsVisible = () => tabBtn.classList.contains('active');
+    if (chrome.tabs.onActivated) chrome.tabs.onActivated.addListener(() => { if (sessionsVisible()) render(); });
+    if (chrome.tabs.onUpdated) chrome.tabs.onUpdated.addListener((id, info, tab) => {
+        if (info && info.status === 'complete' && tab && tab.active && sessionsVisible()) render();
+    });
 })();
