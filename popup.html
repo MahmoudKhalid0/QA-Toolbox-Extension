@@ -1871,7 +1871,12 @@
                     <i class="fas fa-arrow-up-right-from-square tool-card-go"></i>
                 </button>
 
-                <button class="tool-card" id="responsiveToolBtn" title="Open the page in multiple device sizes">
+                <!-- SHELVED (2026-07-13): hidden from the Tools tab on purpose, NOT
+                     deleted. All the code (this card, its popup.js handler, and the
+                     whole rv* engine in content.js) stays intact. To bring it back,
+                     remove the display:none. Planned return: rebuilt on Chrome's
+                     DevTools protocol (CDP) with more features. -->
+                <button class="tool-card" id="responsiveToolBtn" title="Open the page in multiple device sizes" style="display:none;">
                     <div class="tool-card-icon" style="background: linear-gradient(135deg, #0ea5e9, #38bdf8);">
                         <i class="fas fa-mobile-screen"></i>
                     </div>

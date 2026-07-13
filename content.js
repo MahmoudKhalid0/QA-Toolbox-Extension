@@ -5022,14 +5022,14 @@ function rvHideScrollbar(doc, hide) {
         if (!st) { st = doc.createElement('style'); st.id = 'rv-sb-style'; doc.head.appendChild(st); }
         // Hidden = no bar (phone look). Shown = a THIN, rounded, translucent bar on
         // both axes - like a mobile overlay scrollbar, not the chunky desktop one.
+        // Use the STANDARD scrollbar-width/scrollbar-color on EVERY element (*),
+        // not just html. Modern Chrome/Edge (121+) ignores ::-webkit-scrollbar once
+        // scrollbar-width is present, and nested scrollers (a horizontal tab strip,
+        // etc.) need it directly - putting it only on html left those with the fat
+        // legacy bar (with arrows). `thin` gives a slim, arrow-less, mobile-like bar.
         st.textContent = hide
-            ? `::-webkit-scrollbar{width:0 !important;height:0 !important;background:transparent !important;} html{scrollbar-width:none !important;}`
-            : `::-webkit-scrollbar{width:7px !important;height:7px !important;}
-               ::-webkit-scrollbar-track{background:transparent !important;}
-               ::-webkit-scrollbar-thumb{background:rgba(120,124,140,0.55) !important;border-radius:8px !important;border:2px solid transparent !important;background-clip:content-box !important;}
-               ::-webkit-scrollbar-thumb:hover{background:rgba(120,124,140,0.85) !important;}
-               ::-webkit-scrollbar-corner{background:transparent !important;}
-               html{scrollbar-width:thin !important;scrollbar-color:rgba(120,124,140,0.6) transparent !important;}`;
+            ? `*{scrollbar-width:none !important;} *::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}`
+            : `*{scrollbar-width:thin !important;scrollbar-color:rgba(135,139,155,0.6) transparent !important;}`;
     } catch (e) { }
 }
 // A page with `scroll-behavior:smooth` makes a programmatic scrollTo animate over
@@ -5124,7 +5124,12 @@ function rvStartSyncLoop() {
                     try {
                         const gw = g.contentWindow;
                         if (gw.scrollX !== sx || gw.scrollY !== sy) gw.scrollTo({ left: sx, top: sy, behavior: 'instant' });
-                        g.__rvSX = sx; g.__rvSY = sy;   // mark as seen so it isn't treated as the mover
+                        // Record g's ACTUAL position, not the target. A shorter device
+                        // clamps to its own bottom; recording the (larger) target made
+                        // the next tick see g as "moved" and mirror it BACK to the
+                        // frame you were scrolling - yanking it upward and stopping it
+                        // short of the end. Recording the clamped value stops that.
+                        g.__rvSX = gw.scrollX; g.__rvSY = gw.scrollY;
                     } catch (e) { }
                 }
                 f.__rvSX = sx; f.__rvSY = sy;
