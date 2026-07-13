@@ -477,6 +477,7 @@ async function initEditor() {
             const dm = /@([\d.]+)x/.exec(ctx0.viewport || '');
             frameDpr = dm ? Math.max(1, parseFloat(dm[1]) || 1) : 1;
             frameApplyModeRules();
+            frameLoadFavicon();     // start fetching the site's icon right away
 
             const data = result[idToGet] || sessionStorage.getItem('currentScreenshot');
             if (!data) {
@@ -4996,6 +4997,28 @@ let framePreSrc = null;      // the image as it was BEFORE a frame was applied
 let frameLastH = 0;          // height of the framed image we produced (used to detect it)
 let frameCaptureMode = '';   // which capture mode this shot came from
 let frameDpr = 1;            // device pixel ratio the shot was taken at
+let frameFavicon = null;     // the site's REAL favicon, once it has loaded
+let frameFaviconP = null;    // ...and the promise for it
+
+// Chrome's own favicon store, served from OUR origin (chrome-extension://.../_favicon/).
+// That origin is what makes this work at all: pulling the icon straight off the
+// site's domain would taint the canvas, and toDataURL() - which every export goes
+// through - would then throw. Needs the "favicon" permission.
+function frameLoadFavicon() {
+    frameFaviconP = new Promise((resolve) => {
+        if (!framePageUrl || !/^https?:/i.test(framePageUrl)) return resolve(null);
+        try {
+            const u = new URL(chrome.runtime.getURL('/_favicon/'));
+            u.searchParams.set('pageUrl', framePageUrl);
+            u.searchParams.set('size', '64');      // grabbed big, drawn small = crisp
+            const img = new Image();
+            img.onload = () => { frameFavicon = img.naturalWidth ? img : null; resolve(frameFavicon); };
+            img.onerror = () => resolve(null);     // no icon cached - fall back to the dot
+            img.src = u.toString();
+        } catch (e) { resolve(null); }
+    });
+    return frameFaviconP;
+}
 
 // A shot is taken at the screen's pixel density: on a 2x display a 600-CSS-px area
 // comes back 1200px wide. Drawing the chrome from the IMAGE width made it half-size
@@ -5157,10 +5180,16 @@ function buildBrowserFrame(img, url, title, themeName) {
     const faviX = tabX + pad + 6 * k;
     const closeX = tabX + tabW - pad - 4 * k;
 
-    c.beginPath();
-    c.arc(faviX, tabMid, 6 * k, 0, Math.PI * 2);
-    c.fillStyle = t.dim;
-    c.fill();
+    // the site's real favicon if Chrome has one cached, otherwise the grey dot
+    if (frameFavicon && frameFavicon.naturalWidth) {
+        const fs = 14 * k;
+        c.drawImage(frameFavicon, faviX - fs / 2, tabMid - fs / 2, fs, fs);
+    } else {
+        c.beginPath();
+        c.arc(faviX, tabMid, 6 * k, 0, Math.PI * 2);
+        c.fillStyle = t.dim;
+        c.fill();
+    }
 
     const rtl = /[؀-ۿݐ-ݿ]/.test(title || '');
     const textL = faviX + 13 * k;            // text area between favicon and ×
@@ -5270,8 +5299,11 @@ function frameAutoApply() {
     } catch (e) { }
 }
 
-function applyBrowserFrame(themeName) {
+async function applyBrowserFrame(themeName) {
     if (!baseImage) return;
+    // Wait for the favicon so the very first frame already has it - otherwise the
+    // icon would only turn up if you happened to re-apply the frame later.
+    if (frameFaviconP) { try { await frameFaviconP; } catch (e) { } }
     // Already framed? Rebuild from the ORIGINAL - otherwise switching Light<->Dark
     // would wrap the already-framed picture again and the frames would stack up.
     if (frameIsOn()) {
