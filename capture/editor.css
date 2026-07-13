@@ -1433,3 +1433,80 @@ body.video-mode .logo {
 
 /* the Jira "Add New Field" section sat flush against the attachments block */
 .add-field-section.jira-only { margin-bottom: 26px; }
+
+/* ── Browser-frame theme chooser (opens under the frame button) ───────────── */
+/* #id selectors on purpose: the toolbar's own `button` rules would otherwise
+   win and re-centre these rows. */
+#framePop {
+    position: absolute;
+    z-index: 60;
+    display: none;
+    min-width: 168px;
+    padding: 8px;
+    border-radius: 12px;
+    background: #171a24;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+    text-align: left;
+}
+#framePop.show { display: block; }
+#framePop .frame-pop-t {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .6px;
+    text-transform: uppercase;
+    color: #64748b;
+    padding: 2px 8px 8px;
+    text-align: left;
+}
+#framePop button {
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-start !important;
+    gap: 10px;
+    width: 100% !important;
+    min-width: 0 !important;
+    height: auto !important;
+    margin: 0 0 2px !important;
+    background: transparent;
+    border: 1px solid transparent;
+    color: #e2e8f0;
+    border-radius: 8px;
+    padding: 8px 9px !important;
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+}
+#framePop button:hover { background: rgba(255, 255, 255, 0.09); }
+/* the theme currently applied */
+#framePop button.active {
+    background: rgba(124, 92, 246, 0.20);
+    border-color: rgba(124, 92, 246, 0.55);
+    color: #fff;
+    font-weight: 600;
+}
+#framePop button .fp-sw {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+}
+#framePop .fp-light { background: #dee1e6; }
+#framePop .fp-dark { background: #202124; }
+/* a tick on the applied theme, and it doubles as the "click again to remove" hint */
+#framePop button .fp-tick {
+    margin-left: auto;
+    font-size: 11px;
+    color: #a78bfa;
+    display: none;
+}
+#framePop button.active .fp-tick { display: inline; }
+
+/* The browser-frame button is disabled on whole-screen shots (the real browser
+   window is already in the picture). */
+#frameBtn:disabled {
+    opacity: .35;
+    cursor: not-allowed;
+    pointer-events: auto;   /* keep the tooltip explaining why */
+}

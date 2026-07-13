@@ -323,7 +323,8 @@ async function captureScreenshot() {
         chrome.runtime.sendMessage({
             type: 'screenshot-captured',
             target: 'background',
-            imageDataUrl: imageDataUrl
+            mode: 'screen',              // a shot of the SCREEN - the real browser
+            imageDataUrl: imageDataUrl   // chrome is already in the picture
         }).catch(() => { });
 
     } catch (err) {
@@ -476,6 +477,7 @@ async function stitchFullPage(data) {
         chrome.runtime.sendMessage({
             type: 'screenshot-captured',
             target: 'background',
+            mode: 'fullpage',            // stitched page - NOT a shot of the screen
             imageDataUrl: fullImageDataUrl
         }).catch(() => { });
 

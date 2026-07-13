@@ -463,11 +463,17 @@ async function initEditor() {
     } else if (captureId || sessionStorage.getItem('currentScreenshot')) {
         setMode('image');
         const idToGet = captureId || 'currentScreenshot';
-        chrome.storage.local.get([idToGet, 'cropArea', `cloudUrl_${idToGet}`], (result) => {
+        chrome.storage.local.get([idToGet, 'cropArea', `cloudUrl_${idToGet}`, `ctx_${idToGet}`], (result) => {
             if (result[`cloudUrl_${idToGet}`]) {
                 shareUrl = result[`cloudUrl_${idToGet}`];
                 updateShareButton();
             }
+            // The page this was captured from - drawn into the browser frame.
+            const ctx0 = result[`ctx_${idToGet}`] || {};
+            framePageUrl = ctx0.url || '';
+            framePageTitle = ctx0.title || '';
+            frameCaptureMode = ctx0.mode || 'visible';
+            frameApplyModeRules();
 
             const data = result[idToGet] || sessionStorage.getItem('currentScreenshot');
             if (!data) {
@@ -503,6 +509,7 @@ async function initEditor() {
                         updateUndoRedoButtons();
                         reveal();
                         toggleLoader(false);
+                        frameAutoApply();       // the frame the user last chose
                     };
                     croppedImg.src = tempCanvas.toDataURL();
                 } else {
@@ -514,6 +521,7 @@ async function initEditor() {
                     updateUndoRedoButtons();
                     reveal();
                     toggleLoader(false);
+                    frameAutoApply();           // the frame the user last chose
                 }
                 // Sync session storage for fallback
                 if (data) sessionStorage.setItem('currentScreenshot', data);
@@ -1226,13 +1234,17 @@ colorPicker.addEventListener('input', applyColour);
 colorPicker.addEventListener('change', () => { if (applyColour()) saveHistory(); });
 
 // Quick presets: same effect as picking the shade from the native picker.
-colorPalette.addEventListener('click', (e) => {
-    const swatch = e.target.closest('.swatch');
-    if (!swatch) return;
-    colorPicker.value = swatch.dataset.color;
-    colorPicker.dispatchEvent(new Event('input'));
-    colorPicker.dispatchEvent(new Event('change'));
-});
+// The preset swatches were removed from the toolbar (they made it too long); the
+// colour picker covers every colour. Guarded so this doesn't throw if they're gone.
+if (colorPalette) {
+    colorPalette.addEventListener('click', (e) => {
+        const swatch = e.target.closest('.swatch');
+        if (!swatch) return;
+        colorPicker.value = swatch.dataset.color;
+        colorPicker.dispatchEvent(new Event('input'));
+        colorPicker.dispatchEvent(new Event('change'));
+    });
+}
 
 // Fill only makes sense for rect/circle, but the toggle itself is just state -
 // new shapes read it at creation time, same as color/width.
@@ -4969,4 +4981,322 @@ ${bullets(r.actualResult)}`.trim();
             submit.innerHTML = label;
         }
     }, true);
+})();
+
+// ── Browser frame ───────────────────────────────────────────────────────────
+// Wrap the shot in a mock Chrome window showing the URL it came from, so a
+// screenshot in a bug report reads as "this page", not a floating rectangle.
+// Baked into baseImage like a crop, so it lands in every export and Undo removes it.
+let framePageUrl = '';
+let framePageTitle = '';
+let framePreSrc = null;      // the image as it was BEFORE a frame was applied
+let frameLastH = 0;          // height of the framed image we produced (used to detect it)
+let frameCaptureMode = '';   // which capture mode this shot came from
+
+// An "entire screen" shot already CONTAINS the real browser window - putting a
+// fake one around it would be a frame inside a frame. So the button is turned off
+// for that mode (and the remembered frame is not auto-applied either).
+function frameIsPointless() { return frameCaptureMode === 'screen'; }
+
+function frameApplyModeRules() {
+    const btn = document.getElementById('frameBtn');
+    if (!btn) return;
+    if (frameIsPointless()) {
+        btn.disabled = true;
+        btn.title = 'Not needed here - this shot is of the whole screen, so the real browser window is already in the picture';
+    }
+}
+
+const FRAME_THEMES = {
+    // Light: Chrome's light window under a dark title strip - the look that reads
+    // best in a report. Dark: Chrome's dark theme throughout.
+    light: {
+        strip: '#2d2d2d', tab: '#ffffff', bar: '#ffffff', pill: '#f1f3f4',
+        pillEdge: '#e4e6e9', text: '#202124', dim: '#5f6368', icon: '#5f6368',
+        tabText: '#202124', newTab: '#c8c8c8',
+    },
+    dark: {
+        strip: '#1c1d1f', tab: '#35363a', bar: '#35363a', pill: '#202124',
+        pillEdge: '#4a4d51', text: '#e8eaed', dim: '#9aa0a6', icon: '#9aa0a6',
+        tabText: '#e8eaed', newTab: '#9aa0a6',
+    },
+};
+
+// The REAL icons, as Material Design path data (24x24) - the same set Chrome's own
+// toolbar uses. Hand-drawing arcs and triangles gave a mangled reload icon; these
+// are the actual shapes.
+const FRAME_ICONS = {
+    back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z',
+    forward: 'M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z',
+    reload: 'M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-8 8s3.57 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
+    lock: 'M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM15.1 8H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z',
+    star: 'M22 9.24l-7.19-.62L12 2 9.19 8.62 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z',
+    account: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z',
+    kebab: 'M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z',
+    close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+    plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+};
+
+// Stamp one of those icons, centred at (cx, cy), `size` px across.
+function frameIcon(c, name, cx, cy, size, color) {
+    const d = FRAME_ICONS[name];
+    if (!d) return;
+    c.save();
+    c.translate(cx - size / 2, cy - size / 2);
+    c.scale(size / 24, size / 24);
+    c.fillStyle = color;
+    c.fill(new Path2D(d));
+    c.restore();
+}
+
+function frameRoundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+}
+
+// Chrome's tab silhouette: rounded on top, with the bottom corners flaring OUTWARD
+// into the strip. A plain rounded rectangle is what made the first version look wrong.
+function frameTabPath(c, x, y, w, h, k) {
+    const s = 11 * k;                // shoulder width
+    const r = 11 * k;                // top corner radius - bigger reads smoother
+    c.beginPath();
+    c.moveTo(x, y + h);
+    // concave shoulder sweeping up out of the strip
+    c.bezierCurveTo(x + s * 0.62, y + h, x + s, y + h - s * 0.45, x + s, y + h - s);
+    c.lineTo(x + s, y + r);
+    // top corners as true arcs (arcTo), not quadratics - they stay circular so the
+    // curve doesn't flatten and look faceted the way the first version did
+    c.arcTo(x + s, y, x + s + r, y, r);
+    c.lineTo(x + w - s - r, y);
+    c.arcTo(x + w - s, y, x + w - s, y + r, r);
+    c.lineTo(x + w - s, y + h - s);
+    c.bezierCurveTo(x + w - s, y + h - s * 0.45, x + w - s * 0.62, y + h, x + w, y + h);
+    c.closePath();
+}
+
+function buildBrowserFrame(img, url, title, themeName) {
+    const t = FRAME_THEMES[themeName] || FRAME_THEMES.light;
+    const W = img.width;
+    const k = Math.min(1.9, Math.max(0.62, W / 1280));
+
+    const stripH = Math.round(35 * k);   // slimmer strip -> a shorter tab
+    const barH = Math.round(44 * k);
+    const chromeH = stripH + barH;
+    const radius = Math.round(11 * k);
+
+    const cv = document.createElement('canvas');
+    cv.width = W;
+    cv.height = chromeH + img.height;
+    const c = cv.getContext('2d');
+    c.textBaseline = 'middle';
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+
+    frameRoundRect(c, 0, 0, W, cv.height, radius);
+    c.save();
+    c.clip();
+
+    // ── tab strip ──
+    c.fillStyle = t.strip;
+    c.fillRect(0, 0, W, stripH);
+
+    ['#ff5f57', '#febc2e', '#28c840'].forEach((col, i) => {
+        c.beginPath();
+        c.arc(17 * k + i * 19 * k, stripH / 2, 6 * k, 0, Math.PI * 2);
+        c.fillStyle = col;
+        c.fill();
+    });
+
+    // active tab - its bottom sits on the toolbar so the two merge, like Chrome
+    const tabX = 78 * k;
+    const tabW = Math.min(280 * k, Math.max(170 * k, W * 0.30));
+    const tabY = 5 * k;
+    const tabH = stripH - tabY;          // ~30k tall, not the chunky 34k of before
+    frameTabPath(c, tabX, tabY, tabW, tabH + 2, k);
+    c.fillStyle = t.tab;
+    c.fill();
+
+    const tabMid = tabY + tabH / 2;
+    // The favicon and the close button STAY PUT (favicon left, close right) - only
+    // the TITLE flips its alignment: an Arabic title hugs the right of the text
+    // area, a Latin one hugs the left.
+    const pad = 9 * k + 11 * k;              // shoulder + inner padding
+    const faviX = tabX + pad + 6 * k;
+    const closeX = tabX + tabW - pad - 4 * k;
+
+    c.beginPath();
+    c.arc(faviX, tabMid, 6 * k, 0, Math.PI * 2);
+    c.fillStyle = t.dim;
+    c.fill();
+
+    const rtl = /[؀-ۿݐ-ݿ]/.test(title || '');
+    const textL = faviX + 13 * k;            // text area between favicon and ×
+    const textR = closeX - 10 * k;
+    const titleMax = Math.max(20 * k, textR - textL);
+
+    c.fillStyle = t.tabText;
+    c.font = Math.round(12 * k) + 'px -apple-system, "Segoe UI", Arial, sans-serif';
+    let tt = title || 'Page';
+    if (c.measureText(tt).width > titleMax) {
+        while (c.measureText(tt + '…').width > titleMax && tt.length > 1) tt = tt.slice(0, -1);
+        tt += '…';
+    }
+    c.textAlign = rtl ? 'right' : 'left';
+    c.direction = rtl ? 'rtl' : 'ltr';
+    c.fillText(tt, rtl ? textR : textL, tabMid + 0.5);
+    c.textAlign = 'left';
+    c.direction = 'ltr';
+
+    frameIcon(c, 'close', closeX, tabMid, 13 * k, t.dim);
+    frameIcon(c, 'plus', tabX + tabW + 14 * k, tabMid, 14 * k, t.newTab);
+
+    // ── toolbar ──
+    c.fillStyle = t.bar;
+    c.fillRect(0, stripH, W, barH);
+    const midY = stripH + barH / 2;
+
+    frameIcon(c, 'back', 22 * k, midY, 18 * k, t.icon);
+    frameIcon(c, 'forward', 50 * k, midY, 18 * k, t.icon);
+    frameIcon(c, 'reload', 78 * k, midY, 18 * k, t.icon);
+
+    // ── URL pill ──
+    const pillX = 100 * k;
+    const rightPad = 96 * k;
+    const pillW = Math.max(120 * k, W - pillX - rightPad);
+    const pillH = Math.round(28 * k);
+    const pillY = midY - pillH / 2;
+    frameRoundRect(c, pillX, pillY, pillW, pillH, pillH / 2);
+    c.fillStyle = t.pill;
+    c.fill();
+    c.strokeStyle = t.pillEdge;
+    c.lineWidth = Math.max(1, 1 * k);
+    c.stroke();
+
+    const lx = pillX + 16 * k;
+    frameIcon(c, 'lock', lx, midY, 13 * k, t.dim);
+
+    c.fillStyle = t.text;
+    c.font = Math.round(12.5 * k) + 'px -apple-system, "Segoe UI", Arial, sans-serif';
+    let u = url || '';
+    const maxU = pillW - 44 * k;
+    if (c.measureText(u).width > maxU) {
+        while (c.measureText(u + '…').width > maxU && u.length > 1) u = u.slice(0, -1);
+        u += '…';
+    }
+    c.fillText(u, lx + 13 * k, midY + 0.5);
+
+    // ── right-hand icons: star, avatar, kebab ──
+    frameIcon(c, 'star', W - 74 * k, midY, 17 * k, t.icon);
+    frameIcon(c, 'account', W - 46 * k, midY, 18 * k, t.icon);
+    frameIcon(c, 'kebab', W - 20 * k, midY, 18 * k, t.icon);
+
+    // ── the screenshot ──
+    c.drawImage(img, 0, chromeH);
+    c.restore();
+
+    return cv;
+}
+
+let frameTheme = null;    // which theme is applied right now, if any
+
+// Is the picture on the canvas the framed one we made? (Undo can take it off
+// behind our back, so we check rather than trust a flag.)
+function frameIsOn() {
+    return !!(framePreSrc && baseImage && baseImage.height === frameLastH && frameTheme);
+}
+
+function frameCommit(src, theme) {
+    const img = new Image();
+    img.onload = () => {
+        baseImage = img;
+        canvas.width = img.width;
+        canvas.height = img.height;
+        frameLastH = theme ? img.height : 0;
+        frameTheme = theme;
+        cropArea = null;
+        render();
+        saveHistory(false);
+        updateUndoRedoButtons();
+        // Remember the choice: the next capture opens with the same frame already
+        // on (or with none, if it was taken off).
+        try { chrome.storage.local.set({ qaFrameTheme: theme || null }); } catch (e) { }
+    };
+    img.src = src;
+}
+
+// On a fresh capture, put the user's last chosen frame straight on. Runs after the
+// shot's own first history entry, so Undo still peels the frame off.
+function frameAutoApply() {
+    if (frameIsPointless()) return;      // a screen shot already has the real chrome
+    try {
+        chrome.storage.local.get(['qaFrameTheme'], (r) => {
+            const th = r && r.qaFrameTheme;
+            if (th === 'light' || th === 'dark') applyBrowserFrame(th);
+        });
+    } catch (e) { }
+}
+
+function applyBrowserFrame(themeName) {
+    if (!baseImage) return;
+    // Already framed? Rebuild from the ORIGINAL - otherwise switching Light<->Dark
+    // would wrap the already-framed picture again and the frames would stack up.
+    if (frameIsOn()) {
+        const orig = new Image();
+        orig.onload = () => frameCommit(buildBrowserFrame(orig, framePageUrl, framePageTitle, themeName).toDataURL(), themeName);
+        orig.src = framePreSrc;
+    } else {
+        framePreSrc = baseImage.src;
+        frameCommit(buildBrowserFrame(baseImage, framePageUrl, framePageTitle, themeName).toDataURL(), themeName);
+    }
+}
+
+// Take the frame back off - the picture returns to how it was before it was added.
+function removeBrowserFrame() {
+    if (!framePreSrc) return;
+    frameCommit(framePreSrc, null);
+}
+
+(function setupBrowserFrame() {
+    const btn = document.getElementById('frameBtn');
+    const pop = document.getElementById('framePop');
+    if (!btn || !pop) return;
+
+    const markActive = () => {
+        const on = frameIsOn();
+        pop.querySelectorAll('button[data-theme]').forEach((b) => {
+            b.classList.toggle('active', on && b.dataset.theme === frameTheme);
+        });
+    };
+
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (frameIsPointless()) return;       // disabled for whole-screen shots
+        const open = pop.classList.toggle('show');
+        if (open) {
+            markActive();
+            const r = btn.getBoundingClientRect();
+            pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 186)) + 'px';
+            pop.style.top = (r.bottom + 8) + 'px';
+        }
+    });
+
+    pop.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-theme]');
+        if (!b) return;
+        const theme = b.dataset.theme;
+        // Clicking the theme that's already on takes the frame OFF - so the frame is
+        // never something you're stuck with.
+        if (frameIsOn() && frameTheme === theme) removeBrowserFrame();
+        else applyBrowserFrame(theme);
+        pop.classList.remove('show');
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!pop.contains(e.target) && e.target !== btn) pop.classList.remove('show');
+    });
 })();

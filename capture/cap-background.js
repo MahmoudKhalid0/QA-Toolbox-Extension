@@ -139,11 +139,16 @@ function capOpenEditor(tab, dataUrl, extra) {
     if (!dataUrl) return;
     const captureId = Date.now().toString();
     const ctx = capCollectContext(tab);
+    // Which mode this shot was taken in, kept ON the capture. The editor needs it:
+    // an "entire screen" shot already HAS the real browser chrome in it, so the
+    // fake browser frame must not be offered there.
+    const { mode, ...rest } = extra || {};
+    ctx.mode = mode || 'visible';
     const payload = Object.assign({
         [captureId]: dataUrl,
         isVideo: false,
         [`ctx_${captureId}`]: ctx
-    }, extra || {});
+    }, rest);
 
     chrome.storage.local.set(payload, () => {
         chrome.tabs.create(capEditorTabProps(tab,
@@ -420,7 +425,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Handle screenshot from offscreen document or capture page
   if (request.type === 'screenshot-captured' && request.target === 'background') {
-    handleScreenshotCaptured(request.imageDataUrl);
+    handleScreenshotCaptured(request.imageDataUrl, request.mode);
     return true;
   }
 
@@ -464,7 +469,7 @@ function handleAreaCapture(selection) {
     if (!tabs[0]) return;
     // the editor does the cropping - a service worker has no canvas
     capSafeCaptureVisible(tabs[0], (dataUrl) => {
-      capOpenEditor(tabs[0], dataUrl, { cropArea: selection });
+      capOpenEditor(tabs[0], dataUrl, { cropArea: selection, mode: 'area' });
     });
   });
 }
@@ -474,7 +479,7 @@ function captureScreenshot(sendResponse) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs[0]) return;
     capSafeCaptureVisible(tabs[0], (dataUrl) => {
-      capOpenEditor(tabs[0], dataUrl);
+      capOpenEditor(tabs[0], dataUrl, { mode: 'visible' });
       if (typeof sendResponse === 'function') sendResponse({ success: !!dataUrl });
     });
   });
@@ -733,11 +738,11 @@ async function setupOffscreenDocument() {
   await new Promise(resolve => setTimeout(resolve, 500));
 }
 
-async function handleScreenshotCaptured(imageDataUrl) {
+async function handleScreenshotCaptured(imageDataUrl, mode) {
   if (!imageDataUrl) return;
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tab = tabs[0] || { id: -1, title: 'screenshot' };
-    capOpenEditor(tab, imageDataUrl);
+    capOpenEditor(tab, imageDataUrl, { mode: mode || 'screen' });
     chrome.storage.local.remove(['tempTabTitle']);
   });
 }
