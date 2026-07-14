@@ -66,7 +66,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Keep channel open for async response
     }
     if (request.action === 'scanFormFields') {
-        (async () => { sendResponse(await scanPageFormFields(request.captureCombo !== false)); })();
+        (async () => { sendResponse(await scanPageFormFields(request.captureCombo !== false, request.known)); })();
         return true;
     }
     if (request.action === 'showAiSavePrompt') {
@@ -605,38 +605,336 @@ function captureField(element) {
 // Includes text-like inputs, selects, textareas, checkboxes, and radio groups.
 // Open a custom dropdown, read its options, then close it - so the AI gets the
 // real choices for comboboxes whose listbox isn't in the DOM until opened.
-async function captureComboboxOptions(el) {
+
+// ── Custom dropdowns, across frameworks ───────────────────────────────────────
+// A dropdown is very often NOT a <select>, and often not even an <input>:
+//   Angular Material   <mat-select role="combobox" aria-haspopup="listbox">
+//   MUI / Vuetify      <div role="combobox" aria-haspopup="listbox">
+//   Element Plus       <div class="el-select__wrapper" role="combobox">
+//   Ant / react-select <input role="combobox"> inside a styled wrapper
+//   PrimeNG / Select2  <div|span role="combobox">
+//   Headless UI        <button aria-haspopup="listbox">
+//   Bootstrap / Clay   <button class="dropdown-toggle" aria-haspopup="true">
+//   hand-rolled        <app-select formcontrolname="x"> - NO aria role anywhere, just a
+//                      chevron <button aria-expanded> and (sometimes) a plain <input>
+//                      inside that is really the component's SEARCH box
+// …and the option list is rendered into an overlay at the END of <body>, or straight
+// into the component, and only exists while the control is open. So the rule is always:
+// open it, read it, close it - never assume the options are sitting in the DOM.
+
+// Always a form control.
+const DD_STRONG = '[role="combobox"], [aria-haspopup="listbox"]';
+// Only a form control when it sits inside a form FIELD. On its own a menu button is
+// site chrome - a navbar or a kebab menu - and must never be "filled".
+const DD_WEAK = '[aria-haspopup="true"], [aria-haspopup="menu"], button.dropdown-toggle, a.dropdown-toggle';
+const DD_FIELD_WRAP = 'fieldset, .form-group, .form-field, .form-item, mat-form-field, .field, .input-group';
+
+function isCustomDropdown(el) {
+    if (!el || el.tagName === 'SELECT') return false;
     try {
-        el.focus();
-        el.click();
-        await new Promise(r => setTimeout(r, 220));
-        const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
-        let listbox = listId ? document.getElementById(listId) : null;
-        if (!listbox || !isElementVisible(listbox)) {
-            listbox = Array.from(document.querySelectorAll('[role="listbox"]')).find(lb => isElementVisible(lb)) || null;
+        if (el.matches(DD_STRONG)) return true;
+        // A hand-rolled component with no ARIA at all. The one thing that gives it away
+        // is that it IS a form control (Angular's formControlName) and it owns a toggle.
+        // Getting this wrong is expensive: its inner <input> then looks like a text field,
+        // the AI types a value into it, the component reads that as a SEARCH QUERY, opens
+        // an empty list ("لا يوجد بيانات") and the real value is never set.
+        if (el.hasAttribute('formcontrolname') && el.querySelector('[aria-expanded]')) return true;
+        return el.matches(DD_WEAK) && !!el.closest(DD_FIELD_WRAP);
+    } catch (e) { return false; }
+}
+
+// Whatever is on screen right now that behaves like an option. An open dropdown owns
+// the only visible options on the page, so this needs no per-library knowledge.
+//
+// `fresh` is the set of elements that were NOT visible before we clicked. A hand-rolled
+// component names nothing - no role, no known class - so the only thing that identifies
+// its option list is that it just APPEARED. That works for any component ever written.
+function ddReadOptions(el) {
+    for (const root of ddPanels(el)) {
+        const opts = ddOptionsIn(root);
+        if (opts.length) return opts;
+    }
+
+    const panel = ddFreshPanel(el);
+    if (panel) {
+        const opts = ddOptionsIn(panel);
+        if (opts.length) return opts;
+    }
+
+    // Last resort: some libraries (Ant Design's virtual list) render the options with
+    // no visible listbox wrapper around them at all.
+    return Array.from(document.querySelectorAll('[role="option"], [role="menuitem"]')).filter(ddUsableOption);
+}
+
+function ddOptionsIn(panel) {
+    let opts = Array.from(panel.querySelectorAll('[role="option"], [role="menuitem"], li, .dropdown-item, [class*="option"], [class*="item"]'));
+    if (!opts.length) {
+        // Nothing to go on: the panel's own rows ARE the options. Walk down through any
+        // single-child wrappers until we reach the row list.
+        let rows = Array.from(panel.children);
+        while (rows.length === 1 && rows[0].children.length > 1) rows = Array.from(rows[0].children);
+        opts = rows;
+    }
+    // Keep only the innermost rows - a row wrapped around other rows is a container.
+    const usable = opts.filter(ddUsableOption);
+    return usable.filter((o) => !usable.some((m) => m !== o && o.contains(m)));
+}
+
+// The list is closed, we click, something appears. THAT is the panel - whatever the
+// component calls it. We only ever open one dropdown at a time, so a single snapshot,
+// taken just before the click, is all the state this needs.
+let ddBefore = null;
+let ddBeforeEl = null;
+
+// Take in the WHOLE document, not just the control and the top of <body>. A component is
+// free to render its list into any container it likes - one of them renders into a
+// wrapper of its own, halfway down the page - and if we don't see the panel we can
+// neither read it nor close it, so it sat open on screen for the whole run.
+// Recording identity only (no layout reads) keeps this cheap.
+function ddSnapshot(el) {
+    ddBeforeEl = el;
+    try { ddBefore = new Set(document.querySelectorAll('*')); }
+    catch (e) { ddBefore = null; }
+}
+
+function ddFreshPanel(el) {
+    if (!el || !ddBefore || ddBeforeEl !== el) return null;
+    const fresh = [];
+    try {
+        for (const n of document.querySelectorAll('*')) {
+            if (!ddBefore.has(n) && isElementVisible(n)) fresh.push(n);
         }
-        let opts = [];
-        if (listbox) {
-            let nodes = Array.from(listbox.querySelectorAll('[role="option"]'));
-            if (nodes.length === 0) nodes = Array.from(listbox.querySelectorAll('li'));
-            opts = nodes.map(o => (o.innerText || '').trim()).filter(Boolean).slice(0, 30);
-        }
-        // Close the dropdown again so it doesn't interfere with the rest of the scan
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        el.blur();
-        await new Promise(r => setTimeout(r, 40));
+    } catch (e) { return null; }
+    if (!fresh.length) return null;
+    return fresh.find((n) => !fresh.some((m) => m !== n && m.contains(n))) || fresh[0];
+}
+
+// An empty list still renders a row - "لا يوجد بيانات", "No data". Libraries mark it
+// disabled; hand-rolled ones mark it nothing at all, so the text is the only tell.
+// Choosing it would put nonsense in the field.
+const DD_EMPTY_ROW = /^\s*(لا\s*(يوجد|توجد)|لا\s*بيانات|غير\s*متاح|no\s+(data|results?|options?|items?|matches)|not\s+found|nothing|empty)/i;
+
+function ddUsableOption(o) {
+    if (!isElementVisible(o) || !(o.innerText || '').trim()) return false;
+    if (o.getAttribute('aria-disabled') === 'true' || o.hasAttribute('disabled')) return false;
+    const cls = String(o.className && o.className.baseVal !== undefined ? o.className.baseVal : (o.className || ''));
+    if (/disabled|no-?data|empty|placeholder/i.test(cls)) return false;
+    return !DD_EMPTY_ROW.test((o.innerText || '').trim());
+}
+
+// Every panel a dropdown library renders, whatever it calls it.
+const DD_PANEL_SEL = [
+    '[role="listbox"]', '[role="menu"]', '.dropdown-menu', '.cdk-overlay-pane',
+    '.ng-dropdown-panel', '.p-dropdown-panel', '.p-multiselect-panel', '.p-autocomplete-panel',
+    '.mat-select-panel', '.mat-mdc-select-panel', '.ant-select-dropdown', '.el-select-dropdown',
+    '.select2-dropdown', '.chosen-drop', '.choices__list--dropdown',
+].join(', ');
+
+function ddPanels(el) {
+    const out = [];
+    const id = el && (el.getAttribute('aria-controls') || el.getAttribute('aria-owns'));
+    const owned = id ? document.getElementById(id) : null;
+    if (owned && isElementVisible(owned)) out.push(owned);
+    for (const p of document.querySelectorAll(DD_PANEL_SEL)) {
+        if (isElementVisible(p) && !out.includes(p)) out.push(p);
+    }
+    return out;
+}
+
+// "Is it open?" must NOT be answered by counting options. A list that opened EMPTY has
+// zero options - so the old check called it closed, never closed it, and left the panel
+// hanging under the field. It also covered the NEXT dropdown, so the click meant for
+// that one landed on the stale panel and it was never filled.
+// `fresh` (what appeared after the click) lets this see a hand-rolled panel that carries
+// no class or role we could ever have guessed.
+function ddIsOpen(el) {
+    if (el) {
+        // The flag usually sits on the chevron BUTTON inside the component, not on the host.
+        if (el.getAttribute('aria-expanded') === 'true') return true;
+        try { if (el.querySelector('[aria-expanded="true"]')) return true; } catch (e) { }
+    }
+    if (ddPanels(el).length > 0) return true;
+    if (ddFreshPanel(el)) return true;
+    // Last: options you can SEE. A component that never updates aria-expanded and renders
+    // its list into some container of its own defeats every structural check above - and
+    // then nothing closes it, so the last dropdown of the scan sat open on screen for the
+    // whole run. If options are on the page, a list is open, whatever the markup claims.
+    return ddReadOptions(el).length > 0;
+}
+
+// Escape sent to the control is NOT enough for a CDK/Material overlay - measured: the
+// list stayed open, and every field after it then read the WRONG list. Those overlays
+// listen for a backdrop click; everyone else listens for a click outside.
+async function ddClose(el) {
+    const esc = () => new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true });
+    for (let i = 0; i < 5; i++) {
+        if (!ddIsOpen(el)) return true;
+
+        // Prefer the component's OWN toggle and Escape. A click on the page body reads as
+        // "the user clicked away", which is what makes a control mark itself touched -
+        // exactly the thing we are trying not to do. Keep it as the last resort.
+        const backdrop = document.querySelector('.cdk-overlay-backdrop, .p-component-overlay, .modal-backdrop');
+        if (backdrop) backdrop.click();
+        const toggle = el && el.querySelector('[aria-expanded="true"]');
+        if (toggle) ddMouse(toggle);
+        (document.activeElement || document.body).dispatchEvent(esc());
+        if (el) el.dispatchEvent(esc());
+        document.dispatchEvent(esc());
+        await new Promise((r) => setTimeout(r, 120));
+
+        if (!ddIsOpen(el)) return true;
+        ddMouse(document.body);
+        await new Promise((r) => setTimeout(r, 120));
+    }
+    return !ddIsOpen(el);
+}
+
+// The full press a real user makes. Libraries bind to any one of these, so send them all.
+function ddMouse(target) {
+    for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+        const Ev = t === 'pointerdown' ? PointerEvent : MouseEvent;
+        target.dispatchEvent(new Ev(t, { bubbles: true, cancelable: true, view: window }));
+    }
+}
+
+// Did the control actually open, even if the list came back empty? That difference is
+// what stops us hammering a dropdown whose data never loaded.
+const ddDidOpen = (el) => ddIsOpen(el);
+
+async function ddAwaitOptions(el, ms) {
+    const deadline = Date.now() + ms;
+    for (;;) {
+        const opts = ddReadOptions(el);
+        if (opts.length) return opts;
+        if (Date.now() >= deadline) return [];
+        await new Promise((r) => setTimeout(r, 40));
+    }
+}
+
+// Open it and return its options. A click on the HOST bubbles UP - it never reaches an
+// inner trigger element, which is where most libraries bind the handler - so click the
+// deepest node at the control's centre, where a user's cursor would actually land.
+//
+// Give up FAST. A dropdown whose data never arrived (a dead lookup API) simply refuses
+// to open, and waiting a second and a half on each one - once while scanning and again
+// while filling - added half a minute to a seven-dropdown form for nothing.
+async function ddOpen(el) {
+    ddBefore = null;
+    await ddClose(el);                          // a list left open by the previous field
+
+    // Click the chevron if there is one: on a searchable component the wide part of the
+    // control is a SEARCH BOX, and clicking that can start a text entry instead of just
+    // opening the list. The toggle only ever opens - and dispatching straight to it needs
+    // no scrolling, so the page never jumps from field to field while we work.
+    let target = null;
+    try {
+        const toggle = el.querySelector('[aria-expanded]');
+        if (toggle && isElementVisible(toggle)) target = toggle;
+    } catch (e) { }
+
+    if (!target) {
+        // No toggle to aim at: we have to find the deepest node under the control's
+        // centre, and that only works if the control is actually on screen.
+        try { el.scrollIntoView({ block: 'center' }); } catch (e) { }
+        await new Promise((r) => setTimeout(r, 40));
+        target = el;
+        try {
+            const r = el.getBoundingClientRect();
+            const deep = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+            if (deep && (deep === el || el.contains(deep))) target = deep;
+        } catch (e) { }
+    }
+
+    // Deliberately NOT el.focus(). Focusing a dropdown and then moving to the next one
+    // BLURS it, and a blur is exactly what makes a framework mark the control "touched"
+    // - which made an untouched, empty, required dropdown paint "هذا الحقل مطلوب" the
+    // moment AI Fill was pressed. A synthetic click does not move focus, so as long as
+    // we never focus one, we never blur one, and the form stays as the user left it.
+    ddSnapshot(el);                             // so we can see what the click produces
+    ddMouse(target);
+
+    const opts = await ddAwaitOptions(el, 500);
+    if (opts.length) return opts;
+    if (ddDidOpen(el)) return [];               // it DID open - the list is simply empty
+
+    // Some widgets only open from the keyboard. One attempt, then stop.
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40, bubbles: true }));
+    return await ddAwaitOptions(el, 300);
+}
+
+async function ddPick(option) {
+    try { option.scrollIntoView({ block: 'nearest' }); } catch (e) { }
+    ddMouse(option);
+    await new Promise((r) => setTimeout(r, 200));
+}
+
+
+// A real dropdown can hold hundreds of options (a department list, a country list). The
+// AI needs to see CHOICES, not an inventory - sending 500 of them just makes the prompt
+// huge and the answer slow. Take a short window, from a random place in the list each
+// run, so the choice still varies from fill to fill instead of always being the first ten.
+const DD_MAX_OPTIONS = 10;
+
+function ddSampleOptions(texts) {
+    if (texts.length <= DD_MAX_OPTIONS) return texts;
+    const start = Math.floor(Math.random() * (texts.length - DD_MAX_OPTIONS + 1));
+    return texts.slice(start, start + DD_MAX_OPTIONS);
+}
+
+// Read a custom dropdown's options: open it, note them, close it again. The AI decides
+// which one to use; the fill then opens it again and picks that option.
+async function captureComboboxOptions(el) {
+    const read = async () => {
+        const opts = (await ddOpen(el)).map((o) => (o.innerText || '').trim()).filter(Boolean);
+        await ddClose(el);
         return opts;
+    };
+    try {
+        let opts = await read();
+        if (!opts.length) {
+            // Empty on the first look is not proof it is empty. A list that depends on
+            // another field reloads from the server the moment that field changes, and a
+            // list on a field that only just appeared may still be on the wire. Writing it
+            // off here is why a conditional dropdown was left unselected. Look again.
+            await new Promise((r) => setTimeout(r, 800));
+            opts = await read();
+        }
+        return ddSampleOptions(opts);
     } catch (e) {
+        try { await ddClose(el); } catch (e2) { }
         return [];
     }
 }
 
-async function scanPageFormFields(captureCombo = true) {
+async function scanPageFormFields(captureCombo = true, known = []) {
     const skipTypes = ['hidden', 'submit', 'button', 'reset', 'image', 'file'];
     const fields = [];
     const seenSelectors = new Set();
     const seenRadioGroups = new Set();
     const MAX_FIELDS = 60;
+
+    // Dropdowns already handled by an earlier pass must not be opened again.
+    const knownSelectors = new Set(known || []);
+
+    // Most frameworks do NOT use label[for]. Angular Material, Bootstrap and Clay
+    // put the <label> next to the control inside a wrapper, so without this the AI
+    // was being handed a form whose fields had no names at all.
+    const labelFromWrapper = (el) => {
+        try {
+            let node = el.parentElement;
+            for (let i = 0; i < 5 && node && node !== document.body; i++, node = node.parentElement) {
+                // Once a wrapper holds more than one control its label is ambiguous -
+                // climbing further would steal the neighbouring field's label.
+                if (node.querySelectorAll('input, select, textarea, [role="combobox"], [aria-haspopup="listbox"]').length > 1) break;
+                const l = node.querySelector('label, mat-label, legend, .control-label, .form-label');
+                if (l && !l.contains(el)) {
+                    const t = (l.innerText || '').trim();
+                    if (t) return t;
+                }
+            }
+        } catch (e) { }
+        return '';
+    };
 
     const getLabel = (el) => {
         try {
@@ -647,22 +945,56 @@ async function scanPageFormFields(captureCombo = true) {
             const parentLabel = el.closest('label');
             if (parentLabel && parentLabel.innerText.trim()) return parentLabel.innerText.trim();
             if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+            return labelFromWrapper(el);
         } catch (e) { }
         return '';
     };
 
-    const elements = document.querySelectorAll('input, select, textarea');
-    for (const el of elements) {
+    // Dropdowns are not always <select> or even <input>: Angular Material renders a
+    // custom <mat-select role="combobox"> element, others use <div>/<button> with
+    // aria-haspopup="listbox". A query for `input, select, textarea` never saw them,
+    // so the AI was never told those fields existed - it wasn't failing to fill them,
+    // it didn't know they were there.
+    // [formcontrolname] is in the list for the hand-rolled components (<app-select>):
+    // they carry no role at all, and their only marks are that they ARE a form control
+    // and that they own a toggle.
+    let nodes = Array.from(document.querySelectorAll(
+        `input, select, textarea, ${DD_STRONG}, ${DD_WEAK}, [formcontrolname]`));
+    // The weak selectors also match site chrome (a navbar or kebab menu button), and
+    // [formcontrolname] matches every Angular control. isCustomDropdown only accepts the
+    // real dropdowns - drop everything else that is not a plain field, or we would
+    // "fill" the account menu.
+    nodes = nodes.filter((n) => /^(INPUT|SELECT|TEXTAREA)$/.test(n.tagName) || isCustomDropdown(n));
+    const ddNodes = nodes.filter(isCustomDropdown);
+    // A dropdown wrapped in another dropdown: the innermost one is the real control.
+    const innerDD = ddNodes.filter((n) => !ddNodes.some((m) => m !== n && n.contains(m)));
+    // …and a plain input living INSIDE a dropdown is that dropdown's display box,
+    // not a field of its own.
+    nodes = nodes.filter((n) => innerDD.includes(n)
+        || (!isCustomDropdown(n) && !innerDD.some((d) => d.contains(n))));
+
+    for (const el of nodes) {
         if (fields.length >= MAX_FIELDS) break;
 
         const tagName = el.tagName.toLowerCase();
         let type = (el.type || tagName).toLowerCase();
-        const isCombobox = tagName === 'input' && el.getAttribute('role') === 'combobox';
+        const isCombobox = isCustomDropdown(el);
         if (isCombobox) type = 'combobox';
+
+        // A datepicker's input is a plain text box that the widget writes into. Calling
+        // it "date" is what tells the AI to answer in YYYY-MM-DD instead of inventing a
+        // format the parser rejects.
+        const isDatePicker = tagName === 'input' && !isCombobox
+            && (el.hasAttribute('ngbdatepicker') || el.hasAttribute('bsdatepicker')
+                || /datepicker|datetimepicker/i.test(String(el.className || '')));
+        if (isDatePicker) type = 'date';
+
         if (tagName === 'input' && skipTypes.includes(type)) continue;
-        if (el.disabled) continue;
-        // Custom dropdowns are often readonly inputs - keep those
-        if (el.readOnly && !isCombobox) continue;
+        if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+        // A readonly input is usually NOT a display-only field: it is a real form control
+        // driven by a widget (a datepicker, a masked field, a custom dropdown). Skipping
+        // every one of them left every date on the form blank.
+        if (el.readOnly && !isCombobox && !isDatePicker && !el.hasAttribute('formcontrolname')) continue;
         if (el.offsetParent === null && !el.getClientRects().length) continue;
 
         // Note: no DOM-level noise filtering here - the AI itself decides whether
@@ -748,17 +1080,18 @@ async function scanPageFormFields(captureCombo = true) {
             selector,
             tag: tagName,
             type,
-            name: el.name || '',
+            name: el.name || el.getAttribute('formcontrolname') || '',
             label: label.substring(0, 120),
-            placeholder: el.placeholder || '',
-            required: !!el.required,
+            // A custom dropdown has no .placeholder property, but its closed trigger
+            // shows one ("اختر الجنس") - the clearest hint about the field there is.
+            placeholder: (el.placeholder || (isCombobox ? (el.innerText || '').trim() : '') || '').substring(0, 60),
+            required: !!el.required || el.getAttribute('aria-required') === 'true',
             maxLength: el.maxLength > 0 ? el.maxLength : null
         };
 
         if (tagName === 'select') {
-            field.options = Array.from(el.options)
-                .filter(o => o.value && o.value.trim() !== '')
-                .slice(0, 30)
+            const all = Array.from(el.options).filter(o => o.value && o.value.trim() !== '');
+            field.options = ddSampleOptions(all)
                 .map(o => ({ value: o.value, text: o.text.trim().substring(0, 60) }));
         }
 
@@ -766,25 +1099,28 @@ async function scanPageFormFields(captureCombo = true) {
             field.checked = el.checked;
         }
 
-        // Custom dropdowns: read the options so the AI can pick a real one (and
-        // write dependent text fields to match it). Try the linked listbox first;
-        // if it isn't in the DOM yet, briefly open the dropdown to capture them.
+        // Custom dropdowns: read the options so the AI can pick a real one (and write
+        // dependent text fields to match it). Try the linked listbox first; if it isn't
+        // in the DOM yet, open the dropdown to capture them and close it again.
         if (isCombobox) {
             const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
             const listbox = listId ? document.getElementById(listId) : null;
             if (listbox) {
-                const opts = Array.from(listbox.querySelectorAll('[role="option"], li'))
+                const opts = ddSampleOptions(Array.from(listbox.querySelectorAll('[role="option"], li'))
                     .map(o => (o.innerText || '').trim())
-                    .filter(Boolean)
-                    .slice(0, 30);
+                    .filter(Boolean));
                 if (opts.length > 0) {
                     field.options = opts.map(t => ({ value: t.substring(0, 60), text: t.substring(0, 60) }));
                 }
             }
-            if (captureCombo && (!field.options || field.options.length === 0)) {
+            if (captureCombo && !knownSelectors.has(selector) && (!field.options || field.options.length === 0)) {
                 const opts = await captureComboboxOptions(el);
                 if (opts.length > 0) {
                     field.options = opts.map(t => ({ value: t.substring(0, 60), text: t.substring(0, 60) }));
+                } else {
+                    // Its data never loaded (a dead lookup API). Nothing can be selected
+                    // in it, so say so - the fill must not waste a second poking at it.
+                    field.noOptions = true;
                 }
             }
         }
@@ -839,6 +1175,10 @@ async function scanPageFormFields(captureCombo = true) {
             });
         }
     }
+
+    // Nothing may be left hanging open. The last dropdown of the loop has no next one
+    // whose opening would have closed it by accident, so it needs saying explicitly.
+    if (captureCombo) { try { await ddClose(null); } catch (e) { } }
 
     const h1 = document.querySelector('h1');
     const metaDesc = document.querySelector('meta[name="description"]');
@@ -1899,8 +2239,11 @@ function generateXPath(element) {
         const testId = el.getAttribute('data-testid');
         if (testId) return `//${el.tagName.toLowerCase()}[@data-testid='${testId}']`;
 
-        // Try name, placeholder, or aria-label for relative XPath
-        const attributes = ['name', 'placeholder', 'aria-label'];
+        // Try name, placeholder, or aria-label for relative XPath.
+        // formcontrolname is Angular's own field name: on reactive forms it is often
+        // the ONLY stable handle (those inputs carry no id and no name at all), so it
+        // beats falling back to a brittle positional path.
+        const attributes = ['name', 'formcontrolname', 'placeholder', 'aria-label'];
         for (const attr of attributes) {
             const val = el.getAttribute(attr);
             if (val) return `//${el.tagName.toLowerCase()}[@${attr}='${val}']`;
@@ -6647,27 +6990,14 @@ async function fillFormFields(fieldsData) {
         }
     }
 
-    // Custom dropdowns (input[role="combobox"]): open the list, then click the
-    // option whose text matches the value. With sequentialSelect, the choice
-    // cycles through the options instead (random start, then in order).
+    // Custom dropdowns (<mat-select>, div/button comboboxes, readonly inputs…): open
+    // the list, then click the option whose text matches the value. With
+    // sequentialSelect, the choice cycles through the options instead (random start,
+    // then in order) so repeated fills don't keep picking the same one.
     async function fillComboboxField(el, value, field) {
         try {
-            el.focus();
-            el.click();
-            await new Promise(r => setTimeout(r, 400));
-
-            const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
-            let listbox = listId ? document.getElementById(listId) : null;
-            if (!listbox || !isElementVisible(listbox)) {
-                const visible = Array.from(document.querySelectorAll('[role="listbox"]')).find(lb => isElementVisible(lb));
-                if (visible) listbox = visible;
-            }
-            if (!listbox) return false;
-
-            let options = Array.from(listbox.querySelectorAll('[role="option"]'));
-            if (options.length === 0) options = Array.from(listbox.querySelectorAll('li'));
-            options = options.filter(o => o.innerText && o.innerText.trim());
-            if (options.length === 0) return false;
+            const options = await ddOpen(el);
+            if (options.length === 0) { await ddClose(el); return false; }
 
             let target;
             if (field && field.sequentialSelect) {
@@ -6696,14 +7026,14 @@ async function fillFormFields(fieldsData) {
                     options[0];
             }
 
-            target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-            target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-            target.click();
-            await new Promise(r => setTimeout(r, 150));
-
+            await ddPick(target);
+            // Picking normally closes the list; a multi-select one stays open and would
+            // then be read as the NEXT field's list, so make sure it is gone.
+            await ddClose(el);
             return true;
         } catch (e) {
             console.warn('Combobox fill failed:', e);
+            try { await ddClose(el); } catch (e2) { }
             return false;
         }
     }
@@ -6954,10 +7284,21 @@ async function fillFormFields(fieldsData) {
             }
 
             // Custom dropdowns: open the listbox and click the matching option
-            if (el.tagName === 'INPUT' && el.getAttribute('role') === 'combobox') {
+            if (isCustomDropdown(el)) {
                 const handled = await fillComboboxField(el, resolveSmartVariables(field.value), field);
                 if (handled) continue;
-                // Otherwise fall through to the normal value fill as a last resort
+                // A non-input dropdown (<mat-select>, <div>, <button>) has no .value to
+                // fall back on - writing one would silently do nothing, so report it.
+                if (el.tagName !== 'INPUT') {
+                    failedFields.push({
+                        selector: field.selector,
+                        value: field.value || '',
+                        action: 'select',
+                        name: field.label || field.name || field.selector.substring(0, 40)
+                    });
+                    continue;
+                }
+                // A readonly <input> dropdown can still take a plain value - fall through
             }
 
             // Fill logic
@@ -7072,6 +7413,7 @@ async function fillFormFields(fieldsData) {
             el.dispatchEvent(new Event('change', { bubbles: true }));
         }
     }
+
 
     const toPersist = {};
     if (updatedAny) toPersist[storageKey] = allIndices;

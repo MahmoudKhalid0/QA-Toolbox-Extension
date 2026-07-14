@@ -909,9 +909,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 // Multi-pass: filling fields can reveal new conditional fields,
                 // so re-scan after each fill and handle anything new (max 3 passes)
                 for (let pass = 0; pass < 3; pass++) {
-                    // Only open comboboxes to read their options on the first pass -
-                    // re-opening them on every re-scan is the main slowdown
-                    const scan = await chrome.tabs.sendMessage(tabId, { action: 'scanFormFields', captureCombo: pass === 0 });
+                    // Custom dropdowns must be opened to be read, so tell the scan which
+                    // ones an earlier pass already handled - it then only opens the NEW
+                    // ones a conditional rule has just revealed.
+                    const scan = await chrome.tabs.sendMessage(tabId, {
+                        action: 'scanFormFields',
+                        captureCombo: true,
+                        known: Array.from(knownSelectors)
+                    });
                     if (!scan || !scan.fields) break;
                     if (!pageUrl) pageUrl = scan.url;
                     if (scan.fields.length > 0) sawAnyField = true;
@@ -957,9 +962,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                         break;
                     }
 
-                    // Give the page a moment to render any conditional fields - but
-                    // skip the wait on the last pass (we won't re-scan after it)
-                    if (pass < 2) await new Promise(r => setTimeout(r, 500));
+                    // Give the page time to render any conditional fields. A field that
+                    // appears because of what we just filled usually has to fetch its own
+                    // options first, and half a second was not enough - we re-scanned
+                    // before it existed and left it unselected.
+                    if (pass < 2) await new Promise(r => setTimeout(r, 1500));
                 }
 
                 if (!sawAnyField) {
@@ -1619,6 +1626,10 @@ function mapAiValuesToFields(ai, scannedFields) {
                 value = String(scanned.options[0].value);
             }
         }
+
+        // A dropdown whose options never loaded cannot be filled by anyone - drop it
+        // rather than send the fill off to open it again for nothing.
+        if (scanned.type === 'combobox' && scanned.noOptions) continue;
 
         // Choice fields keep the AI's chosen value (NOT sequential): the AI picks
         // each option deliberately and writes dependent text fields (notes, etc.)
