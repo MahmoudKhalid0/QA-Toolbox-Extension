@@ -2725,7 +2725,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ ok: true });
             return true;
         case 'swapList':
-            SW.listFor(request.url).then((snaps) => sendResponse({ snaps }));
+            // The tab id lets listFor read the LIVE storage and work out WHO is
+            // signed in - which is what makes "CURRENT" survive a rotated cookie.
+            SW.listFor(request.url, request.tabId != null ? request.tabId : (sender && sender.tab && sender.tab.id))
+                .then((snaps) => sendResponse({ snaps }));
             return true;   // async
         case 'swapSave':
             SW.saveCurrent(request.tab || (sender && sender.tab), request.name).then(sendResponse);

@@ -106,7 +106,11 @@
         // Remember the exact page this login was saved on: it's on the right app
         // path AND is a page this user is allowed to see - the best place to land
         // when switching back (some apps live on a sub-path, not the site root).
-        all[origin].push({ id, name: name || `Login ${all[origin].length + 1}`, url: tab.url, cookies, storage, createdAt: Date.now() });
+        all[origin].push({
+            id, name: name || `Login ${all[origin].length + 1}`, url: tab.url, cookies, storage,
+            identity: extractIdentity(storage),   // WHO this login is - survives cookie rotation
+            createdAt: Date.now(),
+        });
         await setStore(all);
         await setActive(origin, id);   // what we just saved IS the current login
         rebuildMenuFor(tab);
@@ -114,40 +118,85 @@
         return { ok: true };
     }
 
-    // Is a saved snapshot still the one actually logged in right now? Check each
-    // of the snapshot's AUTH cookies (HttpOnly - the session/identity ones) AT ITS
-    // OWN domain+path, not against the current tab's URL. That distinction matters:
-    // a path-scoped auth cookie is only returned by getAll({url}) when the tab is
-    // on that exact path, so the old check made "CURRENT" appear only on the page
-    // the login was saved on and vanish everywhere else. Checking each cookie where
-    // it actually lives ties "CURRENT" to the SESSION, independent of the URL.
-    async function stillLoggedIn(snapCookies) {
+    // ── WHO you are, not WHICH session token you hold ────────────────────────
+    // The root of the "CURRENT keeps disappearing" bug: we were deciding who you
+    // are from the VALUE of the session cookie. That value is not you - it is one
+    // login. It changes when the server rotates a sliding session, and it changes
+    // when you sign in again as the SAME person, and in both cases CURRENT wrongly
+    // vanished. (Matching on the cookie merely EXISTING was worse: it then claimed
+    // CURRENT for a completely different user.)
+    //
+    // The identity inside the auth token does not change. These apps (ABP/OIDC,
+    // Liferay) keep a JWT in local/session storage; its payload names the user. So
+    // we fingerprint the USER at save time and compare that instead.
+    function extractIdentity(storage) {
+        if (!storage) return null;
+        const values = [];
+        for (const bag of [storage.local, storage.session]) {
+            if (!bag) continue;
+            for (const k in bag) if (typeof bag[k] === 'string') values.push(bag[k]);
+        }
+        for (const v of values) {
+            const m = v.match(/eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*/);
+            if (!m) continue;
+            try {
+                const body = m[0].split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+                const p = JSON.parse(atob(body + '==='.slice((body.length + 3) % 4)));
+                const id = p.sub || p.preferred_username || p.email || p.unique_name
+                    || p.upn || p.user_id || p.uid || p.nameid || p.name;
+                if (id) return String(id);
+            } catch (e) { /* not a JWT we can read - keep looking */ }
+        }
+        return null;
+    }
+
+    // Fallback for sites with no token at all (pure cookie auth): we cannot tell WHO,
+    // only WHETHER a session exists. Existence, not value - so a rotated cookie no
+    // longer wipes CURRENT. (`qaActiveLogin` is only ever set BY US, on save/update/
+    // restore, so it already points at the right snapshot.)
+    async function sessionAlive(snapCookies) {
         if (!snapCookies || !snapCookies.length) return false;
-        const authCookies = snapCookies.filter((c) => c.httpOnly);
-        const check = authCookies.length ? authCookies : snapCookies;
+        const auth = snapCookies.filter((c) => c.httpOnly);
+        const check = auth.length ? auth : snapCookies;
         for (const c of check) {
             const live = await new Promise((res) => chrome.cookies.get(
                 { url: cookieUrl(c), name: c.name, storeId: c.storeId },
                 (r) => { void chrome.runtime.lastError; res(r); }));
-            // The value must MATCH what we saved. Existence alone is not enough: if
-            // you log in as a DIFFERENT user the cookie still exists (new value), and
-            // an existence-only check wrongly kept showing this snapshot as CURRENT.
-            if (!live || live.value !== c.value) return false;
+            if (!live || !live.value) return false;      // logged out
         }
         return true;
     }
 
-    async function listFor(url) {
+    // `tabId` lets us read the LIVE storage and work out who is signed in right now.
+    async function listFor(url, tabId) {
         const origin = originOf(url);
         const all = await getStore();
         const snaps = all[origin] || [];
         let active = (await getActive())[origin];
-        // Validate the stored "current" against the live session cookies - clear it
-        // if the user has since logged out (so nothing shows as CURRENT anymore).
-        if (active) {
+
+        const liveId = tabId != null ? extractIdentity(await readStorage(tabId)) : null;
+
+        if (liveId) {
+            // We know WHO is signed in. The snapshot for that person is CURRENT -
+            // whatever the cookie value happens to be right now.
+            const match = snaps.find((s) => s.identity && s.identity === liveId);
+            active = match ? match.id : null;
+        } else {
             const snap = snaps.find((s) => s.id === active);
-            if (!snap || !(await stillLoggedIn(snap.cookies))) { active = null; await setActive(origin, null); }
+            if (!snap) {
+                active = null;
+            } else if (snap.identity) {
+                // This login is token-based and the page now holds NO token: you are
+                // signed out. Deliberately NOT falling back to the cookie here - a
+                // stray request (even a favicon fetch) can hand you a fresh session
+                // cookie while you are logged out, and that used to keep CURRENT lit.
+                active = null;
+            } else if (!(await sessionAlive(snap.cookies))) {
+                active = null;      // pure cookie-auth site, and the cookie is gone
+            }
         }
+        await setActive(origin, active);
+
         return snaps.map((s) => ({ id: s.id, name: s.name, count: s.cookies.length, createdAt: s.createdAt, active: s.id === active }));
     }
 
@@ -177,6 +226,7 @@
         if (!snap) return { ok: false, error: 'saved login not found' };
         snap.cookies = await new Promise((res) => chrome.cookies.getAll({ url: tab.url }, (c) => { void chrome.runtime.lastError; res(c || []); }));
         snap.storage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
+        snap.identity = extractIdentity(snap.storage);
         snap.url = tab.url;              // also refreshes the landing page
         snap.createdAt = Date.now();
         await setStore(all);
@@ -244,7 +294,7 @@
         menuBuilt = false;
         if (!tab || !tab.url || !/^https?:/i.test(tab.url)) return;
 
-        const snaps = await listFor(tab.url);
+        const snaps = await listFor(tab.url, tab.id);
         chrome.contextMenus.create({ id: MENU_ROOT, title: `Switch login (${hostOf(tab.url)})`, contexts: ['page'] }, () => void chrome.runtime.lastError);
         for (const s of snaps) {
             chrome.contextMenus.create({ id: 'swap:' + s.id, parentId: MENU_ROOT, title: '↪ ' + s.name, contexts: ['page'] }, () => void chrome.runtime.lastError);

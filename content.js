@@ -283,10 +283,58 @@ async function initFloatingButton() {
                     const changed = next.map((s) => s.id).join(',') !== matchingLogins.map((s) => s.id).join(',');
                     matchingLogins = next;
                     if (changed) createFloatingButton();
+                    renderLoginBadge();     // "Logged in as <name>" on the page
                 });
             });
         });
     }, 100);
+}
+
+// Show WHICH saved login you are currently in, as a status line at the top of the
+// page. `active` comes from the worker, which works it out from WHO is signed in
+// (the identity in the auth token) - so it appears when you really are that user,
+// and goes when you log out. Read-only: it never takes a click.
+// Is what sits BEHIND the badge light or dark? Walk up from the element under that
+// point until something actually paints a background, then measure its luminance.
+// (The badge is pointer-events:none, so elementFromPoint sees straight past it.)
+function loginBadgeOnLightBg() {
+    try {
+        let el = document.elementFromPoint(Math.round(window.innerWidth / 2), 24);
+        let bg = '';
+        while (el && el !== document.documentElement) {
+            const c = getComputedStyle(el).backgroundColor;
+            if (c && !/^rgba\(0,\s*0,\s*0,\s*0\)$|transparent/.test(c)) { bg = c; break; }
+            el = el.parentElement;
+        }
+        if (!bg) bg = getComputedStyle(document.body).backgroundColor;
+        if (!bg || /^rgba\(0,\s*0,\s*0,\s*0\)$|transparent/.test(bg)) bg = getComputedStyle(document.documentElement).backgroundColor;
+
+        const n = (bg || '').match(/[\d.]+/g);
+        if (!n || n.length < 3) return true;                  // nothing painted -> white page
+        const [r, g, b] = n.slice(0, 3).map(Number);
+        const a = n.length > 3 ? Number(n[3]) : 1;
+        if (a < 0.15) return true;                            // effectively transparent
+        return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.55;
+    } catch (e) { return true; }
+}
+
+function renderLoginBadge() {
+    const existing = document.getElementById('ff-login-badge');
+    const current = (matchingLogins || []).find((s) => s.active);
+
+    if (!current) { if (existing) existing.remove(); return; }
+
+    const badge = existing || document.createElement('div');
+    if (!existing) {
+        badge.id = 'ff-login-badge';
+        document.documentElement.appendChild(badge);
+    }
+    badge.innerHTML =
+        '<span class="ff-lb-dot"></span>' +
+        '<span class="ff-lb-who">Logged in as</span>' +
+        '<span class="ff-lb-name"></span>';
+    badge.querySelector('.ff-lb-name').textContent = current.name;   // textContent = no injection
+    badge.classList.toggle('ff-lb-on-light', loginBadgeOnLightBg());
 }
 
 function cleanupFloatingButton() {
@@ -294,6 +342,8 @@ function cleanupFloatingButton() {
     if (btn) btn.remove();
     const menu = document.getElementById('ff-floating-menu');
     if (menu) menu.remove();
+    const badge = document.getElementById('ff-login-badge');
+    if (badge) badge.remove();
 }
 
 // Radical Monitoring: Watch for URL changes locally (for SPAs)
@@ -6023,6 +6073,69 @@ function createFloatingButton() {
         #ff-floating-btn:hover {
             transform: scale(1.1) translateY(-5px);
             box-shadow: 0 8px 30px rgba(102, 126, 234, 0.6);
+        }
+        /* Which login you are actually in. Pinned to the TOP CENTRE so it reads like
+           a status line, and pointer-events:none so it can never intercept a click
+           meant for the page underneath. */
+        #ff-login-badge {
+            position: fixed;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            max-width: 320px;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 7px 14px;
+            /* ~80% see-through: the page reads straight through it, but there is
+               still just enough plate to hold the text. The dark halo on the glyphs
+               is what keeps it legible at that alpha, on a white page as well as a
+               dark one. */
+            background: rgba(15, 20, 32, 0.20);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 999px;
+            color: #f1f5f9;
+            font: 600 12.5px/1 -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+            text-shadow:
+                0 0 3px rgba(0, 0, 0, 0.9),
+                0 1px 2px rgba(0, 0, 0, 0.75);
+            z-index: 999999999;
+            direction: ltr;
+            pointer-events: none;
+            user-select: none;
+        }
+        #ff-login-badge .ff-lb-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #34d399;
+            flex-shrink: 0;
+            box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.22);
+        }
+        #ff-login-badge .ff-lb-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #ff-login-badge .ff-lb-who {
+            color: #cbd5e1;
+            font-weight: 500;
+        }
+        /* On a LIGHT page the whole thing flips: dark ink, a pale plate and a white
+           halo. Which one applies is decided from the colour actually behind the
+           badge, not from any OS theme setting. */
+        #ff-login-badge.ff-lb-on-light {
+            background: rgba(255, 255, 255, 0.22);
+            border-color: rgba(0, 0, 0, 0.14);
+            color: #0f172a;
+            text-shadow:
+                0 0 3px rgba(255, 255, 255, 0.95),
+                0 1px 2px rgba(255, 255, 255, 0.85);
+        }
+        #ff-login-badge.ff-lb-on-light .ff-lb-who { color: #475569; }
+        #ff-login-badge.ff-lb-on-light .ff-lb-dot {
+            background: #059669;
+            box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.18);
         }
         #ff-floating-menu {
             position: fixed;

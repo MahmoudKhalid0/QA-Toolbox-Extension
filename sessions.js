@@ -94,7 +94,9 @@
         swSaveBtn.disabled = !web;
         if (!web) { swList.innerHTML = '<div class="sw-empty">Open a website to save its login.</div>'; return; }
 
-        const { snaps = [] } = await send({ action: 'swapList', url });
+        // Pass the site's tab id: the worker reads its storage to see WHO is signed
+        // in, which is what keeps "Current" correct after a cookie rotation.
+        const { snaps = [] } = await send({ action: 'swapList', url, tabId: t.id });
         if (!snaps.length) { swList.innerHTML = '<div class="sw-empty">No saved logins for this site yet.</div>'; return; }
         swList.innerHTML = '';
         snaps.forEach((s) => {
