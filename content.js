@@ -9035,9 +9035,136 @@ function axDownload(text, name) {
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 
-function closeApiExportPanel() { const p = document.getElementById('qa-ax'); if (p) p.remove(); const s = document.getElementById('qa-ax-style'); if (s) s.remove(); }
+function closeApiExportPanel() {
+    const p = document.getElementById('qa-ax'); if (p) p.remove();
+    const s = document.getElementById('qa-ax-style'); if (s) s.remove();
+    document.querySelectorAll('.qa-tbl-hl').forEach((e) => e.classList.remove('qa-tbl-hl'));
+}
 
 let axLastRows = null;
+
+// ── Generic HTML data detection (no site-specific classes) ──────────────────────
+// The data on a page is whatever REPEATS: table rows, cards, list items. Find every
+// container whose direct children share one structure and repeat ≥ 3 times - those
+// children are the "rows". Works the same on a <table>, a grid of <div> cards, or a <ul>.
+const AX_SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'SVG', 'PATH', 'BR', 'HR', 'NOSCRIPT', 'TEMPLATE', 'OPTION']);
+
+// A structural signature of an element: tag + its class list. Two siblings with the same
+// signature are "the same kind of thing" (two cards, two rows).
+function axSig(el) {
+    const cls = (el.getAttribute && el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).sort().join('.');
+    return el.tagName + (cls ? '.' + cls : '');
+}
+
+function axVisible(el) {
+    if (!el || !el.getClientRects) return false;
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) return false;
+    const st = getComputedStyle(el);
+    return st.visibility !== 'hidden' && st.display !== 'none';
+}
+
+// Every repeating group on the page, richest first.
+function axFindGroups() {
+    const groups = [];
+    const containers = document.querySelectorAll('*');
+    for (const parent of containers) {
+        if (AX_SKIP_TAGS.has(parent.tagName)) continue;
+        const kids = Array.from(parent.children).filter((c) => !AX_SKIP_TAGS.has(c.tagName));
+        if (kids.length < 3) continue;
+        // tbody wrapping tr, or a grid wrapping cards: bucket the children by signature
+        const buckets = new Map();
+        for (const k of kids) {
+            const s = axSig(k);
+            (buckets.get(s) || buckets.set(s, []).get(s)).push(k);
+        }
+        for (const [sig, items] of buckets) {
+            if (items.length < 3) continue;
+            const visItems = items.filter(axVisible);
+            if (visItems.length < 3) continue;
+            const text = visItems.reduce((n, it) => n + (it.innerText || '').trim().length, 0);
+            if (text < 10) continue;
+            groups.push({ parent, sig, items: visItems, count: visItems.length, text });
+        }
+    }
+    // Prefer many rows AND lots of text; drop groups nested inside a bigger chosen one later.
+    groups.sort((a, b) => (b.count * Math.log(b.text + 10)) - (a.count * Math.log(a.text + 10)));
+    // De-duplicate: if one group's items each CONTAIN another group's items, keep the outer.
+    const kept = [];
+    for (const g of groups) {
+        if (kept.some((k) => k.items.some((ki) => ki.contains(g.items[0]) || g.items[0].contains(ki) && g.parent !== k.parent && k.parent.contains(g.parent)))) continue;
+        kept.push(g);
+        if (kept.length >= 8) break;
+    }
+    return kept;
+}
+
+// Extract the fields of one item as {key,value} cells. A "field" is a descendant that owns
+// its own text (not just text bubbling up from children) or is a link. The column key is a
+// readable, stable name derived from the field's class or tag, so the same field lines up
+// across every item.
+function axItemCells(item) {
+    const cells = [];
+    const keyCount = {};
+    const nameOf = (el) => {
+        const cls = (el.getAttribute('class') || '').split(/\s+/).filter(Boolean)
+            .filter((c) => !/^(d-|col-|row|text-|bg-|p-|m-|px-|py-|mb-|mt-|gap-|rounded|border|flex|align|justify|w-|h-)/.test(c));
+        let base = cls[0] || el.getAttribute('data-label') || el.tagName.toLowerCase();
+        base = base.replace(/[-_]+/g, ' ').trim().slice(0, 40) || 'field';
+        keyCount[base] = (keyCount[base] || 0) + 1;
+        return keyCount[base] > 1 ? base + ' ' + keyCount[base] : base;
+    };
+    const ownText = (el) => Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim();
+    const walk = (el) => {
+        for (const ch of el.children) {
+            if (AX_SKIP_TAGS.has(ch.tagName) || !axVisible(ch)) continue;
+            const isLink = ch.tagName === 'A' && ch.getAttribute('href');
+            const t = (ch.innerText || '').trim().replace(/\s+/g, ' ');
+            if ((ownText(ch) || isLink) && t) {
+                cells.push({ key: nameOf(ch), value: t });
+                if (isLink) cells.push({ key: nameOf(ch) + ' link', value: ch.href });
+            } else if (ch.children.length) {
+                walk(ch);
+            } else if (t) {
+                cells.push({ key: nameOf(ch), value: t });
+            }
+        }
+    };
+    walk(item);
+    // Fallback: an item with no inner structure at all -> its whole text is one column.
+    if (!cells.length) { const t = (item.innerText || '').trim().replace(/\s+/g, ' '); if (t) cells.push({ key: 'text', value: t }); }
+    return cells;
+}
+
+// Turn a group's items into rows of aligned columns.
+function axScrapeGroup(items) {
+    const rows = [];
+    for (const it of items) {
+        const cells = axItemCells(it);
+        const row = {};
+        for (const c of cells) { if (!(c.key in row)) row[c.key] = c.value; }
+        if (Object.keys(row).length) rows.push(row);
+    }
+    return rows;
+}
+
+// A page's "next" control, if any: pagination libraries all mark it one of these ways.
+function axFindNext() {
+    const cand = Array.from(document.querySelectorAll(
+        'a[rel="next"], [aria-label*="next" i], [class*="next" i], li.next > a, button[title*="next" i], .pagination a, .paginate_button.next'));
+    const byText = Array.from(document.querySelectorAll('a, button')).filter((b) => {
+        const t = (b.innerText || b.textContent || '').trim();
+        return t === '›' || t === '»' || t === '>' || /^next$/i.test(t) || t === 'التالي' || t === 'التالى';
+    });
+    const all = [...new Set([...cand, ...byText])];
+    for (const el of all) {
+        if (!axVisible(el)) continue;
+        const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true'
+            || /disabled/.test(el.className) || (el.closest('li') && /disabled/.test(el.closest('li').className));
+        if (!disabled) return el;
+    }
+    return null;
+}
 
 function openApiExportPanel() {
     if (document.getElementById('qa-ax')) { closeApiExportPanel(); return; }
@@ -9076,7 +9203,21 @@ function openApiExportPanel() {
 #qa-ax .done .l{font-size:11px;color:#94a3b8;margin:2px 0 10px;}
 #qa-ax .done button{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;background:#1d1a28;border:1px solid #2a2738;color:#e5e7eb;border-radius:8px;padding:7px 14px;font-weight:600;font-size:12px;}
 #qa-ax .done button:hover{background:#262335;}
-#qa-ax .err{color:#f87171;font-size:12px;margin-top:10px;word-break:break-word;}`;
+#qa-ax .err{color:#f87171;font-size:12px;margin-top:10px;word-break:break-word;}
+#qa-ax .modes{display:flex;gap:6px;margin-bottom:12px;background:#0f0e16;border:1px solid #2a2738;border-radius:9px;padding:3px;}
+#qa-ax .mode{flex:1;text-align:center;cursor:pointer;font-size:12px;font-weight:600;color:#8b8898;padding:7px 0;border-radius:7px;user-select:none;display:flex;align-items:center;justify-content:center;gap:6px;}
+#qa-ax .mode.on{background:#7c3aed;color:#fff;}
+#qa-ax .tables{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;max-height:170px;overflow:auto;}
+#qa-ax .tbl{display:flex;align-items:center;gap:9px;cursor:pointer;background:#0f0e16;border:1px solid #2a2738;border-left-width:3px;border-radius:8px;padding:8px 10px;text-align:left;}
+#qa-ax .tbl:hover{border-color:#7c3aed;}
+#qa-ax .tbl.on{border-left-color:#34d399;background:#161326;}
+#qa-ax .tbl .tn{flex:1;min-width:0;font-size:12px;color:#e5e7eb;}
+#qa-ax .tbl .tn small{display:block;color:#8b8898;font-size:10.5px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#qa-ax .tbl .tc{flex-shrink:0;background:rgba(124,58,237,.25);color:#c4b5fd;border-radius:10px;padding:1px 8px;font-size:10.5px;font-weight:700;}
+#qa-ax .empty2{font-size:11.5px;color:#6b6878;text-align:center;padding:14px 6px;line-height:1.5;}
+#qa-ax .chk{display:flex;align-items:center;gap:7px;margin-bottom:10px;font-size:11.5px;color:#a9a6b8;cursor:pointer;user-select:none;}
+#qa-ax .chk input{width:auto;accent-color:#7c3aed;}
+#qa-ax .qa-tbl-hl{outline:3px solid #7c3aed !important;outline-offset:1px;transition:outline .1s;}`;
     (document.head || document.documentElement).appendChild(style);
 
     const panel = document.createElement('div');
@@ -9087,12 +9228,30 @@ function openApiExportPanel() {
   <button class="iconbtn" id="qa-ax-close" title="Close">${AX_IC.x}</button>
 </div>
 <div class="bd">
-  <textarea id="qa-ax-in" spellcheck="false" placeholder='Paste "Copy as fetch" here…\n\nDevTools → Network → right-click the request → Copy → Copy as fetch'></textarea>
-  <div class="hint">The tool replays the request, walks every page automatically, and saves all rows as CSV. Pagination (skipCount/pageNumber…) is detected from the URL.</div>
-  <div class="row">
-    <label>Max rows (safety)</label><input type="number" id="qa-ax-max" value="100000" min="1">
+  <div class="modes">
+    <div class="mode on" data-m="json">JSON API</div>
+    <div class="mode" data-m="html">HTML / Table</div>
   </div>
-  <button class="go" id="qa-ax-run">Fetch &amp; Export CSV</button>
+
+  <div id="qa-ax-json">
+    <textarea id="qa-ax-in" spellcheck="false" placeholder='Paste "Copy as fetch" here…\n\nDevTools → Network → right-click the request → Copy → Copy as fetch'></textarea>
+    <div class="hint">The tool replays the request, walks every page automatically, and saves all rows as CSV. Pagination (skipCount/pageNumber…) is detected from the URL or the request body.</div>
+    <div class="row">
+      <label>Max rows (safety)</label><input type="number" id="qa-ax-max" value="100000" min="1">
+    </div>
+    <button class="go" id="qa-ax-run">Fetch &amp; Export CSV</button>
+  </div>
+
+  <div id="qa-ax-html" style="display:none;">
+    <div class="hint" style="margin-top:0;">Repeating blocks on this page (tables, cards, lists). Pick the one that holds your data — hover to highlight it.</div>
+    <div class="tables" id="qa-ax-tables"></div>
+    <label class="chk"><input type="checkbox" id="qa-ax-next" checked> Walk pages by clicking the “next” button</label>
+    <div class="row">
+      <label>Max pages</label><input type="number" id="qa-ax-maxp" value="500" min="1">
+    </div>
+    <button class="go" id="qa-ax-hrun" disabled>Scrape &amp; Export CSV</button>
+  </div>
+
   <div class="prog" id="qa-ax-prog"><div class="bar"><i id="qa-ax-fill"></i></div><div class="pmeta" id="qa-ax-meta"></div></div>
   <div class="done" id="qa-ax-done"><div class="n" id="qa-ax-count">0</div><div class="l">rows exported</div><button id="qa-ax-again">${AX_IC.down} Download CSV again</button></div>
   <div class="err" id="qa-ax-err"></div>
@@ -9180,6 +9339,118 @@ function openApiExportPanel() {
     };
 
     runBtn.addEventListener('click', run);
+
+    // ── HTML / Table mode ──────────────────────────────────────────────────────
+    let axGroups = [], axPickedGroup = null;
+    const hrun = $('#qa-ax-hrun');
+
+    function renderTables() {
+        document.querySelectorAll('.qa-tbl-hl').forEach((e) => e.classList.remove('qa-tbl-hl'));
+        axGroups = axFindGroups();
+        axPickedGroup = null; hrun.disabled = true;
+        const box = $('#qa-ax-tables');
+        if (!axGroups.length) { box.innerHTML = '<div class="empty2">No repeating data blocks found on this page.<br>Open a page that shows a list or table, then reopen this tool.</div>'; return; }
+        box.innerHTML = '';
+        axGroups.forEach((g, i) => {
+            const sample = axItemCells(g.items[0]).slice(0, 3).map((c) => c.value).join(' · ').slice(0, 60);
+            const cols = Object.keys(axScrapeGroup(g.items.slice(0, 1))[0] || {}).length;
+            const el = document.createElement('div');
+            el.className = 'tbl'; el.dataset.i = i;
+            el.innerHTML = `<div class="tn">${dEsc((g.items[0].tagName === 'TR' ? 'Table rows' : 'Cards / list'))} <small>${dEsc(sample || '…')}</small></div>
+                <span class="tc">${g.count} × ${cols || '?'}</span>`;
+            box.appendChild(el);
+        });
+    }
+    const dEsc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+
+    $('#qa-ax-tables').addEventListener('mouseover', (e) => {
+        const t = e.target.closest('.tbl'); if (!t) return;
+        document.querySelectorAll('.qa-tbl-hl').forEach((x) => x.classList.remove('qa-tbl-hl'));
+        const g = axGroups[+t.dataset.i]; if (g) g.items.forEach((it) => it.classList.add('qa-tbl-hl'));
+    });
+    $('#qa-ax-tables').addEventListener('click', (e) => {
+        const t = e.target.closest('.tbl'); if (!t) return;
+        $('#qa-ax-tables').querySelectorAll('.tbl').forEach((x) => x.classList.remove('on'));
+        t.classList.add('on');
+        axPickedGroup = +t.dataset.i; hrun.disabled = false;
+        const g = axGroups[axPickedGroup];
+        if (g) { try { g.items[0].scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { } }
+    });
+
+    // mode switch
+    panel.querySelectorAll('.mode').forEach((m) => m.addEventListener('click', () => {
+        panel.querySelectorAll('.mode').forEach((x) => x.classList.toggle('on', x === m));
+        const isHtml = m.dataset.m === 'html';
+        $('#qa-ax-json').style.display = isHtml ? 'none' : '';
+        $('#qa-ax-html').style.display = isHtml ? '' : 'none';
+        err.textContent = ''; done.classList.remove('show'); prog.classList.remove('show');
+        if (isHtml) renderTables();
+        else document.querySelectorAll('.qa-tbl-hl').forEach((x) => x.classList.remove('qa-tbl-hl'));
+    }));
+
+    const rowSig = (rows) => rows.length + '|' + JSON.stringify(rows[0] || {}) + '|' + JSON.stringify(rows[rows.length - 1] || {});
+
+    const hrunFn = async () => {
+        if (busy || axPickedGroup == null) return;
+        err.textContent = ''; done.classList.remove('show');
+        const walkPages = $('#qa-ax-next').checked;
+        const maxPages = Math.max(1, parseInt($('#qa-ax-maxp').value) || 500);
+        busy = true; hrun.disabled = true; hrun.innerHTML = '<span class="spin"></span> Scraping…';
+        prog.classList.add('show'); fill.style.width = '0'; meta.textContent = 'Scraping…';
+        document.querySelectorAll('.qa-tbl-hl').forEach((x) => x.classList.remove('qa-tbl-hl'));
+
+        const seen = new Set(), all = [];
+        const sigOfRow = (r) => JSON.stringify(Object.values(r));
+        // re-find the picked group each page by its structure signature, since the page's
+        // rows are replaced when you paginate.
+        const wantSig = axGroups[axPickedGroup].sig;
+        const grabCurrent = () => {
+            const gs = axFindGroups().filter((g) => g.sig === wantSig);
+            const g = gs.sort((a, b) => b.count - a.count)[0];
+            return g ? axScrapeGroup(g.items) : [];
+        };
+        try {
+            let page = 0, lastSig = '';
+            while (page++ < maxPages) {
+                const rows = grabCurrent();
+                let added = 0;
+                for (const r of rows) { const s = sigOfRow(r); if (!seen.has(s)) { seen.add(s); all.push(r); added++; } }
+                meta.textContent = `${all.length} rows · page ${page}`;
+                fill.style.width = Math.min(95, page * 3) + '%';
+                if (!walkPages) break;
+                const nowSig = rowSig(rows);
+                if (nowSig === lastSig && added === 0) break;   // nothing new -> done
+                lastSig = nowSig;
+                const next = axFindNext();
+                if (!next) break;
+                next.scrollIntoView({ block: 'center' });
+                next.click();
+                // wait for the rows to actually change
+                const before = nowSig;
+                let changed = false;
+                for (let i = 0; i < 40; i++) {
+                    await new Promise((r) => setTimeout(r, 100));
+                    if (rowSig(grabCurrent()) !== before) { changed = true; break; }
+                }
+                if (!changed) break;
+            }
+        } catch (e) {
+            busy = false; hrun.disabled = false; hrun.innerHTML = 'Scrape &amp; Export CSV';
+            err.textContent = String(e.message || e); return;
+        }
+
+        busy = false; hrun.disabled = false; hrun.innerHTML = 'Scrape &amp; Export CSV';
+        if (!all.length) { err.textContent = 'Could not read any rows from that block.'; prog.classList.remove('show'); return; }
+        fill.style.width = '100%';
+        const host = location.hostname.replace(/^www\./, '');
+        const name = `${host}-${all.length}rows.csv`;
+        axLastRows = { csv: axToCsv(all), name };
+        axDownload(axLastRows.csv, axLastRows.name);
+        $('#qa-ax-count').textContent = all.length.toLocaleString();
+        done.classList.add('show');
+    };
+    hrun.addEventListener('click', hrunFn);
+
     $('#qa-ax-again').addEventListener('click', () => { if (axLastRows) axDownload(axLastRows.csv, axLastRows.name); });
     $('#qa-ax-close').addEventListener('click', closeApiExportPanel);
     qaAddMinimize(panel, panel.querySelector('.hd'), $('#qa-ax-close'));
