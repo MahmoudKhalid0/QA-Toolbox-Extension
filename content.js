@@ -8947,16 +8947,23 @@ function axSameOrigin(url) {
 // internal HTTPS sites with self-signed certs, where a background fetch fails
 // with "Failed to fetch" (HTTP 0). Cross-origin requests still go via bg.
 async function axFetch(url, method, headers, body) {
-    if (!axSameOrigin(url)) return axBgFetch(url, method, headers, body);
-    try {
-        const opts = { method: method || 'GET', headers: headers || {}, credentials: 'include', redirect: 'follow' };
-        if (body != null && !/^(GET|HEAD)$/i.test(opts.method)) opts.body = body;
-        const resp = await fetch(url, opts);
-        const text = await resp.text();
-        return { ok: resp.ok, status: resp.status, text };
-    } catch (e) {
-        return { ok: false, status: 0, error: String((e && e.message) || e) };
+    // Same-origin: fetch straight from this page - it already trusts the cert and holds the
+    // session cookies.
+    if (axSameOrigin(url)) {
+        try {
+            const opts = { method: method || 'GET', headers: headers || {}, credentials: 'include', redirect: 'follow' };
+            if (body != null && !/^(GET|HEAD)$/i.test(opts.method)) opts.body = body;
+            const resp = await fetch(url, opts);
+            const text = await resp.text();
+            return { ok: resp.ok, status: resp.status, text };
+        } catch (e) {
+            return { ok: false, status: 0, error: String((e && e.message) || e) };
+        }
     }
+    // Cross-origin: hand it to the background, which runs it inside a real tab (this app's
+    // tab first - it demonstrably reaches this API in normal use, so its CORS + session +
+    // accepted certificate all apply). A raw background fetch is the last resort.
+    return axBgFetch(url, method, headers, body);
 }
 
 function axToCsv(items) {

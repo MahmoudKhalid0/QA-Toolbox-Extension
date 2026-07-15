@@ -58,7 +58,11 @@ function addNetworkBatch(tabId, batch) {
     updateBadge(tabId);
 }
 
-function isFailedReq(r) { return r.status === 0 || r.status >= 400; }
+// A resource (img/js/css/font) captured via timing has status 0 when it is a cross-origin
+// opaque load - that is UNKNOWN, not a failure. Only fetch/XHR treat status 0 as an error.
+// This must match the popup's isFailed exactly, or the toolbar badge counts failures the
+// Debug panel doesn't show.
+function isFailedReq(r) { return r.kind === 'resource' ? r.status >= 400 : (r.status === 0 || r.status >= 400); }
 
 // Toolbar icon badge = console error rows + failed network requests for the tab
 function updateBadge(tabId) {
@@ -1467,6 +1471,56 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // but without a CORS wall). Used by the paginated CSV exporter.
     if (request.action === 'apiFetch') {
         (async () => {
+            // The endpoint is usually cross-origin to the page the tool runs on (the app calls
+            // its API on another host/port). A raw background fetch then fails with "Failed to
+            // fetch" (HTTP 0) because it has neither accepted the API's self-signed certificate
+            // nor an Origin the API's CORS allows.
+            //
+            // The fix: run the fetch INSIDE a real tab. The app's OWN tab is tried first - it
+            // demonstrably reaches this API in normal use, so its accepted certificate, its
+            // session cookies and the API's CORS grant for the app origin all apply. Then any
+            // tab already on the target origin (same-origin there = no CORS at all). The bare
+            // background fetch is the last resort, for public CORS-enabled APIs.
+            let targetOrigin = '';
+            try { targetOrigin = new URL(request.url).origin; } catch (e) { }
+
+            const runInTab = async (tabId) => {
+                try {
+                    const [out] = await chrome.scripting.executeScript({
+                        target: { tabId },
+                        world: 'MAIN',
+                        func: async (url, method, headers, body) => {
+                            try {
+                                const o = { method: method || 'GET', headers: headers || {}, credentials: 'include', redirect: 'follow' };
+                                if (body != null && !/^(GET|HEAD)$/i.test(o.method)) o.body = body;
+                                const r = await fetch(url, o);
+                                return { ok: r.ok, status: r.status, text: await r.text() };
+                            } catch (e) { return { ok: false, status: 0, error: String((e && e.message) || e) }; }
+                        },
+                        args: [request.url, request.method || 'GET', request.headers || {}, request.body != null ? request.body : null],
+                    });
+                    return out && out.result;
+                } catch (e) { return null; }
+            };
+
+            // Build the candidate tab list: the tool's own tab first, then any tab on the API's
+            // origin. De-duplicated, http(s) only.
+            const candidates = [];
+            const pushTab = (t) => {
+                if (t && t.id != null && !candidates.includes(t.id) && /^https?:/i.test(t.url || '')) candidates.push(t.id);
+            };
+            if (sender && sender.tab) pushTab(sender.tab);
+            try {
+                const tabs = await chrome.tabs.query({});
+                if (targetOrigin) tabs.forEach((t) => { try { if (new URL(t.url).origin === targetOrigin) pushTab(t); } catch (e) { } });
+            } catch (e) { }
+
+            for (const tabId of candidates) {
+                const res = await runInTab(tabId);
+                if (res && res.status !== 0) { sendResponse(res); return; }   // actually reached the server
+            }
+
+            // Last resort: a plain background fetch.
             try {
                 const opts = { method: request.method || 'GET', headers: request.headers || {}, credentials: 'include', redirect: 'follow' };
                 if (request.body != null && !/^(GET|HEAD)$/i.test(opts.method)) opts.body = request.body;

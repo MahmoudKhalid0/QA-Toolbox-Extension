@@ -1180,8 +1180,10 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
             const statusLabel = isResource(r)
                 ? (r.status ? r.status : (r.resType || 'res').toUpperCase())
                 : (r.status === 0 ? (r.error || 'ERR') : r.status);
-            const typeBadge = isResource(r)
-                ? `<span class="net-type net-type-${dEsc(r.resType || 'other')}">${dEsc(r.resType || 'other')}</span>` : '';
+            // Every row gets a kind badge so none looks "unclassified": resources show their
+            // type (js/css/img…), API calls show FETCH or XHR.
+            const badgeType = isResource(r) ? (r.resType || 'other') : (r.kind === 'xhr' ? 'xhr' : 'fetch');
+            const typeBadge = `<span class="net-type net-type-${dEsc(badgeType)}">${dEsc(badgeType)}</span>`;
             return `<div class="net-row ${isFailed(r) ? 'failed' : ''}" data-i="${i}">
                 <span class="net-method">${dEsc(r.method || 'GET')}</span>
                 <span class="net-status ${statusClass(r)}">${dEsc(statusLabel)}</span>${typeBadge}
