@@ -869,15 +869,35 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
 
     let mode = 'console';            // 'console' | 'network'
     let netCache = [];
-    let netFilter = 'all';           // 'all' | 'failed' | 'xhr'
+    let netFilter = 'all';           // 'all' | 'failed' | 'xhr' | 'other'
     let netFilteredCache = [];
     let netViewingFindings = false;
     let lastConsoleSig = '';
     let lastNetSig = '';
-    const isFailed = (r) => r.status === 0 || r.status >= 400;
+    // A resource (img/js/css/font) captured via timing has status 0 when it is cross-origin
+    // and opaque - that is UNKNOWN, not a failure. Only fetch/XHR treat status 0 as an error.
+    const isResource = (r) => r.kind === 'resource';
+    const isFailed = (r) => isResource(r) ? r.status >= 400 : (r.status === 0 || r.status >= 400);
     const sigOf = (arr) => { const l = arr[arr.length - 1]; return arr.length + ':' + (l ? (l.ts || '') + ':' + (l.count || '') : ''); };
 
     const dEsc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+
+    // Reduce a message to the "type" it belongs to, by blanking the parts that vary between
+    // otherwise-identical errors: URLs, ids, and every number (line numbers, counts, timestamps).
+    // So `... at dashboard:3939:40` and `... at dashboard:4068:40` become ONE type. This is
+    // what lets a page throwing thousands of the same error collapse to a handful of kinds.
+    function dbgTypeKey(msg) {
+        return String(msg || '')
+            .split('\n')[0]
+            .replace(/https?:\/\/[^\s'")]+/gi, '«site»')
+            .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '«id»')
+            .replace(/0x[0-9a-f]+/gi, '«hex»')
+            .replace(/\d+/g, '#')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 140) || '(empty)';
+    }
+
     const list = () => document.getElementById('dbgList');
     const status = () => document.getElementById('dbgStatus');
     async function activeTabId() { const [t] = await chrome.tabs.query({ active: true, currentWindow: true }); return t ? t.id : null; }
@@ -916,6 +936,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         const filtered = currentLevel === 'all' ? logsCache : logsCache.filter(l => l.level === currentLevel);
         // Newest first
         filteredCache = filtered.slice().reverse();
+        renderTypeSummary(filteredCache);
         if (!filteredCache.length) {
             list().innerHTML = '<div class="dbg-empty">No console messages captured yet.<br>Interact with the page and they\'ll show here.</div>';
             return;
@@ -924,13 +945,87 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         const note = filteredCache.length > RENDER_CAP
             ? `<div class="dbg-empty" style="padding:8px;">Showing newest ${RENDER_CAP} of ${filteredCache.length}.</div>` : '';
         list().innerHTML = note + filteredCache.slice(0, RENDER_CAP).map((l, i) =>
-            `<div class="dbg-row ${dEsc(l.level)}">
+            `<div class="dbg-row ${dEsc(l.level)}" data-type="${dEsc(dbgTypeKey(l.message))}">
                 <span class="dbg-msg">${dEsc(l.message)}</span>
                 ${l.count > 1 ? `<span class="dbg-count">×${l.count}</span>` : ''}
                 ${l.source ? `<span class="dbg-src" data-src="${dEsc(l.source)}" title="Click to copy location">${dEsc(l.source)}</span>` : ''}
                 <button class="dbg-copy" data-i="${i}" title="Copy"><i class="fas fa-copy"></i></button>
             </div>`).join('');
     }
+
+    // Group the visible messages by type and show one chip per distinct kind, most-frequent
+    // first, so the user can see WHAT the flood is made of instead of scrolling thousands of
+    // near-identical lines. Only shown when grouping actually helps (more than one type, and
+    // fewer types than messages).
+    const MAX_TYPES = 15;
+    function renderTypeSummary(rows) {
+        const box = document.getElementById('dbgTypes');
+        if (!box) return;
+        const groups = new Map();
+        for (const l of rows) {
+            const key = dbgTypeKey(l.message);
+            const g = groups.get(key) || { key, level: l.level, count: 0 };
+            g.count += (l.count || 1);
+            // an error anywhere in the group colours the whole group
+            if (l.level === 'error') g.level = 'error';
+            else if (l.level === 'warn' && g.level !== 'error') g.level = 'warn';
+            groups.set(key, g);
+        }
+        const types = [...groups.values()].sort((a, b) => b.count - a.count);
+        if (types.length < 2 || types.length >= rows.length) { box.innerHTML = ''; return; }
+
+        const shown = types.slice(0, MAX_TYPES);
+        const hiddenCount = types.length - shown.length;
+        box.innerHTML =
+            `<div class="dbg-types-head">${types.length} distinct type${types.length === 1 ? '' : 's'}`
+            + (hiddenCount > 0 ? ` &middot; showing top ${shown.length}` : '') + `</div>`
+            + shown.map(t =>
+                `<button class="dbg-type t-${dEsc(t.level)}" data-type="${dEsc(t.key)}">
+                    <span class="dbg-type-msg">${dEsc(t.key)}</span>
+                    <span class="dbg-type-count">${t.count}</span>
+                    <i class="fas fa-arrow-down dbg-type-go"></i>
+                </button>`).join('');
+    }
+
+    // Click a type chip -> scroll to its newest example in the list and flash it.
+    function flashRow(row) {
+        row.classList.remove('dbg-flash');
+        void row.offsetWidth;            // restart the animation if the same chip is clicked twice
+        row.classList.add('dbg-flash');
+    }
+    document.getElementById('dbgTypes').addEventListener('click', (e) => {
+        const chip = e.target.closest('.dbg-type');
+        if (!chip) return;
+        const key = chip.dataset.type;
+        const row = [...list().querySelectorAll('.dbg-row')].find(r => r.dataset.type === key);
+        if (!row) return;
+        row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        // Flash only once the row is actually IN VIEW. With a smooth scroll to a row far down
+        // the list, the animation used to play (and finish) while the list was still scrolling,
+        // so by the time the row arrived the highlight was already gone. Wait for it to land.
+        if ('IntersectionObserver' in window) {
+            let done = false;
+            const io = new IntersectionObserver((entries) => {
+                if (done) return;
+                if (entries.some(en => en.isIntersecting && en.intersectionRatio > 0.5)) {
+                    done = true; io.disconnect(); flashRow(row);
+                }
+            }, { threshold: [0.5] });
+            io.observe(row);
+            // Safety net for the "already visible, observer may not fire" case ONLY: flash on a
+            // timer, but just if the row is actually on screen by then. A long smooth scroll can
+            // still be running at this point, so flashing unconditionally would fire it off-screen.
+            setTimeout(() => {
+                if (done) return;
+                const r = row.getBoundingClientRect();
+                if (r.top >= 0 && r.bottom <= (window.innerHeight || document.documentElement.clientHeight)) {
+                    done = true; io.disconnect(); flashRow(row);
+                }
+            }, 700);
+        } else {
+            flashRow(row);
+        }
+    });
 
     // Click the file:line location to copy just the location
     list().addEventListener('click', (e) => {
@@ -1039,7 +1134,8 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
     const netStatus = () => document.getElementById('netStatus');
 
     function statusClass(r) {
-        if (r.status === 0) return 'serr';
+        // A resource with no status (opaque cross-origin) is unknown, not an error - stay neutral.
+        if (r.status === 0) return isResource(r) ? 'sneutral' : 'serr';
         if (r.status >= 500) return 's5xx';
         if (r.status >= 400) return 's4xx';
         if (r.status >= 300) return 's3xx';
@@ -1048,9 +1144,12 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
 
     function netUpdateCounts() {
         const failed = netCache.filter(isFailed).length;
+        const other = netCache.filter(isResource).length;
         document.getElementById('net-c-all').textContent = netCache.length;
         document.getElementById('net-c-failed').textContent = failed;
-        document.getElementById('net-c-xhr').textContent = netCache.length;
+        document.getElementById('net-c-xhr').textContent = netCache.length - other;
+        const oc = document.getElementById('net-c-other');
+        if (oc) oc.textContent = other;
         const nb = document.getElementById('dbgNetBadge');
         if (nb) { nb.textContent = failed || ''; nb.classList.toggle('show', failed > 0); }
         updateTabBadge();
@@ -1061,9 +1160,14 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         lastNetSig = sigOf(netCache);
         let filtered = netCache;
         if (netFilter === 'failed') filtered = netCache.filter(isFailed);
+        else if (netFilter === 'xhr') filtered = netCache.filter(r => !isResource(r));
+        else if (netFilter === 'other') filtered = netCache.filter(isResource);
         netFilteredCache = filtered.slice().reverse(); // newest first
         if (!netFilteredCache.length) {
-            netList().innerHTML = '<div class="dbg-empty">No fetch/XHR requests captured yet.<br>Interact with the page and they\'ll show here.</div>';
+            const msg = netFilter === 'other'
+                ? 'No document/script/style/image requests captured yet.'
+                : 'No fetch/XHR requests captured yet.';
+            netList().innerHTML = `<div class="dbg-empty">${msg}<br>Interact with the page and they\'ll show here.</div>`;
             return;
         }
         const RENDER_CAP = 300; // keep the DOM light no matter how many were captured
@@ -1071,10 +1175,16 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
             ? `<div class="dbg-empty" style="padding:8px;">Showing newest ${RENDER_CAP} of ${netFilteredCache.length}.</div>` : '';
         netList().innerHTML = note + netFilteredCache.slice(0, RENDER_CAP).map((r, i) => {
             const dur = r.duration != null ? Math.round(r.duration) + 'ms' : '';
-            const statusLabel = r.status === 0 ? (r.error || 'ERR') : r.status;
+            // A resource has no real HTTP status when cross-origin (opaque) - show its TYPE
+            // (doc/js/css/img/font) instead of a bare 0, so the row still says what it is.
+            const statusLabel = isResource(r)
+                ? (r.status ? r.status : (r.resType || 'res').toUpperCase())
+                : (r.status === 0 ? (r.error || 'ERR') : r.status);
+            const typeBadge = isResource(r)
+                ? `<span class="net-type net-type-${dEsc(r.resType || 'other')}">${dEsc(r.resType || 'other')}</span>` : '';
             return `<div class="net-row ${isFailed(r) ? 'failed' : ''}" data-i="${i}">
-                <span class="net-method">${dEsc(r.method || '')}</span>
-                <span class="net-status ${statusClass(r)}">${dEsc(statusLabel)}</span>
+                <span class="net-method">${dEsc(r.method || 'GET')}</span>
+                <span class="net-status ${statusClass(r)}">${dEsc(statusLabel)}</span>${typeBadge}
                 <span class="net-url" title="${dEsc(r.url || '')}">${dEsc(r.url || '')}</span>
                 <span class="net-dur">${dEsc(dur)}</span>
                 <button class="net-copy" data-i="${i}" title="Copy"><i class="fas fa-copy"></i></button>
@@ -1104,8 +1214,11 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
 
     function netDetailHtml(r) {
         const secH = (label, html) => html ? `<div class="nd-sec">${label}</div><pre>${html}</pre>` : '';
+        // A section whose body is already block-level markup (a grid), not preformatted text.
+        const secBlock = (label, html) => html ? `<div class="nd-sec">${label}</div>${html}` : '';
         const headersH = (h) => h && Object.keys(h).length
-            ? Object.entries(h).map(([k, v]) => `<span class="nd-key">${dEsc(k)}</span>: <span class="nd-val">${dEsc(v)}</span>`).join('\n') : '';
+            ? `<div class="nd-headers">` + Object.entries(h).map(([k, v]) =>
+                `<span class="nd-key">${dEsc(k)}</span><span class="nd-val">${dEsc(v)}</span>`).join('') + `</div>` : '';
         const bodyH = (b) => { const p = prettyJson(b); return p ? highlightJson(p) : dEsc(b || ''); };
         const statusH = r.status === 0
             ? `<span class="net-status serr">Failed</span>${r.error ? ' — <span class="nd-err">' + dEsc(r.error) + '</span>' : ''}`
@@ -1113,12 +1226,12 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         const preview = prettyJson(r.resBody);
         return `<div class="nd-sec">URL</div><pre class="nd-url">${dEsc(r.url || '')}</pre>`
             + secH('Status', statusH)
-            + secH('Request Headers', headersH(r.reqHeaders))
+            + secBlock('Request Headers', headersH(r.reqHeaders))
             + secH('Request Body', bodyH(r.reqBody))
-            + secH('Response Headers', headersH(r.resHeaders))
+            + secBlock('Response Headers', headersH(r.resHeaders))
             + (preview ? secH('Preview', highlightJson(preview)) : '')
             + secH('Response Body', bodyH(r.resBody))
-            + (r.initiator ? secH('Initiator', `<span class="nd-init">${dEsc(r.initiator)}</span>`) : '');
+            + (r.initiator ? secBlock('Initiator', `<div class="nd-init">${dEsc(r.initiator)}</div>`) : '');
     }
 
     netList().addEventListener('click', (e) => {

@@ -200,4 +200,54 @@
 
         return origSend.apply(this, arguments);
     };
+
+    // --- everything that is NOT fetch/XHR: documents, scripts, styles, images, fonts ---
+    // A 404 on a JS chunk or a CSS file never goes through fetch/XHR, so the wrappers above
+    // never see it - but it is exactly the kind of failure QA needs. PerformanceObserver
+    // reports every resource the page loads (passive, timing only, no body reads, so heavy
+    // pages stay fast), and modern Chrome hands us the HTTP status on each entry.
+    function resTypeOf(it, url) {
+        if (it === 'navigation') return 'doc';
+        if (it === 'script') return 'js';
+        if (it === 'link' || it === 'css') return /\.css(\?|$)/i.test(url) ? 'css' : 'other';
+        if (it === 'img' || it === 'image' || it === 'imageset') return 'img';
+        if (it === 'font') return 'font';
+        if (it === 'video' || it === 'audio') return 'media';
+        if (it === 'iframe' || it === 'frame' || it === 'embed' || it === 'object') return 'doc';
+        if (/\.js(\?|$)/i.test(url)) return 'js';
+        if (/\.css(\?|$)/i.test(url)) return 'css';
+        if (/\.(png|jpe?g|gif|webp|svg|ico|avif|bmp)(\?|$)/i.test(url)) return 'img';
+        if (/\.(woff2?|ttf|otf|eot)(\?|$)/i.test(url)) return 'font';
+        if (/\.html?(\?|$)/i.test(url)) return 'doc';
+        return it || 'other';
+    }
+
+    try {
+        const RES_SKIP = { fetch: 1, xmlhttprequest: 1, beacon: 1 };
+        const seenRes = new Set();
+        const emitRes = (e) => {
+            const it = e.initiatorType || '';
+            if (RES_SKIP[it]) return;                       // already captured as fetch/xhr above
+            const url = e.name || '';
+            if (!/^https?:/i.test(url)) return;             // skip data:, blob:, extension urls
+            const key = url + '|' + Math.round(e.startTime || 0);
+            if (seenRes.has(key)) return;
+            seenRes.add(key);
+            // responseStatus is present on modern Chrome; it is 0 for a cross-origin resource
+            // without Timing-Allow-Origin (opaque) - that is UNKNOWN, not a failure.
+            const status = typeof e.responseStatus === 'number' ? e.responseStatus : 0;
+            report({
+                kind: 'resource', resType: resTypeOf(it, url),
+                method: 'GET', url,
+                status, statusText: '',
+                ok: status ? status < 400 : true,
+                duration: e.duration, ts: Date.now(),
+                reqHeaders: {}, resHeaders: {}, reqBody: null, resBody: null,
+                contentType: '', error: null, initiator: ''
+            });
+        };
+        const po = new PerformanceObserver((list) => { try { list.getEntries().forEach(emitRes); } catch (e) { } });
+        po.observe({ type: 'resource', buffered: true });   // buffered: also replays what loaded before us
+        try { po.observe({ type: 'navigation', buffered: true }); } catch (e) { }
+    } catch (e) { }
 })();
