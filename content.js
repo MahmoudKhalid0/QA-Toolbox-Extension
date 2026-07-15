@@ -8878,7 +8878,33 @@ function axParseFetch(text) {
     }
     const clean = {};
     for (const k of Object.keys(headers)) { if (!AX_SKIP_HEADERS.has(k.toLowerCase())) clean[k] = headers[k]; }
+    // Force Accept to application/json. This tool only reads JSON, and a wildcard Accept like
+    // "application/json, text/plain, */*" (what browsers copy) lets a framework such as ABP
+    // pick HTML on error - so a rejected request comes back as a full themed error PAGE with
+    // no readable reason. Asking strictly for JSON makes it answer with a JSON error object
+    // (the actual message), and can itself resolve a 400 caused by content negotiation.
+    for (const k of Object.keys(clean)) { if (k.toLowerCase() === 'accept') delete clean[k]; }
+    clean['Accept'] = 'application/json';
     return { url, method, headers: clean, body };
+}
+
+// Pagination can live in the POST BODY, not just the URL query (ABP's skipCount/maxResultCount
+// is the common case). Parse a JSON body and find the skip/page + size keys, so the walker can
+// advance them per page instead of re-requesting page 1 forever.
+function axDetectBodyPaging(body) {
+    if (typeof body !== 'string' || !body.trim().startsWith('{')) return null;
+    let obj; try { obj = JSON.parse(body); } catch (e) { return null; }
+    if (!obj || typeof obj !== 'object') return null;
+    const lc = {}; for (const k of Object.keys(obj)) lc[k.toLowerCase()] = k;
+    const find = (names) => { for (const n of names) { const real = lc[n]; if (real !== undefined && /^\d+$/.test(String(obj[real]).trim())) return real; } return null; };
+    const SKIP = ['skipcount', 'skip', 'offset', 'start', 'startindex', 'from'];
+    const SIZE = ['maxresultcount', 'take', 'limit', 'top', 'pagesize', 'perpage', 'per_page', 'size', 'rows'];
+    const PAGE = ['pagenumber', 'pageindex', 'page', 'pageno'];
+    const sizeKey = find(SIZE), skipKey = find(SKIP), pageKey = find(PAGE);
+    const size = sizeKey ? (parseInt(obj[sizeKey]) || 100) : 100;
+    if (skipKey) return { where: 'body', mode: 'skip', skipParam: skipKey, sizeParam: sizeKey, size, start: parseInt(obj[skipKey]) || 0 };
+    if (pageKey) return { where: 'body', mode: 'page', pageParam: pageKey, sizeParam: sizeKey, size, start: parseInt(obj[pageKey]) || 1 };
+    return null;
 }
 
 // figure out the pagination scheme from the URL's query string. Any "offset"
@@ -8914,6 +8940,24 @@ function axDetectPagination(urlStr) {
     return null;
 }
 
+// Turn a server error response into one readable line. ABP/most APIs return a JSON error
+// object; a framework error PAGE comes back as HTML - say so instead of dumping markup.
+function axServerReason(text) {
+    if (!text) return '';
+    const t = String(text).trim();
+    if (/^\s*</.test(t) || /^<!doctype/i.test(t)) {
+        const m = t.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        return 'The server returned an error page' + (m ? ' ("' + m[1].trim().slice(0, 80) + '")' : '') + '. The request was rejected — the endpoint may expect different parameters.';
+    }
+    try {
+        const j = JSON.parse(t);
+        const e = j && (j.error || j);
+        const msg = e && (e.message || e.details || e.title || e.error_description);
+        if (msg) return String(msg).slice(0, 200);
+    } catch (e) { }
+    return t.slice(0, 200);
+}
+
 function axExtractItems(json) {
     if (Array.isArray(json)) return json;
     if (json && typeof json === 'object') {
@@ -8946,12 +8990,22 @@ function axSameOrigin(url) {
 // reuses the page's cert trust + cookies and dodges CORS — essential for
 // internal HTTPS sites with self-signed certs, where a background fetch fails
 // with "Failed to fetch" (HTTP 0). Cross-origin requests still go via bg.
+// A request carrying an Authorization token authenticates by THAT token - it needs no
+// cookies. Worse, sending the session cookie too makes a framework like ABP switch to
+// cookie-auth and then demand an anti-forgery token for the POST, which we don't have, so
+// it answers 400. (A real cross-site browser call drops the cookie via SameSite anyway, so
+// omitting it just matches what the browser already does.) Cookie-only sites keep 'include'.
+function axCredentials(headers) {
+    const hasAuth = Object.keys(headers || {}).some((k) => k.toLowerCase() === 'authorization');
+    return hasAuth ? 'omit' : 'include';
+}
+
 async function axFetch(url, method, headers, body) {
     // Same-origin: fetch straight from this page - it already trusts the cert and holds the
     // session cookies.
     if (axSameOrigin(url)) {
         try {
-            const opts = { method: method || 'GET', headers: headers || {}, credentials: 'include', redirect: 'follow' };
+            const opts = { method: method || 'GET', headers: headers || {}, credentials: axCredentials(headers), redirect: 'follow' };
             if (body != null && !/^(GET|HEAD)$/i.test(opts.method)) opts.body = body;
             const resp = await fetch(url, opts);
             const text = await resp.text();
@@ -9056,7 +9110,10 @@ function openApiExportPanel() {
         const parsed = axParseFetch($('#qa-ax-in').value);
         if (parsed.error) { err.textContent = parsed.error; return; }
         const maxRows = Math.max(1, parseInt($('#qa-ax-max').value) || 100000);
-        const pag = axDetectPagination(parsed.url);
+        // Pagination lives in the URL query OR the POST body. The body case (ABP's
+        // skipCount/maxResultCount) was invisible before, so the walker kept re-requesting
+        // page 1 - and some servers reject the unchanged repeat with a 400.
+        const pag = axDetectPagination(parsed.url) || axDetectBodyPaging(parsed.body);
 
         busy = true; runBtn.disabled = true; runBtn.innerHTML = '<span class="spin"></span> Fetching…';
         prog.classList.add('show'); fill.style.width = '0'; meta.textContent = 'Starting…';
@@ -9065,14 +9122,26 @@ function openApiExportPanel() {
         try {
             while (guard++ < 100000) {
                 let pageUrl = parsed.url;
-                if (pag) {
+                let pageBody = parsed.body;
+                if (pag && pag.where === 'body') {
+                    // advance the skip/page value inside the JSON body
+                    let o = {}; try { o = JSON.parse(parsed.body); } catch (e) { }
+                    if (pag.mode === 'skip') { o[pag.skipParam] = cur; if (pag.sizeParam) o[pag.sizeParam] = pag.size; }
+                    else { o[pag.pageParam] = cur; if (pag.sizeParam) o[pag.sizeParam] = pag.size; }
+                    pageBody = JSON.stringify(o);
+                } else if (pag) {
                     const u = new URL(parsed.url);
                     if (pag.mode === 'skip') { u.searchParams.set(pag.skipParam, String(cur)); u.searchParams.set(pag.sizeParam, String(pag.size)); }
                     else { u.searchParams.set(pag.pageParam, String(cur)); if (pag.sizeParam) u.searchParams.set(pag.sizeParam, String(pag.size)); }
                     pageUrl = u.toString();
                 }
-                const r = await axFetch(pageUrl, parsed.method, parsed.headers, parsed.body);
-                if (!r.ok) throw new Error(r.status === 401 ? 'Unauthorized (401) — the token expired. Reload the page, re-copy the request, and paste again.' : r.status === 0 ? `Could not reach the server (${r.error || 'Failed to fetch'}). Open the site in a tab first and accept any certificate warning, then retry.` : `Request failed (HTTP ${r.status})`);
+                const r = await axFetch(pageUrl, parsed.method, parsed.headers, pageBody);
+                if (!r.ok) {
+                    if (r.status === 401 || r.status === 403) throw new Error('Unauthorized (' + r.status + ') — the token/session expired. Reload the page, re-copy the request, and paste again.');
+                    if (r.status === 0) throw new Error(`Could not reach the server (${r.error || 'Failed to fetch'}). Open the site in a tab first and accept any certificate warning, then retry.`);
+                    // Show WHAT the server said - the reason for the rejection, not just the code.
+                    throw new Error(`Request failed (HTTP ${r.status}). ${axServerReason(r.text)}`);
+                }
                 let json; try { json = JSON.parse(r.text); } catch (e) { throw new Error('Response is not JSON — this endpoint may not return data rows.'); }
                 const items = axExtractItems(json);
                 const t = axExtractTotal(json); if (t != null) total = t;
@@ -9081,11 +9150,17 @@ function openApiExportPanel() {
                 fill.style.width = (total ? pct : 100) + '%';
                 meta.textContent = total ? `${all.length} / ${total}` : `${all.length} rows…`;
                 if (!pag) break;
-                if (!items.length) break;
+                if (!items.length) break;                       // a truly empty page = the end
                 if (total != null && all.length >= total) break;
-                if (items.length < pag.size) break;
+                // A short page means "the end" ONLY when there's no total to trust. With a
+                // known total, keep going: some pages come back filtered/short in the middle,
+                // and stopping on the first one is what cut an export off at 19 of 118.
+                if (total == null && items.length < pag.size) break;
                 if (all.length >= maxRows) { all = all.slice(0, maxRows); break; }
-                cur += (pag.mode === 'skip') ? pag.size : 1;
+                // Skip/offset mode advances by how many rows we ACTUALLY received, not the
+                // requested size - so a short page in the middle doesn't skip the rows right
+                // after it (advancing by size would leave a gap).
+                cur += (pag.mode === 'skip') ? items.length : 1;
             }
         } catch (e) {
             busy = false; runBtn.disabled = false; runBtn.innerHTML = 'Fetch &amp; Export CSV';

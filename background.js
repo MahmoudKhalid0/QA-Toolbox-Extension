@@ -1484,20 +1484,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             let targetOrigin = '';
             try { targetOrigin = new URL(request.url).origin; } catch (e) { }
 
+            // A request with an Authorization token authenticates by THAT token and needs no
+            // cookies. Sending the session cookie too makes ABP switch to cookie-auth and
+            // demand an anti-forgery token for the POST, which we don't have -> 400. A real
+            // cross-site browser call drops the cookie via SameSite anyway, so omitting it
+            // just matches the browser. Cookie-only sites (no Authorization) keep 'include'.
+            const hasAuth = Object.keys(request.headers || {}).some((k) => k.toLowerCase() === 'authorization');
+            const creds = hasAuth ? 'omit' : 'include';
+
             const runInTab = async (tabId) => {
                 try {
                     const [out] = await chrome.scripting.executeScript({
                         target: { tabId },
                         world: 'MAIN',
-                        func: async (url, method, headers, body) => {
+                        func: async (url, method, headers, body, credentials) => {
                             try {
-                                const o = { method: method || 'GET', headers: headers || {}, credentials: 'include', redirect: 'follow' };
+                                const o = { method: method || 'GET', headers: headers || {}, credentials, redirect: 'follow' };
                                 if (body != null && !/^(GET|HEAD)$/i.test(o.method)) o.body = body;
                                 const r = await fetch(url, o);
                                 return { ok: r.ok, status: r.status, text: await r.text() };
                             } catch (e) { return { ok: false, status: 0, error: String((e && e.message) || e) }; }
                         },
-                        args: [request.url, request.method || 'GET', request.headers || {}, request.body != null ? request.body : null],
+                        args: [request.url, request.method || 'GET', request.headers || {}, request.body != null ? request.body : null, creds],
                     });
                     return out && out.result;
                 } catch (e) { return null; }
@@ -1522,7 +1530,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
             // Last resort: a plain background fetch.
             try {
-                const opts = { method: request.method || 'GET', headers: request.headers || {}, credentials: 'include', redirect: 'follow' };
+                const opts = { method: request.method || 'GET', headers: request.headers || {}, credentials: creds, redirect: 'follow' };
                 if (request.body != null && !/^(GET|HEAD)$/i.test(opts.method)) opts.body = request.body;
                 const resp = await fetch(request.url, opts);
                 const text = await resp.text();
