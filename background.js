@@ -102,43 +102,31 @@ chrome.tabs.onUpdated.addListener((id, info, tab) => { if (tab && tab.url) tabUr
 chrome.tabs.onRemoved.addListener((id) => { const url = tabUrlCache[id]; delete tabUrlCache[id]; autoClearOnTabClosed(url); });
 
 // ── Time Machine ────────────────────────────────────────────────────────────
-// These two run in the page's MAIN world (serialized by executeScript, so they
-// must be fully self-contained). qaTMInstall overrides window.Date so the page
-// sees a chosen time; qaTMUninstall restores the real one.
+// These run in the page's MAIN world (serialized by executeScript, so they must
+// be fully self-contained). The real installer lives in modules/time-machine.js,
+// which is a document_start content script - it is the only thing that beats the
+// page's own first script. These two only handle the page that is ALREADY loaded
+// when the user hits Apply / Reset.
 function qaTMInstall(cfg) {
     try {
         const W = window;
-        if (!W.__qaRealDate) W.__qaRealDate = W.Date;
-        W.__qaTMcfg = cfg;                       // {mode:'freeze'|'advance', targetMs, anchorMs}
-        if (W.__qaTMInstalled) return;           // already wrapped — just updated cfg
-        const RealDate = W.__qaRealDate;
-        const shift = () => {
-            const c = W.__qaTMcfg;
-            if (!c) return RealDate.now();
-            return c.mode === 'freeze' ? c.targetMs : c.targetMs + (RealDate.now() - c.anchorMs);
-        };
-        // A plain function, not `class ... extends`: a subclass gets its own
-        // prototype, so Dates created before the override would fail
-        // `x instanceof Date`. Sharing RealDate.prototype keeps that intact.
-        // It also lets Date() work when called without `new` (a class throws).
-        function FakeDate(...args) {
-            if (!new.target) return new RealDate(shift()).toString();
-            if (args.length === 0) return Reflect.construct(RealDate, [shift()], new.target);
-            return Reflect.construct(RealDate, args, new.target);
-        }
-        FakeDate.prototype = RealDate.prototype;
-        Object.setPrototypeOf(FakeDate, RealDate);   // inherit parse / UTC
-        FakeDate.now = () => Math.floor(shift());
-        try { Object.defineProperty(FakeDate, 'name', { value: 'Date' }); } catch (e) { }
-        W.Date = FakeDate;
-        W.__qaTMInstalled = true;
+        // Seed the per-tab config so the document_start script re-installs the
+        // override on every future reload/navigation, before any page script runs.
+        try { sessionStorage.setItem('__qaTM', JSON.stringify(cfg)); } catch (e) { }
+        if (W.__qaTMInstall) { W.__qaTMInstall(cfg); return; }
     } catch (e) { }
 }
 function qaTMUninstall() {
-    try { const W = window; if (W.__qaRealDate) W.Date = W.__qaRealDate; W.__qaTMInstalled = false; W.__qaTMcfg = null; } catch (e) { }
+    try {
+        try { sessionStorage.removeItem('__qaTM'); } catch (e) { }
+        const W = window;
+        if (W.__qaTMUninstall) { W.__qaTMUninstall(); return; }
+        if (W.__qaRealDate) { W.Date = W.__qaRealDate; W.__qaTMInstalled = false; W.__qaTMcfg = null; }
+    } catch (e) { }
 }
-// Re-apply the override as early as possible on every reload/navigation of a
-// tab that has Time Machine active, so scripts reading the clock on load see it.
+// A belt-and-braces re-apply for frames whose sessionStorage we can't seed (a
+// cross-origin child frame keeps its own storage). The document_start script is
+// what actually makes the override land on time; this only tops it up.
 chrome.tabs.onUpdated.addListener((tabId, info) => {
     if (info.status !== 'loading') return;
     chrome.storage.local.get(['qaTM'], (r) => {

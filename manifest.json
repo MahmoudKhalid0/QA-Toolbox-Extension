@@ -75,12 +75,26 @@
                 "<all_urls>"
             ],
             "js": [
+                "modules/time-machine.js",
                 "modules/console-capture.js",
                 "modules/network-capture.js"
             ],
             "run_at": "document_start",
             "world": "MAIN",
             "all_frames": true
+        },
+        {
+            "comment": "Same file again, but reaching about:srcdoc / about:blank / blob: child frames too. Those inherit the parent's origin, so they read the same sessionStorage config. The script no-ops when it has already run in a frame.",
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "modules/time-machine.js"
+            ],
+            "run_at": "document_start",
+            "world": "MAIN",
+            "all_frames": true,
+            "match_origin_as_fallback": true
         },
         {
             "matches": [
