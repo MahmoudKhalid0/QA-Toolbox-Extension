@@ -225,18 +225,33 @@ chrome.runtime.onStartup.addListener(() => { getClearCfg().then(cfg => { if (cfg
         const flag = await chrome.storage.local.get(['categoriesCleanupV1']);
         if (!flag.categoriesCleanupV1) {
             const catResult = await chrome.storage.sync.get(['formFillerCategories']);
-            let cats = catResult.formFillerCategories || [];
-            const profiles = await FormFillerDB.getAllProfiles().catch(() => []);
-            const used = new Set(profiles.map(p => p.category).filter(Boolean));
-            const oldDefaults = ['Work', 'Personal', 'Testing', 'عام'];
-            cats = cats.filter(c => !oldDefaults.includes(c) || used.has(c));
-            if (!cats.includes('General')) cats.unshift('General');
-            await chrome.storage.sync.set({
-                formFillerCategories: cats,
-                formFillerCategoriesUpdatedAt: Date.now()
-            });
+            const before = catResult.formFillerCategories;
+            // A fresh install has no categories to clean. Writing ['General']
+            // here anyway stamped a brand-new device with Date.now(), and that
+            // stamp then out-voted every real category on the user's other
+            // machine the first time they signed in. Do nothing until there is
+            // something to do.
+            if (Array.isArray(before) && before.length) {
+                const profiles = await FormFillerDB.getAllProfiles().catch(() => []);
+                const used = new Set(profiles.map(p => p.category).filter(Boolean));
+                const oldDefaults = ['Work', 'Personal', 'Testing', 'عام'];
+                const cats = before.filter(c => !oldDefaults.includes(c) || used.has(c));
+                if (!cats.includes('General')) cats.unshift('General');
+                if (JSON.stringify(cats) !== JSON.stringify(before)) {
+                    // A local cleanup is still a deletion - say so, or the merge
+                    // will faithfully restore what we just removed.
+                    const store = await chrome.storage.sync.get(['formFillerCategoryTombstones']);
+                    const tombs = store.formFillerCategoryTombstones || {};
+                    before.filter(c => !cats.includes(c)).forEach(c => { tombs[String(c).toLowerCase()] = Date.now(); });
+                    await chrome.storage.sync.set({
+                        formFillerCategories: cats,
+                        formFillerCategoriesUpdatedAt: Date.now(),
+                        formFillerCategoryTombstones: tombs
+                    });
+                    console.log('Categories cleanup done:', cats);
+                }
+            }
             await chrome.storage.local.set({ categoriesCleanupV1: true });
-            console.log('Categories cleanup done:', cats);
         }
     } catch (e) {
         console.error('Migration error:', e);
@@ -2650,6 +2665,26 @@ function broadcastProfilesUpdated(skipCloudPush) {
     // change CAME from the cloud - it was just pushed/pulled.
     if (!skipCloudPush) CloudSync.syncSchedulePush();
 }
+
+// Each tool writes its own config object (bug tracker, clear-data, responsive)
+// from wherever its UI happens to live. Rather than teach every one of those
+// call sites to stamp the write, watch the keys here: one place, and it covers
+// any future tool that stores its settings the same way. Sync merges these key
+// by key and needs the stamp only to settle keys both devices hold.
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    const keys = (typeof SYNC_CONFIG_KEYS !== 'undefined' ? SYNC_CONFIG_KEYS : [])
+        .filter(k => k in changes)
+        // A value that sync itself just applied is the cloud arriving, not a
+        // local edit; stamping it would make this device look like the author.
+        .filter(k => !(typeof syncWasApplied === 'function' && syncWasApplied(k, changes[k].newValue)));
+    if (!keys.length) return;
+    chrome.storage.local.get(['qaConfigUpdatedAt'], (r) => {
+        const map = { ...(r.qaConfigUpdatedAt || {}) };
+        keys.forEach(k => { map[k] = Date.now(); });
+        chrome.storage.local.set({ qaConfigUpdatedAt: map });
+    });
+});
 
 // Pull cloud changes when the browser starts (e.g. edits made on another device)
 chrome.runtime.onStartup.addListener(() => {

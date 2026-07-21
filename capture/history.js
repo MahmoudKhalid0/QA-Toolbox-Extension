@@ -77,11 +77,22 @@ function toast(msg, isErr) {
     setTimeout(() => { t.className = 'toast'; }, 2600);
 }
 
+// A record can hold something that is not a usable Blob - a save that the service
+// worker was killed halfway through, an older schema, a thumbnail that came back
+// empty. createObjectURL THROWS on that, and the throw used to escape cardHtml and
+// abort render() midway: the workspace sidebar and the stats had already been
+// drawn, so the page kept its workspaces and simply never got a grid at all. One
+// damaged capture must never cost every other capture its picture.
 function blobUrl(blob, key) {
-    if (!blob) return '';
-    const u = URL.createObjectURL(blob);
-    urls.set(key, u);
-    return u;
+    if (!(blob instanceof Blob) || !blob.size) return '';
+    try {
+        const u = URL.createObjectURL(blob);
+        urls.set(key, u);
+        return u;
+    } catch (e) {
+        console.warn('unusable thumbnail on', key, e);
+        return '';
+    }
 }
 
 function revokeAll() {
@@ -342,25 +353,60 @@ function render() {
         else groups.push({ name: g, items: [it] });
     }
 
-    $('content').innerHTML = groups.map(g => `
+    // The sidebar and the stats are already on the page by now, so an error
+    // escaping from here would leave exactly the workspaces-but-no-pictures state
+    // this whole guard exists to prevent. Say so instead of showing nothing.
+    try {
+        $('content').innerHTML = groups.map(g => `
         <div class="group-h">${esc(g.name)} &middot; ${g.items.length}</div>
         <div class="grid">${g.items.map(cardHtml).join('')}</div>
     `).join('');
+    } catch (e) {
+        console.error('gallery render failed', e);
+        $('content').innerHTML = `<div class="empty"><i class="fas fa-triangle-exclamation"></i>
+            <h3>Could not draw the captures</h3><p>${esc(e.message || e)}</p></div>`;
+        syncBulk();
+        return;
+    }
 
     wireCards();
     syncBulk();
 }
 
+// Never let one capture take the grid down with it - see blobUrl above.
 function cardHtml(it) {
+    try {
+        return cardHtmlFor(it);
+    } catch (e) {
+        console.warn('could not draw the card for', it && it.id, e);
+        return `
+        <div class="card" data-id="${esc(it && it.id)}">
+            <div class="thumb"><div class="ph"><i class="fas fa-triangle-exclamation"></i></div></div>
+            <div class="meta">
+                <div class="title">${esc((it && it.title) || 'Capture')}</div>
+                <div class="sub"><span>This capture could not be read</span></div>
+                <div class="acts">
+                    <button class="del" data-del="${esc(it && it.id)}" title="Delete"><i class="fas fa-trash"></i></button>
+                </div>
+            </div>
+        </div>`;
+    }
+}
+
+function cardHtmlFor(it) {
     const errs = errCount(it), reqs = reqCount(it);
     const thumbSrc = it.thumb ? blobUrl(it.thumb, 't' + it.id) : '';
+    // No usable thumbnail is not the end of the picture: the full-size blob is
+    // still in the record, so the tile asks for that instead of settling for a
+    // grey icon. Same when a thumbnail exists but fails to decode (see wireCards).
+    const ph = (icon) => `<div class="ph" data-recover="${esc(it.id)}"><i class="fas ${icon}"></i></div>`;
     const media = it.type === 'video'
         ? (thumbSrc
             ? `<img src="${thumbSrc}" alt="" loading="lazy"><div class="play-overlay"><i class="fas fa-circle-play"></i></div>`
             : `<div class="ph"><i class="fas fa-circle-play"></i></div>`)
         : thumbSrc
-            ? `<img src="${thumbSrc}" alt="" loading="lazy">`
-            : `<div class="ph"><i class="fas fa-image"></i></div>`;
+            ? `<img src="${thumbSrc}" alt="" loading="lazy" data-recover="${esc(it.id)}">`
+            : ph('fa-image');
 
     return `
     <div class="card ${picked.has(it.id) ? 'picked' : ''}" data-id="${esc(it.id)}">
@@ -414,6 +460,39 @@ function wireCards() {
             card.classList.toggle('picked', cb.checked);
             syncBulk();
         }));
+
+    // A tile with no thumbnail, or one whose thumbnail will not decode, falls back
+    // to the full-size image the record still holds. An inline onerror= attribute
+    // is not an option here - an extension page's CSP refuses inline script.
+    document.querySelectorAll('img[data-recover]').forEach(im =>
+        im.addEventListener('error', () => recoverThumb(im), { once: true }));
+    document.querySelectorAll('.ph[data-recover]').forEach(el => recoverThumb(el));
+}
+
+// Draws the full-size blob into the tile, so a missing or broken thumbnail costs
+// a little decoding rather than the picture itself.
+async function recoverThumb(el) {
+    const card = el.closest('.card');
+    const id = card && card.dataset.id;
+    if (!id) return;
+    let rec = null;
+    try { rec = await CapStore.get(id); } catch (e) { return; }
+    if (!rec || rec.type === 'video') return;
+    const src = blobUrl(rec.blob, 'f' + id);
+    if (!src) return;
+    if (!el.isConnected) { URL.revokeObjectURL(src); urls.delete('f' + id); return; }
+    const img = document.createElement('img');
+    img.alt = '';
+    // Nothing left to try if even the full-size blob will not decode - show the
+    // placeholder rather than an empty box that reads as a broken page.
+    img.addEventListener('error', () => {
+        const ph = document.createElement('div');
+        ph.className = 'ph';
+        ph.innerHTML = '<i class="fas fa-image"></i>';
+        img.replaceWith(ph);
+    }, { once: true });
+    img.src = src;
+    el.replaceWith(img);
 }
 
 function syncBulk() {

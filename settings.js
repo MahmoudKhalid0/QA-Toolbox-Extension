@@ -247,7 +247,9 @@ async function updateSetting(key, value) {
         settings[key] = value;
     }
 
-    await chrome.storage.sync.set({ formFillerSettings: settings });
+    // Stamp the write: sync merges settings key by key and needs to know which
+    // side actually made a choice when both hold the same key.
+    await chrome.storage.sync.set({ formFillerSettings: settings, formFillerSettingsUpdatedAt: Date.now() });
     chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
     showToast('Settings saved!');
 
@@ -277,12 +279,28 @@ async function loadCategories() {
     renderCategories();
 }
 
-// Persist categories with a timestamp so cloud sync can pick the newest list
-// (last-write-wins) instead of resurrecting deleted categories
-async function saveCategories() {
+// Persist categories. Cloud sync merges the two devices' lists as a union, so
+// what it needs from here is not "which list is newer" - that reading let a
+// brand-new device delete an established one - but which individual names were
+// added or deleted, and when.
+async function saveCategories(change) {
+    const store = await chrome.storage.sync.get(['formFillerCategoryAddedAt', 'formFillerCategoryTombstones']);
+    const addedAt = store.formFillerCategoryAddedAt || {};
+    const tombs = store.formFillerCategoryTombstones || {};
+
+    if (change && change.added) {
+        addedAt[change.added.toLowerCase()] = Date.now();
+        delete tombs[change.added.toLowerCase()];   // re-adding undoes the deletion everywhere
+    }
+    if (change && change.deleted) {
+        tombs[change.deleted.toLowerCase()] = Date.now();
+    }
+
     await chrome.storage.sync.set({
         formFillerCategories: availableCategories,
-        formFillerCategoriesUpdatedAt: Date.now()
+        formFillerCategoriesUpdatedAt: Date.now(),
+        formFillerCategoryAddedAt: addedAt,
+        formFillerCategoryTombstones: tombs
     });
     chrome.runtime.sendMessage({ action: 'scheduleCloudPush' }).catch(() => { });
 }
@@ -336,7 +354,7 @@ async function deleteCategory(name) {
     }
 
     availableCategories = availableCategories.filter(c => c !== name);
-    await saveCategories();
+    await saveCategories({ deleted: name });
     renderCategories();
     showToast('Category deleted');
 }
@@ -350,7 +368,7 @@ async function addCategory() {
         return;
     }
     availableCategories.push(name);
-    await saveCategories();
+    await saveCategories({ added: name });
     input.value = '';
     renderCategories();
     showToast('Category added');

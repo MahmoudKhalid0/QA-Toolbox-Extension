@@ -10,6 +10,7 @@
 const SYNC_FILE_NAME = 'qa-toolbox-sync.json';
 const SYNC_DEBOUNCE_MS = 5000;
 const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000; // forget deletions after 90 days
+const SYNC_PAYLOAD_VERSION = 2;
 
 let syncPushTimer = null;
 
@@ -216,28 +217,154 @@ async function driveUpload(fileId, payload) {
 const syncPick = (mine, theirs) => (mine !== undefined && mine !== null) ? mine
     : ((theirs !== undefined && theirs !== null) ? theirs : null);
 
+// Profiles carry their own lastModified. Nothing else did, so a device that had
+// only ever written a *default* ("General", {randomDigits:5}) still stamped it
+// with Date.now() and out-voted a year of real edits on the other machine.
+// Everything that syncs now travels with the moment it was last touched.
 async function syncCollectLocalData() {
     let profiles = [];
     try { profiles = await FormFillerDB.getAllProfiles(); } catch (e) { }
-    const syncStore = await chrome.storage.sync.get(['formFillerSettings', 'formFillerCategories', 'formFillerCategoriesUpdatedAt', 'delaySeconds']);
-    const localStore = await chrome.storage.local.get(['aiSaveBehavior', 'syncTombstones', 'qaClearData', 'qaResponsive', 'qaBugTracker', 'capEyeEnabled']);
+    const syncStore = await chrome.storage.sync.get([
+        'formFillerSettings', 'formFillerSettingsUpdatedAt',
+        'formFillerCategories', 'formFillerCategoriesUpdatedAt',
+        'formFillerCategoryTombstones', 'formFillerCategoryAddedAt',
+        'delaySeconds'
+    ]);
+    const localStore = await chrome.storage.local.get([
+        'aiSaveBehavior', 'syncTombstones', 'qaClearData', 'qaResponsive', 'qaBugTracker',
+        'capEyeEnabled', 'qaConfigUpdatedAt'
+    ]);
     return {
-        version: 1,
+        syncVersion: SYNC_PAYLOAD_VERSION,
         exportedAt: Date.now(),
         profiles,
         tombstones: localStore.syncTombstones || {},
         settings: syncStore.formFillerSettings || null,
+        settingsUpdatedAt: syncStore.formFillerSettingsUpdatedAt || 0,
         categories: syncStore.formFillerCategories || null,
         categoriesUpdatedAt: syncStore.formFillerCategoriesUpdatedAt || 0,
+        categoryTombstones: syncStore.formFillerCategoryTombstones || {},
+        categoryAddedAt: syncStore.formFillerCategoryAddedAt || {},
         aiSaveBehavior: localStore.aiSaveBehavior || null,
         qaClearData: localStore.qaClearData || null,
         qaResponsive: localStore.qaResponsive || null,
         // Jira / Azure credentials and project choices. They live in the app's
         // own private Drive folder, which nothing but this extension can read.
         qaBugTracker: localStore.qaBugTracker || null,
+        // When each tool's config object was last edited on this device. Written
+        // by background.js's stamper, one entry per key (qaBugTracker, ...).
+        configUpdatedAt: localStore.qaConfigUpdatedAt || {},
         capEyeEnabled: localStore.capEyeEnabled,
         delaySeconds: syncStore.delaySeconds
     };
+}
+
+// The tool config objects (bug tracker, clear-data, responsive) that are merged
+// key by key rather than "whichever side has one wins".
+const SYNC_CONFIG_KEYS = ['qaBugTracker', 'qaClearData', 'qaResponsive'];
+
+// Values that sync itself has just written. background.js's stamper watches the
+// same keys, and must not mistake "the cloud arrived" for "the user edited".
+const syncAppliedValues = new Map();
+function syncMarkApplied(key, value) { syncAppliedValues.set(key, JSON.stringify(value === undefined ? null : value)); }
+function syncWasApplied(key, value) {
+    return syncAppliedValues.get(key) === JSON.stringify(value === undefined ? null : value);
+}
+
+// A device that has never completed a pull knows nothing; its "state" is a pile
+// of install defaults. Let it out-vote the cloud and it deletes the account.
+// Until the first pull lands, every local timestamp counts as zero.
+const syncStamp = (value, hydrated) => (hydrated ? (value || 0) : 0);
+
+// Union of two sets of category names, minus the ones explicitly deleted.
+// Union, not last-write-wins: a name only disappears when someone actually
+// pressed Delete on it (a tombstone), never because the other device had not
+// heard of it yet. `addedAt` lets a re-created category survive its own tombstone.
+function syncMergeCategories(local, cloud, hydrated, profiles) {
+    const tombstones = {};
+    const addTombs = (map) => {
+        for (const [k, ts] of Object.entries(map || {})) {
+            const key = String(k).toLowerCase();
+            if (!tombstones[key] || tombstones[key] < ts) tombstones[key] = ts;
+        }
+    };
+    addTombs(cloud && cloud.categoryTombstones);
+    if (hydrated) addTombs(local.categoryTombstones);
+
+    const now = Date.now();
+    for (const k of Object.keys(tombstones)) {
+        if (now - tombstones[k] > TOMBSTONE_TTL_MS) delete tombstones[k];
+    }
+
+    const addedAt = { ...((cloud && cloud.categoryAddedAt) || {}) };
+    for (const [k, ts] of Object.entries(local.categoryAddedAt || {})) {
+        const key = String(k).toLowerCase();
+        if (!addedAt[key] || addedAt[key] < ts) addedAt[key] = ts;
+    }
+
+    // Preserve display order: cloud's list first, then anything only we have.
+    const seen = new Set();
+    const names = [];
+    for (const name of [...((cloud && cloud.categories) || []), ...(local.categories || [])]) {
+        if (typeof name !== 'string' || !name.trim()) continue;
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const deletedAt = tombstones[key] || 0;
+        if (deletedAt && deletedAt > (addedAt[key] || 0)) continue;   // really deleted
+        names.push(name);
+    }
+    if (!names.some(n => n.toLowerCase() === 'general')) names.unshift('General');
+
+    // Self-heal: a category a profile is actually filed under exists, whatever
+    // the list says. This is what puts back the names an older build lost, and
+    // it costs nothing on a healthy install because the list already has them.
+    for (const p of (profiles || [])) {
+        const c = p && p.category;
+        if (typeof c !== 'string' || !c.trim()) continue;
+        const key = c.toLowerCase();
+        if (seen.has(key)) continue;
+        if ((tombstones[key] || 0) > (addedAt[key] || 0)) continue;   // deliberately deleted
+        seen.add(key);
+        names.push(c);
+    }
+
+    const categoriesUpdatedAt = Math.max(
+        syncStamp(local.categoriesUpdatedAt, hydrated),
+        (cloud && cloud.categoriesUpdatedAt) || 0
+    );
+    return { categories: names, categoryTombstones: tombstones, categoryAddedAt: addedAt, categoriesUpdatedAt };
+}
+
+// Key-by-key union of two settings objects. Whole-object last-write-wins used to
+// throw away every key the winner had never heard of; a key that exists on only
+// one side is not a conflict, it is data.
+function syncMergeSettings(mine, theirs, myStamp, theirStamp) {
+    if (!mine || typeof mine !== 'object') return theirs && typeof theirs === 'object' ? { ...theirs } : (theirs || mine || null);
+    if (!theirs || typeof theirs !== 'object') return { ...mine };
+    const out = { ...theirs, ...mine };                 // union, local value by default
+    if ((theirStamp || 0) > (myStamp || 0)) {           // their edit is newer: it wins the overlap
+        for (const k of Object.keys(theirs)) out[k] = theirs[k];
+        for (const k of Object.keys(mine)) if (!(k in theirs)) out[k] = mine[k];
+    }
+    return out;
+}
+
+// The same key-by-key union for QA Toolbox's per-tool config objects (bug
+// tracker credentials, clear-data types, responsive breakpoints). `local ||
+// cloud` used to mean a device that had ever opened the tool could never
+// receive the other machine's copy - the second half of the reported bug.
+// Anything that is not an object (a string like aiSaveBehavior, a boolean) has
+// no keys to union, so it falls back to a plain newest/hydrated-aware pick.
+function syncMergeConfig(mine, theirs, hydrated, myStamp, theirStamp) {
+    const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+    if (!isObj(mine) || !isObj(theirs)) {
+        return hydrated ? (mine || theirs || null) : (theirs || mine || null);
+    }
+    // Not hydrated: this device is still a reader, so the cloud wins the keys
+    // both sides hold - but keys only this device has are still data, not noise.
+    if (!hydrated) return syncMergeSettings(theirs, mine, theirStamp || 0, 0);
+    return syncMergeSettings(mine, theirs, myStamp || 0, theirStamp || 0);
 }
 
 // Merge cloud + local: union of profiles (newest lastModified wins per id),
@@ -279,7 +406,7 @@ function syncMergeProfiles(localProfiles, cloudProfiles, localTombs, cloudTombs)
 
 async function syncGetMeta() {
     const r = await chrome.storage.local.get(['cloudSyncMeta']);
-    return r.cloudSyncMeta || { signedIn: false, email: '', lastSyncAt: null, lastError: null };
+    return r.cloudSyncMeta || { signedIn: false, email: '', lastSyncAt: null, lastError: null, hydratedAt: null };
 }
 
 async function syncSetMeta(patch) {
@@ -296,7 +423,36 @@ function syncBroadcastState(state) {
 
 // ---------- Main entry points ----------
 
+// Anything the cloud holds that the merge dropped without a tombstone to explain
+// it is a bug, not a deletion - put it back rather than uploading the loss.
+// This is the last line of defence: whatever slips through the merge, the cloud
+// copy still cannot shrink by accident.
+function syncGuardNoSilentLoss(cloud, next) {
+    const lost = [];
+    const keptIds = new Set(next.profiles.map(p => String(p.id)));
+    for (const p of ((cloud && cloud.profiles) || [])) {
+        const id = String(p && p.id);
+        if (keptIds.has(id) || next.tombstones[id]) continue;
+        next.profiles.push(p);
+        lost.push('profile:' + id);
+    }
+    const keptCats = new Set(next.categories.map(c => String(c).toLowerCase()));
+    for (const c of ((cloud && cloud.categories) || [])) {
+        const key = String(c).toLowerCase();
+        if (keptCats.has(key) || next.categoryTombstones[key]) continue;
+        next.categories.push(c);
+        keptCats.add(key);
+        lost.push('category:' + c);
+    }
+    if (lost.length) console.warn('Cloud sync: refused to drop un-tombstoned items', lost);
+    return lost;
+}
+
 // Pull + merge + push. Safe to call repeatedly; does nothing if not signed in.
+//
+// Order matters: PULL, merge, apply locally, mark this device hydrated, then
+// push. A device that has not yet hydrated never gets to out-vote the cloud -
+// on first sign-in it is a reader, and only afterwards an author.
 async function syncNow(interactive = false) {
     const meta = await syncGetMeta();
     if (!meta.signedIn) return { skipped: true };
@@ -312,57 +468,112 @@ async function syncNow(interactive = false) {
         const cloud = fileId ? await driveDownload(fileId) : null;
         const local = await syncCollectLocalData();
 
+        // First successful pull on this device? Then its timestamps are install
+        // defaults, not decisions - they lose every tie-break this round.
+        const hydrated = !!meta.hydratedAt;
+
         const { merged, tombstones } = syncMergeProfiles(
             local.profiles, (cloud && cloud.profiles) || [],
-            local.tombstones, (cloud && cloud.tombstones) || {}
+            hydrated ? local.tombstones : {}, (cloud && cloud.tombstones) || {}
         );
 
-        // Categories: newest list wins (union would resurrect deleted categories)
-        let categories = local.categories;
-        let categoriesUpdatedAt = local.categoriesUpdatedAt || 0;
-        if (cloud && Array.isArray(cloud.categories) && (cloud.categoriesUpdatedAt || 0) > categoriesUpdatedAt) {
-            categories = cloud.categories;
-            categoriesUpdatedAt = cloud.categoriesUpdatedAt || 0;
-        }
-        if (categories && !categories.includes('General')) categories.unshift('General');
+        // Categories: union by name, minus explicit deletions (see syncMergeCategories)
+        const cat = syncMergeCategories(local, cloud, hydrated, merged);
 
-        // Settings / AI behavior / tool prefs: local wins when present, cloud fills the gaps
-        const settings = local.settings || (cloud && cloud.settings) || null;
-        const aiSaveBehavior = local.aiSaveBehavior || (cloud && cloud.aiSaveBehavior) || null;
-        const qaClearData = local.qaClearData || (cloud && cloud.qaClearData) || null;
-        const qaResponsive = local.qaResponsive || (cloud && cloud.qaResponsive) || null;
-        const qaBugTracker = local.qaBugTracker || (cloud && cloud.qaBugTracker) || null;
-        const capEyeEnabled = syncPick(local.capEyeEnabled, cloud && cloud.capEyeEnabled);
-        const delaySeconds = syncPick(local.delaySeconds, cloud && cloud.delaySeconds);
+        // Settings: key-by-key union, newest side wins the overlapping keys
+        const settingsUpdatedAt = Math.max(syncStamp(local.settingsUpdatedAt, hydrated), (cloud && cloud.settingsUpdatedAt) || 0);
+        const settings = syncMergeSettings(
+            local.settings, cloud && cloud.settings,
+            syncStamp(local.settingsUpdatedAt, hydrated), (cloud && cloud.settingsUpdatedAt) || 0);
+
+        // Device-local prefs: on a hydrated device local wins and cloud fills the
+        // gaps; on a fresh one the cloud leads, so nothing arrives half-configured.
+        const preferLocal = (l, c) => hydrated ? (l || c || null) : (c || l || null);
+        const aiSaveBehavior = preferLocal(local.aiSaveBehavior, cloud && cloud.aiSaveBehavior);
+
+        // Per-tool config objects: key-by-key union, newest side wins the
+        // overlap. Their stamps live in one map so a new tool needs no new key.
+        const cloudCfgAt = (cloud && cloud.configUpdatedAt) || {};
+        const configUpdatedAt = { ...cloudCfgAt };
+        for (const [k, ts] of Object.entries(local.configUpdatedAt || {})) {
+            const mine = syncStamp(ts, hydrated);
+            if (!configUpdatedAt[k] || configUpdatedAt[k] < mine) configUpdatedAt[k] = mine;
+        }
+        const mergeCfg = (key) => syncMergeConfig(
+            local[key], cloud && cloud[key], hydrated,
+            syncStamp((local.configUpdatedAt || {})[key], hydrated), cloudCfgAt[key] || 0);
+        const qaClearData = mergeCfg('qaClearData');
+        const qaResponsive = mergeCfg('qaResponsive');
+        const qaBugTracker = mergeCfg('qaBugTracker');
+        const capEyeEnabled = hydrated
+            ? syncPick(local.capEyeEnabled, cloud && cloud.capEyeEnabled)
+            : syncPick(cloud && cloud.capEyeEnabled, local.capEyeEnabled);
+        const delaySeconds = hydrated
+            ? syncPick(local.delaySeconds, cloud && cloud.delaySeconds)
+            : syncPick(cloud && cloud.delaySeconds, local.delaySeconds);
+
+        const next = {
+            profiles: merged, tombstones,
+            categories: cat.categories,
+            categoryTombstones: cat.categoryTombstones,
+            categoryAddedAt: cat.categoryAddedAt
+        };
+        syncGuardNoSilentLoss(cloud, next);
+        const categories = next.categories;
+
+        // Keep the pre-merge state on disk before touching anything, so a sync
+        // that goes wrong is one restore away instead of gone.
+        await chrome.storage.local.set({ syncLocalBackup: { at: Date.now(), data: local } });
 
         // Apply merged state locally
-        await FormFillerDB.saveAllProfiles(merged);
-        await chrome.storage.local.set({ syncTombstones: tombstones });
-        if (categories) await chrome.storage.sync.set({ formFillerCategories: categories, formFillerCategoriesUpdatedAt: categoriesUpdatedAt });
-        if (settings) await chrome.storage.sync.set({ formFillerSettings: settings });
+        await FormFillerDB.saveAllProfiles(next.profiles);
+        await chrome.storage.local.set({ syncTombstones: next.tombstones });
+        await chrome.storage.sync.set({
+            formFillerCategories: categories,
+            formFillerCategoriesUpdatedAt: cat.categoriesUpdatedAt,
+            formFillerCategoryTombstones: next.categoryTombstones,
+            formFillerCategoryAddedAt: next.categoryAddedAt
+        });
+        if (settings) await chrome.storage.sync.set({ formFillerSettings: settings, formFillerSettingsUpdatedAt: settingsUpdatedAt });
         if (aiSaveBehavior) await chrome.storage.local.set({ aiSaveBehavior });
-        if (qaClearData) await chrome.storage.local.set({ qaClearData });
-        if (qaResponsive) await chrome.storage.local.set({ qaResponsive });
-        // Writing an identical value still fires storage.onChanged everywhere.
-        if (qaBugTracker && JSON.stringify(qaBugTracker) !== JSON.stringify(local.qaBugTracker)) {
-            await chrome.storage.local.set({ qaBugTracker });
-        }
+        // Writing an identical value still fires storage.onChanged everywhere -
+        // which would both churn the tools' UIs and re-stamp the config as if
+        // the user had just edited it. Only write what actually changed.
+        const applyConfig = async (key, value) => {
+            if (value === null || value === undefined) return;
+            syncMarkApplied(key, value);
+            if (JSON.stringify(value) === JSON.stringify(local[key])) return;
+            await chrome.storage.local.set({ [key]: value });
+        };
+        await applyConfig('qaClearData', qaClearData);
+        await applyConfig('qaResponsive', qaResponsive);
+        await applyConfig('qaBugTracker', qaBugTracker);
+        if (Object.keys(configUpdatedAt).length) await chrome.storage.local.set({ qaConfigUpdatedAt: configUpdatedAt });
         if (capEyeEnabled !== null) await chrome.storage.local.set({ capEyeEnabled });
         if (delaySeconds !== null) await chrome.storage.sync.set({ delaySeconds });
 
+        // The pull landed and is on disk: from here on this device is a full peer.
+        if (!hydrated) await syncSetMeta({ hydratedAt: Date.now() });
+
         // Push the merged result back to Drive
         await driveUpload(fileId, {
-            version: 1,
+            syncVersion: SYNC_PAYLOAD_VERSION,
+            version: 1,                      // older builds read this field
             exportedAt: Date.now(),
-            profiles: merged,
-            tombstones,
+            lastSyncedAt: Date.now(),
+            profiles: next.profiles,
+            tombstones: next.tombstones,
             settings,
+            settingsUpdatedAt,
             categories,
-            categoriesUpdatedAt,
+            categoriesUpdatedAt: cat.categoriesUpdatedAt,
+            categoryTombstones: next.categoryTombstones,
+            categoryAddedAt: next.categoryAddedAt,
             aiSaveBehavior,
             qaClearData,
             qaResponsive,
             qaBugTracker,
+            configUpdatedAt,
             capEyeEnabled,
             delaySeconds
         });
@@ -374,7 +585,7 @@ async function syncNow(interactive = false) {
         if (typeof broadcastProfilesUpdated === 'function') broadcastProfilesUpdated(true);
         syncBroadcastState('done');
 
-        return { success: true, profileCount: merged.length };
+        return { success: true, profileCount: next.profiles.length, categoryCount: categories.length };
     } catch (err) {
         console.error('Sync failed:', err);
         // Nothing was uploaded: the cloud copy is whatever it was before. The
@@ -420,7 +631,10 @@ async function syncSignOut() {
         await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(cached.token), { method: 'POST' }).catch(() => { });
     }
     await syncClearToken();
-    await syncSetMeta({ signedIn: false, email: '', lastError: null });
+    // Clearing hydratedAt matters: the next sign-in may well be a different
+    // account, and this device must read that account's cloud before it writes
+    // to it. Merges are unions, so nothing local is lost by pulling first.
+    await syncSetMeta({ signedIn: false, email: '', lastError: null, hydratedAt: null });
     syncBroadcastState('signedout');
     return { success: true };
 }
