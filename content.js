@@ -8093,6 +8093,7 @@ const TM_IC = (() => {
     return {
         x: w('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
         check: w('<path d="M20 6 9 17l-5-5"/>'),
+        target: w('<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>'),
         min: w('<path d="M5 12h14"/>'),
         max: w('<rect x="5" y="5" width="14" height="14" rx="2"/>')
     };
@@ -8104,9 +8105,17 @@ const TM_MARGIN = 10;  // page-word slack around an anchor's estimated window
 // Concatenate all VISIBLE text nodes into one string + a per-char node map,
 // so any span can be turned back into a DOM Range. A '\n' separates nodes so
 // two adjacent elements' text never runs together with no space.
+// When the user has picked a section, only that subtree is read. Anything outside it
+// is invisible to the check, so repeated boilerplate (nav, footer, a sidebar carrying
+// the same words) can no longer steal an anchor from the part being verified.
+let tmScopeRoot = null;
+function tmRoot() {
+    return (tmScopeRoot && document.contains(tmScopeRoot)) ? tmScopeRoot : document.body;
+}
+
 function tmCollect() {
     const rawArr = [], nodeMap = [];
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    const walker = document.createTreeWalker(tmRoot(), NodeFilter.SHOW_TEXT, {
         acceptNode(n) {
             if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
             const p = n.parentElement;
@@ -8274,10 +8283,15 @@ function tmClearHighlight() {
 
 function closeTextMatchPanel() {
     tmClearHighlight();
+    // Closing the panel is a reset: reopening must start on the whole page again,
+    // otherwise a section chosen in an earlier session silently narrows the next check.
+    tmScopeRoot = null;
     const p = document.getElementById('qa-tm');
     if (p) p.remove();
     const s = document.getElementById('qa-tm-style');
     if (s) s.remove();
+    // if the panel is closed mid-pick, take the picker's overlay with it
+    ['qa-tm-pickbox', 'qa-tm-picktip'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); });
 }
 
 function openTextMatchPanel() {
@@ -8325,7 +8339,27 @@ function openTextMatchPanel() {
 #qa-tm .drow:hover{border-color:#7c3aed;}
 #qa-tm .drow .bad{color:#f87171;font-weight:700;}
 #qa-tm .drow .ctx{color:#8b8898;}
-#qa-tm .drow .miss{color:#f59e0b;font-size:10px;margin:0 4px;}`;
+#qa-tm .drow .miss{color:#f59e0b;font-size:10px;margin:0 4px;}
+#qa-tm .scoperow{display:flex;align-items:center;gap:7px;margin-bottom:8px;}
+#qa-tm .scopebtn{display:inline-flex;align-items:center;gap:5px;background:#241f33;color:#c9c4d8;
+  border:1px solid #3a3350;border-radius:7px;padding:5px 9px;font-size:11px;font-weight:600;
+  cursor:pointer;white-space:nowrap;}
+#qa-tm .scopebtn:hover{border-color:#7c3aed;color:#fff;}
+#qa-tm .scopebtn.on{background:#7c3aed;border-color:#7c3aed;color:#fff;}
+#qa-tm .scopelbl{flex:1 1 auto;min-width:0;font-size:10.5px;color:#8b8898;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+#qa-tm .scopelbl.set{color:#a78bfa;font-weight:600;}
+#qa-tm .scopeclr{flex:0 0 auto;background:none;border:none;color:#8b8898;cursor:pointer;
+  padding:2px;line-height:0;}
+#qa-tm .scopeclr:hover{color:#f87171;}
+/* picker overlay lives outside the panel so page scrolling never detaches it */
+#qa-tm-pickbox{position:fixed;pointer-events:none;z-index:2147483645;border:2px solid #7c3aed;
+  background:rgba(124,58,237,.14);border-radius:3px;transition:all .05s linear;}
+#qa-tm-picktip{position:fixed;pointer-events:none;z-index:2147483646;background:#1a1626;
+  color:#e9e6f2;border:1px solid #7c3aed;border-radius:7px;padding:6px 10px;font-size:11.5px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  box-shadow:0 8px 26px rgba(0,0,0,.5);max-width:320px;}
+#qa-tm-picktip b{color:#a78bfa;}`;
     (document.head || document.documentElement).appendChild(style);
 
     const panel = document.createElement('div');
@@ -8339,6 +8373,11 @@ function openTextMatchPanel() {
   </span>
 </div>
 <div class="bd">
+  <div class="scoperow">
+    <button class="scopebtn" id="qa-tm-pick" title="Click an area of the page to limit the check to it">${TM_IC.target} Select section</button>
+    <span class="scopelbl" id="qa-tm-scope">Whole page</span>
+    <button class="scopeclr" id="qa-tm-scope-clear" title="Check the whole page again" style="display:none;">${TM_IC.x}</button>
+  </div>
   <textarea id="qa-tm-input" placeholder="Paste the reference text — one item per line (Arabic or English)" spellcheck="false" dir="auto"></textarea>
   <label class="opt"><input type="checkbox" id="qa-tm-strict" checked> Strict symbols — a dot or comma counts as a difference (data &ne; data.)</label>
   <div class="hint">Matches green, differences red, both on the page (case is always ignored)</div>
@@ -8360,6 +8399,128 @@ function openTextMatchPanel() {
     const errEl = panel.querySelector('#qa-tm-err');
     let lastDiffItems = [];   // diff rows of the last run (for click-to-scroll)
 
+    // ── Section picker ──────────────────────────────────────────────────────
+    // Hover any element to outline it, click to make it the only text the check
+    // reads. Esc cancels. The panel hides while picking so it can't be picked.
+    const scopeLbl = panel.querySelector('#qa-tm-scope');
+    const scopeClr = panel.querySelector('#qa-tm-scope-clear');
+    const pickBtn = panel.querySelector('#qa-tm-pick');
+
+    const tmDescribe = (el) => {
+        if (!el) return 'Whole page';
+        let s = el.tagName.toLowerCase();
+        if (el.id) return s + '#' + el.id;
+        const cls = (el.className && typeof el.className === 'string')
+            ? el.className.trim().split(/\s+/).filter(c => !c.startsWith('qa-')).slice(0, 2) : [];
+        if (cls.length) s += '.' + cls.join('.');
+        const txt = (el.innerText || '').trim().replace(/\s+/g, ' ');
+        return txt ? `${s} — "${txt.slice(0, 40)}${txt.length > 40 ? '…' : ''}"` : s;
+    };
+
+    const paintScope = () => {
+        const on = !!(tmScopeRoot && document.contains(tmScopeRoot));
+        if (!on) tmScopeRoot = null;
+        scopeLbl.textContent = on ? tmDescribe(tmScopeRoot) : 'Whole page';
+        scopeLbl.title = scopeLbl.textContent;
+        scopeLbl.classList.toggle('set', on);
+        scopeClr.style.display = on ? '' : 'none';
+    };
+
+    let picking = false;
+    const startPick = () => {
+        if (picking) return;
+        picking = true;
+        pickBtn.classList.add('on');
+        panel.style.visibility = 'hidden';       // keep layout, just get it out of the way
+
+        const box = document.createElement('div'); box.id = 'qa-tm-pickbox';
+        const tip = document.createElement('div'); tip.id = 'qa-tm-picktip';
+        tip.innerHTML = 'Hover an area &nbsp;·&nbsp; scroll to widen &nbsp;·&nbsp; click to use';
+        document.body.appendChild(box); document.body.appendChild(tip);
+
+        // `deepest` is whatever is under the cursor; `hover` is what we would actually
+        // take. They differ once the user walks UP the tree - elementFromPoint always
+        // returns the innermost node, so hitting a container by aiming at its 3px of
+        // padding is hopeless. Wheel / arrow keys widen and narrow the selection instead.
+        let deepest = null, hover = null, lastPt = { x: 0, y: 0 };
+
+        const draw = () => {
+            if (!hover) return;
+            const r = hover.getBoundingClientRect();
+            box.style.left = r.left + 'px'; box.style.top = r.top + 'px';
+            box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
+            const depth = (() => { let d = 0, n = hover; while (n && n !== deepest) { d++; n = n.parentElement; } return d; })();
+            tip.innerHTML =
+                `<b>${tmDescribe(hover).replace(/</g, '&lt;')}</b>` +
+                `<br>Scroll wheel or ↑ ↓ to widen / narrow` +
+                (depth ? ` &nbsp;<span style="color:#8b8898">(${depth} level${depth > 1 ? 's' : ''} up)</span>` : '') +
+                `<br>Click to use &nbsp;·&nbsp; Esc to cancel`;
+            const ty = r.top > 60 ? r.top - tip.offsetHeight - 8 : r.bottom + 8;
+            tip.style.left = Math.max(8, Math.min(lastPt.x + 12, innerWidth - tip.offsetWidth - 10)) + 'px';
+            tip.style.top = Math.max(8, ty) + 'px';
+        };
+
+        const onMove = (e) => {
+            lastPt = { x: e.clientX, y: e.clientY };
+            const el = document.elementFromPoint(e.clientX, e.clientY);
+            if (!el || el.closest('#qa-tm, #qa-tm-pickbox, #qa-tm-picktip')) return;
+            if (el === deepest) { draw(); return; }   // same element, just reposition the tip
+            deepest = el; hover = el;                 // moving to a new element resets the walk
+            draw();
+        };
+
+        // widen = climb to the parent; narrow = come back down the same path
+        const widen = () => {
+            if (!hover) return;
+            const p = hover.parentElement;
+            if (p && p !== document.documentElement && !p.closest('#qa-tm')) { hover = p; draw(); }
+        };
+        const narrow = () => {
+            if (!hover || hover === deepest) return;
+            // walk down from `hover` towards `deepest` by one step
+            let n = deepest;
+            while (n && n.parentElement !== hover) n = n.parentElement;
+            if (n) { hover = n; draw(); }
+        };
+
+        const onWheel = (e) => { e.preventDefault(); (e.deltaY < 0 ? widen : narrow)(); };
+
+        // capture phase + preventDefault so the click picks instead of following a link
+        const onClick = (e) => {
+            if (!hover) return;
+            e.preventDefault(); e.stopPropagation();
+            tmScopeRoot = hover;
+            stopPick();
+            paintScope();
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); stopPick(); return; }
+            if (e.key === 'ArrowUp') { e.preventDefault(); widen(); return; }
+            if (e.key === 'ArrowDown') { e.preventDefault(); narrow(); return; }
+            if (e.key === 'Enter' && hover) { e.preventDefault(); tmScopeRoot = hover; stopPick(); paintScope(); }
+        };
+
+        function stopPick() {
+            picking = false;
+            pickBtn.classList.remove('on');
+            panel.style.visibility = '';
+            box.remove(); tip.remove();
+            document.removeEventListener('mousemove', onMove, true);
+            document.removeEventListener('click', onClick, true);
+            document.removeEventListener('keydown', onKey, true);
+            document.removeEventListener('wheel', onWheel, { capture: true });
+        }
+
+        document.addEventListener('mousemove', onMove, true);
+        document.addEventListener('click', onClick, true);
+        document.addEventListener('keydown', onKey, true);
+        document.addEventListener('wheel', onWheel, { capture: true, passive: false });
+    };
+
+    pickBtn.addEventListener('click', startPick);
+    scopeClr.addEventListener('click', () => { tmScopeRoot = null; paintScope(); });
+    paintScope();
+
     const runCheck = () => {
         errEl.textContent = '';
         tmClearHighlight();
@@ -8371,6 +8532,13 @@ function openTextMatchPanel() {
         panel.style.display = 'none';
         const pageToks = tmPageTokens(20000, strict);
         panel.style.display = '';
+        if (!pageToks.length) {
+            result.classList.remove('show');
+            errEl.textContent = tmScopeRoot
+                ? 'The selected section has no readable text. Pick a wider area or clear the selection.'
+                : 'No readable text found on this page.';
+            return;
+        }
         const pageWords = pageToks.map(t => t.word);
         const ngramMaps = tmBuildNgramMaps(pageWords);
         // word -> first index & occurrence count, for the short-line fallback anchor
