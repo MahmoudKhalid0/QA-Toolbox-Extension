@@ -5431,17 +5431,14 @@ function rvUaHint() {
 // they're same-origin and their CSSOM is reachable; a cross-origin CDN sheet is skipped.
 // `on` comes from the frame's stamped data-touch, so a laptop (on=false) is never touched.
 // A reload re-parses the untouched CSS, which is how the desktop/off case stays clean.
+// IDEMPOTENT and safe to call repeatedly. There is NO permanent "done" flag: navigating
+// (a fresh document) or a single-page-app route change (new <style>/rules injected into
+// the SAME document) both bring back un-neutered :hover, so we must keep re-scanning.
+// Re-running is cheap - an already-rewritten selector no longer contains ':hover', so the
+// regex test skips it and nothing is written; only genuinely new :hover rules are touched.
 function rvKillHover(doc, on) {
     if (!on) return;
     try {
-        if (doc.__rvNoHover) return;
-        // Do NOT mark "done" until the document has finished loading. An early pass on a
-        // half-loaded frame (the sync loop can hit it before its <link> sheets arrive)
-        // would set the guard and then miss every stylesheet that loads afterwards - that
-        // was why a freshly-switched-to tab sometimes kept its hover. Flag only at
-        // 'complete'; until then we re-run each tick (cheap: rewritten rules no longer
-        // contain :hover, so the walk is a near no-op).
-        if (doc.readyState === 'complete') doc.__rvNoHover = true;
         const neuter = (sel) => sel.replace(/:hover\b/gi, '.__rvnh');   // never matches
         const walk = (rules) => {
             for (const rule of rules) {
@@ -5555,7 +5552,7 @@ function rvWireFrames() {
             rvKillHover(doc, touchOn);                // small screen -> no hover
             rvApplyCursor(doc, touchOn);              // small screen -> round touch cursor
             rvApplyOutline(doc, rvState.outline);
-            rvHideScrollbar(doc, rvState.hideScroll); // optional: hide scrollbar like a phone
+            rvHideScrollbar(doc, rvState.hideScroll); // controlled by the Scrollbar toggle
             rvNoSmoothScroll(doc);                    // kill CSS smooth-scroll so sync is instant
             if (doc.__rvBound) return;
             doc.__rvBound = true;
@@ -5567,8 +5564,16 @@ function rvWireFrames() {
             // keeps them in lockstep.
             win.addEventListener('click', (e) => {
                 if (!rvState.sync || rvClicking || !e.isTrusted) return;
+                // Click sync was flaky because e.target is often a child WITH NO IDENTITY -
+                // the <span>/<svg>/<i> inside a button or link. Matching that exact node in
+                // the other device fails (no id/href/text), so the click wasn't mirrored,
+                // while clicking the button's own text worked - hence "sometimes". Resolve
+                // to the nearest actionable ancestor first; it has the href/id/text that
+                // rvFindMatch can actually match on.
+                const target = (e.target.closest &&
+                    e.target.closest('a,button,input,select,textarea,label,summary,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[onclick],[tabindex]'))
+                    || e.target;
                 rvClicking = true;
-                const target = e.target;
                 o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvFindMatch(target, other.contentDocument); if (el) el.click(); } catch (e) { } } });
                 setTimeout(() => { rvClicking = false; }, 80);
             }, true);
@@ -5595,21 +5600,27 @@ function rvWireFrames() {
 // single frame instead of trailing behind and looking slow. Stops itself when the
 // overlay closes.
 let rvSyncLoopOn = false;
+let rvHoverTick = 0;
 function rvStartSyncLoop() {
     if (rvSyncLoopOn) return;
     rvSyncLoopOn = true;
     const tick = () => {
         const o = document.getElementById('qa-rv');
         if (!o) { rvSyncLoopOn = false; return; }   // overlay gone - stop the loop
-        // Re-apply hover suppression to each frame's CURRENT document. A reload or a
-        // bfcache restore can hand a fresh document the load-time pass missed; the
-        // __rvNoHover guard makes an already-processed document a no-op, so this only
-        // does real work when a new document appears. (This is document-level, so unlike
-        // the window/matchMedia touch flag it actually reaches the rendered page.)
+        // Keep hover suppression + touch cursor applied to each touch frame's CURRENT
+        // document. Runs immediately when the document object changes (navigation), and
+        // otherwise a few times a second - so an SPA that injects new :hover styles while
+        // you move between its routes gets them neutered within a fraction of a second
+        // instead of the hover coming back. Cheap: rvKillHover skips already-rewritten
+        // rules, and rvApplyCursor just re-sets one <style>.
+        rvHoverTick = (rvHoverTick + 1) % 12;                 // ~5x/sec at 60fps
         for (const f of o.querySelectorAll('iframe')) {
-            let d; try { d = f.contentDocument; if (!d || d.__rvNoHover) continue; } catch (e) { continue; }
             const host = f.closest('[data-id]');
-            if (host && host.dataset.touch === '1') { rvKillHover(d, true); rvApplyCursor(d, true); }
+            if (!host || host.dataset.touch !== '1') continue;
+            let d; try { d = f.contentDocument; if (!d) continue; } catch (e) { continue; }
+            const fresh = f.__rvLastDoc !== d;               // navigated to a new document
+            if (fresh) f.__rvLastDoc = d;
+            if (fresh || rvHoverTick === 0) { rvKillHover(d, true); rvApplyCursor(d, true); }
         }
         if (rvState && rvState.sync) {
             const frames = o.querySelectorAll('iframe');
