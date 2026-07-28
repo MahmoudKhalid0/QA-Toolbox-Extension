@@ -4553,12 +4553,15 @@ const rvIco = (p, s) => `<svg width="${s || 13}" height="${s || 13}" viewBox="0 
 const RV_ICON = {
     mobile: rvIco('<path d="M7 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H7zm0 2h10v14H7V4zm3.5 15h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1 0-1z"/>', 15),
     reload: rvIco('<path d="M17.65 6.35A8 8 0 1 0 19.74 14h-2.08A6 6 0 1 1 16.24 7.76L13 11h7V4z"/>'),
-    rotate: rvIco('<path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/>'),
+    // Screen-rotation glyph (a device turning), NOT a circular arrow - the old curved
+    // arrow was too close to the reload icon and the two got confused.
+    rotate: rvIco('<path d="M16.48 2.52c3.27 1.55 5.61 4.72 5.97 8.48h1.5C23.44 4.84 18.29 0 12 0l-.66.03 3.81 3.81 1.33-1.32zM10.23 1.75c-.59-.59-1.54-.59-2.12 0L1.75 8.11c-.59.59-.59 1.54 0 2.12l12.02 12.02c.59.59 1.54.59 2.12 0l6.36-6.36c.59-.59.59-1.54 0-2.12L10.23 1.75zm4.6 19.44L2.81 9.17l6.36-6.36 12.02 12.02-6.36 6.36zM7.52 21.48C4.25 19.94 1.91 16.76 1.55 13H.05C.56 19.16 5.71 24 12 24l.66-.03-3.81-3.81-1.33 1.32z"/>'),
     link: rvIco('<path d="M3.9 12a3.1 3.1 0 0 1 3.1-3.1h4V7H7a5 5 0 0 0 0 10h4v-1.9H7A3.1 3.1 0 0 1 3.9 12zM13 7v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10zm-5 4h8v2H8z"/>'),
     touch: rvIco('<path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0-6a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z"/>'),
     camera: rvIco('<path d="M9 3 7.5 5H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.5L15 3H9zm3 5a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>'),
     eye: rvIco('<path d="M12 5C5 5 2 12 2 12s3 7 10 7 10-7 10-7-3-7-10-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>'),
-    close: rvIco('<path d="M18.3 5.7 12 12l6.3 6.3-1.3 1.4L10.6 13.4 4.3 19.7 3 18.3 9.2 12 3 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/>', 12)
+    close: rvIco('<path d="M18.3 5.7 12 12l6.3 6.3-1.3 1.4L10.6 13.4 4.3 19.7 3 18.3 9.2 12 3 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/>', 12),
+    gear: rvIco('<path d="M19.14 12.94a7.5 7.5 0 0 0 .05-1.88l2-1.56a.5.5 0 0 0 .12-.64l-1.9-3.28a.5.5 0 0 0-.6-.22l-2.36.95a7.3 7.3 0 0 0-1.62-.94l-.36-2.5a.5.5 0 0 0-.5-.42h-3.8a.5.5 0 0 0-.5.42l-.36 2.5a7.3 7.3 0 0 0-1.62.94l-2.36-.95a.5.5 0 0 0-.6.22L2.6 8.86a.5.5 0 0 0 .12.64l2 1.56a7.5 7.5 0 0 0 0 1.88l-2 1.56a.5.5 0 0 0-.12.64l1.9 3.28a.5.5 0 0 0 .6.22l2.36-.95c.5.38 1.04.7 1.62.94l.36 2.5a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.5a7.3 7.3 0 0 0 1.62-.94l2.36.95a.5.5 0 0 0 .6-.22l1.9-3.28a.5.5 0 0 0-.12-.64zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>')
 };
 
 function rvDefaultState() {
@@ -4579,6 +4582,7 @@ function rvSave() {
 }
 function rvLibrary() { return RV_BUILTIN.concat(rvState.custom || []); }
 function rvActiveTab() { return rvState.tabs.find(t => t.id === rvState.active) || rvState.tabs[0]; }
+
 
 function openResponsiveOverlay() {
     const old = document.getElementById('qa-rv'); if (old) old.remove();
@@ -4669,15 +4673,28 @@ function rvBuildOverlay() {
                 radial-gradient(circle at 1px 1px, rgba(255,255,255,0.028) 1px, transparent 0) 0 0 / 22px 22px, var(--rv-bg); }
             #qa-rv .rv-row { display: flex; gap: 26px; align-items: flex-start; min-width: min-content; }
             #qa-rv .rv-row.stack { flex-direction: column; align-items: center; }
-            #qa-rv .rv-fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--rv-text); overflow: hidden; }
+            /* No overflow:hidden here - it clipped the options dropdown. The device name
+               already truncates itself (.rv-fname). position+z-index lift the header (and
+               its dropdown) above the sibling iframe, which would otherwise paint over it. */
+            #qa-rv .rv-fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--rv-text); position: relative; z-index: 3; }
             #qa-rv .rv-fname { font-weight: 600; font-size: 13px; color: #fff; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: grab; }
             #qa-rv .rv-fname:active { cursor: grabbing; }
             #qa-rv .rv-fdim { font-size: 10.5px; color: var(--rv-sub); font-family: Consolas, monospace; font-variant-numeric: tabular-nums; flex-shrink: 0; cursor: text; background: var(--rv-surface); border: 1px solid var(--rv-border); border-radius: 6px; padding: 2px 7px; }
             #qa-rv .rv-fdim:hover { color: #fff; border-color: #33405a; }
             #qa-rv .rv-fdim[contenteditable="true"] { background: rgba(99,102,241,0.16); border-color: var(--rv-accent); color: #fff; }
-            #qa-rv .rv-fact { display: flex; gap: 4px; flex-shrink: 0; }
-            #qa-rv .rv-fact button { background: var(--rv-surface); border: 1px solid var(--rv-border); color: var(--rv-sub); cursor: pointer; width: 27px; height: 25px; border-radius: 7px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; transition: background .15s, color .15s, border-color .15s; }
-            #qa-rv .rv-fact button:hover { background: var(--rv-accent); border-color: var(--rv-accent); color: #fff; }
+            #qa-rv .rv-fact { display: flex; gap: 4px; flex-shrink: 0; position: relative; }
+            /* only the two top-level buttons (gear + remove) are square icon buttons */
+            #qa-rv .rv-fact > button { background: var(--rv-surface); border: 1px solid var(--rv-border); color: var(--rv-sub); cursor: pointer; width: 27px; height: 25px; border-radius: 7px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; transition: background .15s, color .15s, border-color .15s; }
+            #qa-rv .rv-fact > button:hover { background: var(--rv-accent); border-color: var(--rv-accent); color: #fff; }
+            #qa-rv .rv-fact > button[data-menu].open { background: var(--rv-accent); border-color: var(--rv-accent); color: #fff; }
+            #qa-rv .rv-fact > button[data-act="remove"]:hover { background: #e0455e; border-color: #e0455e; }
+            /* the options dropdown */
+            #qa-rv .rv-fmenu { position: absolute; top: 30px; right: 0; z-index: 30; display: none; flex-direction: column; min-width: 210px; padding: 5px; background: var(--rv-panel2, #1a1f2e); border: 1px solid var(--rv-border); border-radius: 10px; box-shadow: 0 12px 34px rgba(0,0,0,.5); }
+            #qa-rv .rv-fmenu.open { display: flex; }
+            #qa-rv .rv-fmenu button { display: flex; align-items: center; gap: 9px; width: 100%; background: none; border: 0; color: var(--rv-sub); cursor: pointer; padding: 8px 9px; border-radius: 7px; font-size: 12.5px; text-align: left; transition: background .12s, color .12s; }
+            #qa-rv .rv-fmenu button:hover { background: var(--rv-surface-h, rgba(255,255,255,.06)); color: #fff; }
+            #qa-rv .rv-fmenu button svg { flex-shrink: 0; }
+            #qa-rv .rv-fmenu button > span:first-of-type { flex: 1 1 auto; }
             #qa-rv .rv-screen { background: #fff; border-radius: 14px; overflow: hidden; box-shadow: 0 1px 0 rgba(255,255,255,0.04), 0 12px 34px rgba(0,0,0,0.5); }
             #qa-rv .rv-inner { overflow: hidden; position: relative; }
             #qa-rv .rv-screen iframe { border: 0; display: block; background: #fff; }
@@ -4866,7 +4883,20 @@ function rvBuildOverlay() {
     rvRow.addEventListener('click', (e) => {
         const dim = e.target.closest('.rv-fdim');
         if (dim) { dim.contentEditable = 'true'; dim.focus(); const sel = document.getSelection(); sel.removeAllRanges(); const r = document.createRange(); r.selectNodeContents(dim); sel.addRange(r); return; }
+        // Gear button toggles this frame's options menu (and closes any other open one).
+        const gear = e.target.closest('button[data-menu]');
+        if (gear) {
+            const menu = gear.parentElement.querySelector('.rv-fmenu');
+            const wasOpen = menu.classList.contains('open');
+            rvRow.querySelectorAll('.rv-fmenu.open').forEach(m => m.classList.remove('open'));
+            rvRow.querySelectorAll('button[data-menu].open').forEach(g => g.classList.remove('open'));
+            if (!wasOpen) { menu.classList.add('open'); gear.classList.add('open'); }
+            return;
+        }
         const btn = e.target.closest('button[data-act]'); if (!btn) return;
+        // Any menu action closes the menu it lives in.
+        const inMenu = btn.closest('.rv-fmenu');
+        if (inMenu) { inMenu.classList.remove('open'); const g = inMenu.parentElement.querySelector('button[data-menu]'); if (g) g.classList.remove('open'); }
         const frame = btn.closest('[data-id]'); const id = +frame.dataset.id;
         const tab = rvActiveTab();
         const s = tab.screens.find(x => x.id === id); if (!s) return;
@@ -4887,6 +4917,12 @@ function rvBuildOverlay() {
         }
         else if (act === 'full') { rvFullShot(frame, s); }
     });
+    // Click anywhere else (or Esc) closes an open frame options menu.
+    o.addEventListener('click', (e) => {
+        if (e.target.closest('.rv-fact')) return;   // clicks inside the gear/menu are handled above
+        rvRow.querySelectorAll('.rv-fmenu.open').forEach(m => m.classList.remove('open'));
+        rvRow.querySelectorAll('button[data-menu].open').forEach(g => g.classList.remove('open'));
+    }, true);
     // Edit dimensions inline (type "WxH")
     rvRow.addEventListener('keydown', (e) => { if (e.target.closest('.rv-fdim') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
     rvRow.addEventListener('blur', (e) => {
@@ -5226,22 +5262,33 @@ function rvRenderTabs() {
         </div>`).join('') + `<button class="rv-tabadd" id="rv-tabadd" title="New tab">+</button>`;
 }
 
+// Width at or below this (in the current orientation) is treated as a touch device:
+// hover states are suppressed and the page's JS is told it's touch. Above it is a
+// laptop/desktop that keeps hover. 1024 is the usual tablet/desktop CSS breakpoint.
+const RV_TOUCH_MAX_W = 1024;
+function rvIsTouchWidth(s) { return (s.rotated ? s.h : s.w) <= RV_TOUCH_MAX_W; }
+
 function rvFrameHtml(s) {
     const z = rvState.zoom;
     const w = s.rotated ? s.h : s.w, h = s.rotated ? s.w : s.h;
     const sw = Math.round(w * z), sh = Math.round(h * z);
     const outerW = Math.max(sw + (rvState.mockup ? 18 : 0), 150);
     const hidden = rvState.isolated && rvState.isolated !== s.id;
-    return `<div data-id="${s.id}" style="flex-shrink:0; width:${outerW}px;${hidden ? 'display:none;' : ''}">
+    // Stamp the touch decision on the frame NOW, from its width. decorate() reads this
+    // attribute directly - no lookup that could race or fall back to the wrong default.
+    return `<div data-id="${s.id}" data-touch="${rvIsTouchWidth(s) ? '1' : '0'}" style="flex-shrink:0; width:${outerW}px;${hidden ? 'display:none;' : ''}">
         <div class="rv-fhead">
             <span class="rv-fname" draggable="true" title="Drag to reorder">${qaEsc(s.name)}</span>
             <span class="rv-fdim" title="Click to edit size">${w}×${h}</span>
             <span class="rv-fact">
-                <button data-act="shot" title="Screenshot (visible)">${RV_ICON.camera}</button>
-                <button data-act="full" title="Full-page screenshot (whole scroll)"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 7v8"/><path d="m9 12 3 3 3-3"/></svg></button>
-                <button data-act="rotate" title="Rotate">${RV_ICON.rotate}</button>
-                <button data-act="reload" title="Reload">${RV_ICON.reload}</button>
-                <button data-act="remove" title="Remove">${RV_ICON.close}</button>
+                <button data-menu title="Options">${RV_ICON.gear}</button>
+                <button data-act="remove" title="Remove device">${RV_ICON.close}</button>
+                <div class="rv-fmenu">
+                    <button data-act="shot">${RV_ICON.camera}<span>Screenshot (visible)</span></button>
+                    <button data-act="full"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 7v8"/><path d="m9 12 3 3 3-3"/></svg><span>Full-page screenshot</span></button>
+                    <button data-act="rotate">${RV_ICON.rotate}<span>Rotate</span></button>
+                    <button data-act="reload">${RV_ICON.reload}<span>Reload</span></button>
+                </div>
             </span>
         </div>
         <div class="rv-screen ${rvState.mockup ? 'mock' : ''}">
@@ -5376,27 +5423,72 @@ function rvUaHint() {
     sel.title = warn ? 'Tip: some sites serve different HTML per device - switch the UA to iPhone/Android for true mobile rendering' : 'User-Agent';
 }
 
+// A touch device has no hover, so moving the desktop mouse over a phone/tablet frame must
+// not fire :hover states (link colours, underlines, hover-only menus) - they misrepresent
+// the mobile view. There is no CSS switch for this and blocking mouse events doesn't help
+// (the engine sets :hover from pointer position). The one reliable way is to rewrite every
+// :hover rule's selector so it can never match. Frames load the current page's own URL, so
+// they're same-origin and their CSSOM is reachable; a cross-origin CDN sheet is skipped.
+// `on` comes from the frame's stamped data-touch, so a laptop (on=false) is never touched.
+// A reload re-parses the untouched CSS, which is how the desktop/off case stays clean.
+function rvKillHover(doc, on) {
+    if (!on) return;
+    try {
+        if (doc.__rvNoHover) return;
+        // Do NOT mark "done" until the document has finished loading. An early pass on a
+        // half-loaded frame (the sync loop can hit it before its <link> sheets arrive)
+        // would set the guard and then miss every stylesheet that loads afterwards - that
+        // was why a freshly-switched-to tab sometimes kept its hover. Flag only at
+        // 'complete'; until then we re-run each tick (cheap: rewritten rules no longer
+        // contain :hover, so the walk is a near no-op).
+        if (doc.readyState === 'complete') doc.__rvNoHover = true;
+        const neuter = (sel) => sel.replace(/:hover\b/gi, '.__rvnh');   // never matches
+        const walk = (rules) => {
+            for (const rule of rules) {
+                if (rule.type === 1) {                                  // STYLE_RULE
+                    if (rule.selectorText && /:hover\b/i.test(rule.selectorText)) {
+                        try { rule.selectorText = neuter(rule.selectorText); } catch (e) { }
+                    }
+                } else if ((rule.type === 4 || rule.type === 12) && rule.cssRules) {
+                    walk(rule.cssRules);                                // @media / @supports
+                }
+            }
+        };
+        for (const sheet of doc.styleSheets) {
+            let rules; try { rules = sheet.cssRules; } catch (e) { continue; }
+            if (rules) walk(rules);
+        }
+    } catch (e) { }
+}
+
 // Make the page's JavaScript see a touch device (hover:none, pointer:coarse,
 // maxTouchPoints) while Touch mode is on. CSS @media(hover/pointer) cannot be
 // overridden without the debugger API - this covers the JS side.
+
 function rvPatchTouchMedia(win) {
     try {
-        if (win.__rvMM) return;
-        win.__rvMM = true;
-        const orig = win.matchMedia.bind(win);
-        win.matchMedia = (q) => {
-            if (rvState && rvState.touch && typeof q === 'string') {
-                const s = q.replace(/\s+/g, '').toLowerCase();
-                if (s.includes('(hover:none)') || s.includes('(pointer:coarse)') || s.includes('(any-pointer:coarse)')) {
-                    return { matches: true, media: q, onchange: null, addListener() { }, removeListener() { }, addEventListener() { }, removeEventListener() { }, dispatchEvent() { return false; } };
+        // Mark the WRAPPED FUNCTION, not the window: a reload/navigation gives a fresh
+        // window whose matchMedia is native again, so the old __rvMM window-flag guard
+        // let a reloaded frame slip back to desktop behaviour. Checking the function is
+        // reliable - a fresh native matchMedia has no mark, so we re-wrap it.
+        if (!win.matchMedia.__rvWrapped) {
+            const orig = win.matchMedia.bind(win);
+            const wrapped = (q) => {
+                if (win.__rvTouch && typeof q === 'string') {
+                    const s = q.replace(/\s+/g, '').toLowerCase();
+                    if (s.includes('(hover:none)') || s.includes('(pointer:coarse)') || s.includes('(any-pointer:coarse)')) {
+                        return { matches: true, media: q, onchange: null, addListener() { }, removeListener() { }, addEventListener() { }, removeEventListener() { }, dispatchEvent() { return false; } };
+                    }
+                    if (s.includes('(hover:hover)') || s.includes('(pointer:fine)')) {
+                        return { matches: false, media: q, onchange: null, addListener() { }, removeListener() { }, addEventListener() { }, removeEventListener() { }, dispatchEvent() { return false; } };
+                    }
                 }
-                if (s.includes('(hover:hover)') || s.includes('(pointer:fine)')) {
-                    return { matches: false, media: q, onchange: null, addListener() { }, removeListener() { }, addEventListener() { }, removeEventListener() { }, dispatchEvent() { return false; } };
-                }
-            }
-            return orig(q);
-        };
-        try { Object.defineProperty(win.navigator, 'maxTouchPoints', { get: () => (rvState && rvState.touch) ? 5 : 0 }); } catch (e) { }
+                return orig(q);
+            };
+            wrapped.__rvWrapped = true;
+            win.matchMedia = wrapped;
+        }
+        try { Object.defineProperty(win.navigator, 'maxTouchPoints', { configurable: true, get: () => win.__rvTouch ? 5 : 0 }); } catch (e) { }
     } catch (e) { }
 }
 
@@ -5455,7 +5547,13 @@ function rvWireFrames() {
             // Touch MEDIA emulation stays (hover:none, coarse pointer, maxTouchPoints
             // - so sites render their real mobile UI), but NOT the circle touch-cursor
             // gimmick, which was removed.
+            // Deterministic: read the touch decision stamped on the frame at render time.
+            const host = f.closest('[data-id]');
+            const touchOn = !!host && host.dataset.touch === '1';
+            win.__rvTouch = touchOn;                  // read live by the matchMedia patch
             rvPatchTouchMedia(win);
+            rvKillHover(doc, touchOn);                // small screen -> no hover
+            rvApplyCursor(doc, touchOn);              // small screen -> round touch cursor
             rvApplyOutline(doc, rvState.outline);
             rvHideScrollbar(doc, rvState.hideScroll); // optional: hide scrollbar like a phone
             rvNoSmoothScroll(doc);                    // kill CSS smooth-scroll so sync is instant
@@ -5503,6 +5601,16 @@ function rvStartSyncLoop() {
     const tick = () => {
         const o = document.getElementById('qa-rv');
         if (!o) { rvSyncLoopOn = false; return; }   // overlay gone - stop the loop
+        // Re-apply hover suppression to each frame's CURRENT document. A reload or a
+        // bfcache restore can hand a fresh document the load-time pass missed; the
+        // __rvNoHover guard makes an already-processed document a no-op, so this only
+        // does real work when a new document appears. (This is document-level, so unlike
+        // the window/matchMedia touch flag it actually reaches the rendered page.)
+        for (const f of o.querySelectorAll('iframe')) {
+            let d; try { d = f.contentDocument; if (!d || d.__rvNoHover) continue; } catch (e) { continue; }
+            const host = f.closest('[data-id]');
+            if (host && host.dataset.touch === '1') { rvKillHover(d, true); rvApplyCursor(d, true); }
+        }
         if (rvState && rvState.sync) {
             const frames = o.querySelectorAll('iframe');
             for (const f of frames) {
