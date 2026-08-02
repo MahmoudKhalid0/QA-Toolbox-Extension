@@ -1652,7 +1652,10 @@ function showInspectorPanel(el) {
 #qa-ins .vedit{background:#000;border:1px solid #7c3aed;color:#fff;font:inherit;border-radius:4px;padding:0 4px;}
 #qa-ins .empty{color:#6b6878;font-style:italic;}
 #qa-ins .code{background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:8px 10px;font:12px/1.7 monospace;color:#c7d2fe;word-break:break-all;}
-#qa-ins .attrs{max-height:200px;overflow-y:auto;background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:6px 10px;font:12px/1.8 monospace;}
+/* No inner max-height/scroll: a nested scrollbox was hiding half the attributes behind a
+   scroll people didn't notice. Let the list flow at full height and let the panel body
+   (.bd, already overflow-y:auto) be the single, obvious scroll for long lists. */
+#qa-ins .attrs{background:#13111c;border:1px solid #2a2738;border-radius:8px;padding:6px 10px;font:12px/1.8 monospace;word-break:break-word;}
 #qa-ins .attrs .k{color:#a5b4fc;}
 #qa-ins .attrs .v{color:#fff;cursor:auto;}
 /* box model */
