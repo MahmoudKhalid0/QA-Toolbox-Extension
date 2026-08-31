@@ -112,6 +112,60 @@
         const dpr = probeSize.width / window.innerWidth;
         console.log('Measured capture scale:', dpr, '(devicePixelRatio reported', window.devicePixelRatio, ')');
 
+        // ── Pin scroll-triggered sticky headers BEFORE measuring anything ──────────
+        // Many sites (e.g. government portals) keep their header in normal flow at the
+        // very top and only switch it to position:fixed via a scroll handler (a class
+        // like `is-fixed`). That switch takes the header OUT of document flow, so the
+        // page loses ~header-height once you scroll - and the capture, which starts at
+        // the top with the header in flow, then finds every later slice shifted up by
+        // that amount. The result was a white band (the gap the header used to fill)
+        // and a mis-stitched tail. Fix: detect exactly those headers (fixed/sticky
+        // AFTER a small scroll but NOT at the top) and pin them to `position:static`
+        // for the whole capture, so the layout never changes - the header stays in
+        // flow, is captured once at the top, and scrolls away naturally. Genuinely
+        // always-fixed widgets (chat bubbles, accessibility buttons) are left alone;
+        // they're hidden per-slice in the loop below instead.
+        const hiddenElements = [];
+        const pinnedStatic = [];
+        if (isWindow) {
+            try {
+                // Elements ALREADY fixed/sticky at the top are persistent widgets - a chat
+                // bubble, an accessibility button, our own FAB. They're UI chrome, not page
+                // content, and repeat down every slice. Hide them for the WHOLE capture
+                // (once, up front) - no per-slice hiding, so no repaint race.
+                const fixedAtTop = new Set();
+                for (const el of document.querySelectorAll('*')) {
+                    const p = getComputedStyle(el).position;
+                    if (p === 'fixed' || p === 'sticky') fixedAtTop.add(el);
+                }
+                // Now scroll a little to trigger scroll handlers, and see what NEWLY became
+                // fixed/sticky - those are scroll-triggered headers. Pin them to static so
+                // they stay in flow (captured once at the top, no layout shift, no gap).
+                window.scrollTo(0, 300);
+                await new Promise(r => setTimeout(r, 400));
+                for (const el of document.querySelectorAll('*')) {
+                    const p = getComputedStyle(el).position;
+                    if ((p === 'fixed' || p === 'sticky') && !fixedAtTop.has(el)) {
+                        pinnedStatic.push({
+                            el,
+                            prev: el.style.getPropertyValue('position'),
+                            prio: el.style.getPropertyPriority('position')
+                        });
+                        el.style.setProperty('position', 'static', 'important');
+                    }
+                }
+                window.scrollTo(0, 0);
+                await new Promise(r => setTimeout(r, 300));
+                // hide the persistent widgets for the whole capture
+                for (const el of fixedAtTop) {
+                    el.__qaCapHidden = true;
+                    hiddenElements.push({ element: el, originalOpacity: el.style.opacity, originalVisibility: el.style.visibility });
+                    el.style.opacity = '0';
+                    el.style.visibility = 'hidden';
+                }
+            } catch (e) { console.error('header-pin pre-pass failed:', e); }
+        }
+
         // For a real modal/dialog, the user wants what every other full-page
         // tool produces: the surrounding page (sidebar, nav, dimmed backdrop)
         // still visible, with the modal's own full content shown in place -
@@ -199,7 +253,6 @@
 
         const screenshots = [];
         let captureCount = 0;
-        const hiddenElements = [];
 
         // A scrollbar (native or custom) is just more pixels on screen as far
         // as captureVisibleTab is concerned, so it gets baked into whichever
@@ -241,6 +294,7 @@
         // original single-column loop, just reusable per horizontal tile.
         async function captureColumn(scrollXPx) {
             let currentY = 0;
+            let lastActualY = -1;
             for (; ;) {
                 const percent = Math.min(100, Math.round(((scrollXPx / Math.max(1, totalWidth)) + (currentY / totalHeight) / numXTiles) * 100));
                 chrome.runtime.sendMessage({ action: 'fullPageProgress', percent, status: 'Capturing...' });
@@ -248,8 +302,47 @@
                 if (isWindow) window.scrollTo(scrollXPx, currentY);
                 else scroller.scrollTop = currentY;
 
-                // Wait for render/lazy-load
+                // Wait for render/lazy-load (and for the page's own scroll handlers to run)
                 await new Promise(r => setTimeout(r, 600));
+
+                // The ACTUAL scroll position after the browser clamps it. This matters when
+                // the page gets SHORTER mid-capture - a header that switches to
+                // position:fixed on scroll leaves the document flow and the page loses its
+                // height, so a later scrollTo(y) lands short of y. Recording the requested y
+                // instead made the last slice's pixels land too low and the footer was
+                // stitched twice. If we can no longer advance, we've reached the bottom -
+                // stop before capturing a duplicate tail.
+                const actualY = isWindow ? Math.round(window.scrollY) : Math.round(scroller.scrollTop);
+                if (captureCount > 0 && actualY <= lastActualY) break;
+
+                // Window captures handle fixed elements up front (pre-pass above): headers
+                // are pinned in-flow and persistent widgets are hidden for the whole run, so
+                // nothing per-slice is needed. This per-slice hide is only for the MODAL case
+                // (a scrollable overlay), where the scroller must stay visible - so we hide
+                // whatever else is fixed, from the second slice on, re-detecting each time.
+                if (!isWindow && captureCount > 0) {
+                    try {
+                        for (const el of document.querySelectorAll('*')) {
+                            // Never hide the scroller itself or anything containing it - a
+                            // modal (and its wrapper chain) is almost always position:fixed.
+                            if (!isWindow && el.contains(scroller)) continue;
+                            if (el.__qaCapHidden) continue;                 // already hidden
+                            const style = window.getComputedStyle(el);
+                            if (style.position === 'fixed' || style.position === 'sticky') {
+                                el.__qaCapHidden = true;
+                                hiddenElements.push({
+                                    element: el,
+                                    originalOpacity: el.style.opacity,
+                                    originalVisibility: el.style.visibility
+                                });
+                                el.style.opacity = '0';
+                                el.style.visibility = 'hidden';
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Error hiding elements:', e);
+                    }
+                }
 
                 try {
                     let dataUrl = await requestViewportCapture();
@@ -262,36 +355,11 @@
                         dataUrl = await cropDataUrl(dataUrl, elementRect);
                     }
 
-                    // Hide fixed/sticky elements once, on the very first capture of
-                    // the whole grid - they don't move for any row OR column, so
-                    // every later slice (in every column) needs them gone too.
-                    if (captureCount === 0) {
-                        try {
-                            const elementsToHide = document.querySelectorAll('*');
-                            for (const el of elementsToHide) {
-                                // Never hide the scroller itself or anything containing
-                                // it - a modal (and its wrapper chain) is almost always
-                                // position:fixed, and hiding it would blank out every
-                                // capture from here on.
-                                if (!isWindow && el.contains(scroller)) continue;
-                                const style = window.getComputedStyle(el);
-                                if (style.position === 'fixed' || style.position === 'sticky') {
-                                    hiddenElements.push({
-                                        element: el,
-                                        originalOpacity: el.style.opacity,
-                                        originalVisibility: el.style.visibility
-                                    });
-                                    el.style.opacity = '0';
-                                    el.style.visibility = 'hidden';
-                                }
-                            }
-                        } catch (e) {
-                            console.error('Error hiding elements:', e);
-                        }
-                    }
-
-                    screenshots.push({ dataUrl, scrollX: Math.round(scrollXPx * dpr), scrollY: Math.round(currentY * dpr) });
+                    // Record the ACTUAL scroll position (not the requested currentY) so the
+                    // stitcher places each slice where it really landed - see the note above.
+                    screenshots.push({ dataUrl, scrollX: Math.round(scrollXPx * dpr), scrollY: Math.round(actualY * dpr) });
                     captureCount++;
+                    lastActualY = actualY;
                 } catch (err) {
                     console.error('Capture chunk error:', err);
                     throw err;
@@ -324,6 +392,12 @@
         for (const item of hiddenElements) {
             item.element.style.opacity = item.originalOpacity;
             item.element.style.visibility = item.originalVisibility;
+            try { delete item.element.__qaCapHidden; } catch (e) { }
+        }
+        // Un-pin the headers we forced to position:static.
+        for (const p of pinnedStatic) {
+            if (p.prev) p.el.style.setProperty('position', p.prev, p.prio);
+            else p.el.style.removeProperty('position');
         }
 
         // Restore scrollbar rendering
