@@ -6775,9 +6775,10 @@ function createFloatingButton() {
                 const name = await qaSwapNamePrompt();
                 if (!name) return;
                 showFabAiStatus('loading', `Saving "${name}"…`);
-                chrome.runtime.sendMessage({ action: 'swapSave', name }, (resp) => {
+                const operationId = (crypto.randomUUID && crypto.randomUUID()) || `save_${Date.now()}_${Math.random()}`;
+                chrome.runtime.sendMessage({ action: 'swapSave', name, operationId }, (resp) => {
                     if (chrome.runtime.lastError || !resp || !resp.ok) {
-                        showFabAiStatus('error', 'Could not save this login');
+                        showFabAiStatus('error', (resp && resp.error) || 'Could not save this login');
                     } else {
                         showFabAiStatus('success', `Saved "${name}"`);
                         initFloatingButton();   // refresh the list in the menu
@@ -6791,6 +6792,10 @@ function createFloatingButton() {
             if (updBtn) {
                 e.stopPropagation();
                 menu.style.display = 'none';
+                if (updBtn.dataset.active !== 'true' && !(await qaConfirm(
+                    'This replaces the saved login with the login currently open in this tab.',
+                    { title: 'Replace saved login?', confirmText: 'Replace', danger: true }
+                ))) return;
                 showFabAiStatus('loading', 'Updating saved login…');
                 chrome.runtime.sendMessage({ action: 'swapUpdate', id: updBtn.dataset.swapId }, (resp) => {
                     if (chrome.runtime.lastError || !resp || !resp.ok) {
@@ -6906,15 +6911,15 @@ function createFloatingButton() {
         matchingLogins.forEach((s) => {
             // ↻ re-saves the session you're logged in as right now into this slot
             // (server sessions expire - refresh instead of delete + re-add).
-            const refreshBtn = `<span class="ff-swap-update" data-swap-id="${escHtml(s.id)}" title="Update this saved login with the session you're logged in as now"><i class="fas fa-rotate"></i></span>`;
+            const refreshBtn = `<span class="ff-swap-update" data-swap-id="${escHtml(s.id)}" data-active="${s.active ? 'true' : 'false'}" title="Update this saved login with the session you're logged in as now"><i class="fas fa-rotate"></i></span>`;
             if (s.active) {
                 // The login currently in use - shown as CURRENT and not clickable
                 // (so you don't re-switch to yourself by accident).
                 menuHtml += `
-                    <div class="ff-menu-item ff-swap-item ff-active no-click" title="You're using this login now" style="cursor:default;">
+                    <div class="ff-menu-item ff-swap-item ff-active no-click" title="${s.activeConfidence === 'assumed' ? 'Cookie-only login; identity could not be verified' : 'You are using this login now'}" style="cursor:default;">
                         <i class="fas fa-circle-check" style="color:#10b981;"></i>
                         <span style="font-weight:600;">${escHtml(truncateName(s.name))}</span>
-                        <span class="ff-swap-badge">CURRENT</span>
+                        <span class="ff-swap-badge">${s.activeConfidence === 'assumed' ? 'LIKELY CURRENT' : 'CURRENT'}</span>
                         ${refreshBtn}
                     </div>`;
             } else {

@@ -27,16 +27,15 @@
     // The click-twice bug: an idle MV3 worker can drop the first message, so the
     // first press did nothing and you pressed again. Waking it first was not enough.
     // Now we simply RETRY when there was no answer. Every action we retry is
-    // idempotent - updating re-captures the same cookies, restoring re-lays the same
-    // ones, deleting the same id twice is a no-op - so a repeat can't do damage.
-    // SAVE is the one exception (it would create a duplicate) and never retries.
+    // idempotent - save also carries a stable operation id, so a retry cannot create
+    // a duplicate snapshot even if the first reply was lost.
     const send = async (msg, { retries = 3 } = {}) => {
         for (let i = 0; i <= retries; i++) {
             const r = await sendOnce(msg);
             if (r) return r;
             await new Promise((s) => setTimeout(s, 120));   // let the worker boot
         }
-        return {};
+        return { ok: false, error: 'Extension service worker did not respond' };
     };
     const activeTab = () => new Promise((res) => chrome.tabs.query({ active: true, currentWindow: true }, (t) => res(t && t[0])));
 
@@ -96,15 +95,17 @@
 
         // Pass the site's tab id: the worker reads its storage to see WHO is signed
         // in, which is what keeps "Current" correct after a cookie rotation.
-        const { snaps = [] } = await send({ action: 'swapList', url, tabId: t.id });
+        const { snaps = [], error } = await send({ action: 'swapList', url, tabId: t.id });
+        if (error) { swList.innerHTML = `<div class="sw-empty">Could not read saved logins: ${esc(error)}</div>`; return; }
         if (!snaps.length) { swList.innerHTML = '<div class="sw-empty">No saved logins for this site yet.</div>'; return; }
         swList.innerHTML = '';
         snaps.forEach((s) => {
             const card = document.createElement('div');
             card.className = 'sw-card';
             if (s.active) card.classList.add('sw-current');
+            const activeLabel = s.activeConfidence === 'assumed' ? 'Likely current' : 'Current';
             const rightBtn = s.active
-                ? `<span class="sw-badge">Current</span>`
+                ? `<span class="sw-badge" title="${s.activeConfidence === 'assumed' ? 'Cookie-only login; identity could not be verified' : 'Verified from the page login identity'}">${activeLabel}</span>`
                 : `<button class="sw-go">Switch</button>`;
             card.innerHTML = `
                 <span class="sw-ico">${s.active ? '<i class="fas fa-circle-check"></i>' : '<i class="fas fa-user"></i>'}</span>
@@ -118,9 +119,14 @@
             const updBtn = card.querySelector('.sw-upd');
             updBtn.addEventListener('click', async () => {
                 if (updBtn.disabled) return;
-                updBtn.disabled = true;
                 const site = await currentSite();          // LIVE tab, not the one from render
-                if (!site) { showToastMessage('Open the website first', 'error'); updBtn.disabled = false; return; }
+                if (!site) { showToastMessage('Open the website first', 'error'); return; }
+                if (!s.active && !(await qaConfirm({
+                    title: 'Replace saved login?',
+                    message: `This replaces "${s.name}" with the login currently open in the tab.`,
+                    okText: 'Replace', danger: true
+                }))) return;
+                updBtn.disabled = true;
                 const r = await send({ action: 'swapUpdate', tab: { id: site.id, url: site.url }, id: s.id });
                 if (r && r.ok) { showToastMessage(`Updated "${s.name}"`, 'success'); render(); }
                 else { showToastMessage('Could not update: ' + ((r && r.error) || 'no response'), 'error'); updBtn.disabled = false; }
@@ -140,23 +146,31 @@
                 render();
             });
             card.querySelector('.sw-del').addEventListener('click', async () => {
+                if (!(await qaConfirm({
+                    title: 'Delete saved login?',
+                    message: `Delete "${s.name}" and its saved cookies/tokens?`,
+                    okText: 'Delete', danger: true
+                }))) return;
                 const site = await currentSite();
-                await send({ action: 'swapDelete', url: site ? site.url : url, id: s.id });
-                render();
+                const r = await send({ action: 'swapDelete', url: site ? site.url : url, id: s.id });
+                if (r && r.ok) { showToastMessage(`Deleted "${s.name}"`, 'success'); render(); }
+                else showToastMessage('Could not delete: ' + ((r && r.error) || 'no response'), 'error');
             });
             swList.appendChild(card);
         });
     }
 
     swSaveBtn.addEventListener('click', async () => {
+        if (swSaveBtn.disabled) return;
         const t = await currentSite();
         if (!t) { showToastMessage('Open a website first', 'error'); return; }
         const name = await swPrompt('');
         if (!name) return;
-        // No retry here: saving twice would create a duplicate snapshot.
-        const r = await send({ action: 'swapSave', tab: { id: t.id, url: t.url }, name }, { retries: 0 });
+        swSaveBtn.disabled = true;
+        const operationId = (crypto.randomUUID && crypto.randomUUID()) || `save_${Date.now()}_${Math.random()}`;
+        const r = await send({ action: 'swapSave', tab: { id: t.id, url: t.url }, name, operationId });
         if (r && r.ok) { showToastMessage(`Saved "${name}"`, 'success'); render(); }
-        else showToastMessage('Could not save: ' + ((r && r.error) || 'no response'), 'error');
+        else { showToastMessage('Could not save: ' + ((r && r.error) || 'no response'), 'error'); swSaveBtn.disabled = false; }
     });
 
     tabBtn.addEventListener('click', render);

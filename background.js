@@ -2824,22 +2824,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             // The tab id lets listFor read the LIVE storage and work out WHO is
             // signed in - which is what makes "CURRENT" survive a rotated cookie.
             SW.listFor(request.url, request.tabId != null ? request.tabId : (sender && sender.tab && sender.tab.id))
-                .then((snaps) => sendResponse({ snaps }));
+                .then((snaps) => sendResponse({ snaps }))
+                .catch((e) => sendResponse({ snaps: [], error: e.message || String(e) }));
             return true;   // async
         case 'swapSave':
-            SW.saveCurrent(request.tab || (sender && sender.tab), request.name).then(sendResponse);
+            SW.saveCurrent(request.tab || (sender && sender.tab), request.name, request.operationId)
+                .then(sendResponse)
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
             return true;
         case 'swapRestore':
-            SW.restore(request.tab || (sender && sender.tab), request.id).then(sendResponse);
+            SW.restore(request.tab || (sender && sender.tab), request.id).then(sendResponse)
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
             return true;
         case 'swapUpdate':
-            SW.updateSnapshot(request.tab || (sender && sender.tab), request.id).then(sendResponse);
+            SW.updateSnapshot(request.tab || (sender && sender.tab), request.id).then(sendResponse)
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
             return true;
         case 'swapDelete':
-            SW.remove(request.url, request.id).then(() => sendResponse({ ok: true }));
+            SW.remove(request.url, request.id).then(sendResponse)
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
             return true;
         case 'swapRename':
-            SW.rename(request.url, request.id, request.name).then(() => sendResponse({ ok: true }));
+            SW.rename(request.url, request.id, request.name).then(sendResponse)
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
             return true;
     }
     return false;

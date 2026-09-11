@@ -950,15 +950,22 @@ const CAP_MENUS = [
     ['qa-cap-delayed', 'Capture after a countdown']
 ];
 
-function capBuildMenus() {
-    chrome.contextMenus.removeAll(() => {
-        chrome.contextMenus.create({ id: 'qa-cap-root', title: 'QA Toolkit — Capture', contexts: ['all'] },
+function capRemoveMenu(id) {
+    return new Promise((resolve) => chrome.contextMenus.remove(id, () => {
+        void chrome.runtime.lastError; // missing items are expected on startup
+        resolve();
+    }));
+}
+
+async function capBuildMenus() {
+    for (const [id] of CAP_MENUS) await capRemoveMenu(id);
+    await capRemoveMenu('qa-cap-root');
+    chrome.contextMenus.create({ id: 'qa-cap-root', title: 'QA Toolkit — Capture', contexts: ['all'] },
+        () => void chrome.runtime.lastError);
+    for (const [id, title] of CAP_MENUS) {
+        chrome.contextMenus.create({ id, parentId: 'qa-cap-root', title, contexts: ['all'] },
             () => void chrome.runtime.lastError);
-        for (const [id, title] of CAP_MENUS) {
-            chrome.contextMenus.create({ id, parentId: 'qa-cap-root', title, contexts: ['all'] },
-                () => void chrome.runtime.lastError);
-        }
-    });
+    }
 }
 chrome.runtime.onInstalled.addListener(capBuildMenus);
 chrome.runtime.onStartup.addListener(capBuildMenus);

@@ -25,18 +25,69 @@
     }
 
     function getStore() {
-        return new Promise((res) => chrome.storage.local.get([STORE], (r) => res(r[STORE] || {})));
+        return new Promise((resolve, reject) => chrome.storage.local.get([STORE], (r) => {
+            const err = chrome.runtime.lastError;
+            if (err) reject(new Error(`Could not read saved logins: ${err.message || err}`));
+            else resolve(r[STORE] || {});
+        }));
     }
     function setStore(all) {
-        return new Promise((res) => chrome.storage.local.set({ [STORE]: all }, () => res()));
+        return new Promise((resolve, reject) => chrome.storage.local.set({ [STORE]: all }, () => {
+            const err = chrome.runtime.lastError;
+            if (err) reject(new Error(`Could not save logins: ${err.message || err}`));
+            else resolve();
+        }));
     }
     function getActive() {
-        return new Promise((res) => chrome.storage.local.get([ACTIVE], (r) => res(r[ACTIVE] || {})));
+        return new Promise((resolve, reject) => chrome.storage.local.get([ACTIVE], (r) => {
+            const err = chrome.runtime.lastError;
+            if (err) reject(new Error(`Could not read the active login: ${err.message || err}`));
+            else resolve(r[ACTIVE] || {});
+        }));
     }
-    async function setActive(origin, id) {
-        const a = await getActive();
-        if (id) a[origin] = id; else delete a[origin];
-        return new Promise((res) => chrome.storage.local.set({ [ACTIVE]: a }, () => res()));
+    const activeKey = (origin, storeId) => storeId == null ? origin : `${origin}::cookie-store::${storeId}`;
+    const activeFor = (all, origin, storeId) => {
+        const key = activeKey(origin, storeId);
+        if (Object.prototype.hasOwnProperty.call(all, key)) return all[key];
+        // Old builds stored one marker per origin and always read the regular
+        // cookie store. Only migrate that ambiguous marker into Chrome's regular
+        // store; never guess that it belongs to an incognito session.
+        return storeId === '0' ? all[origin] : undefined;
+    };
+    let activeWriteQueue = Promise.resolve();
+    function mutateActive(mutator) {
+        const operation = activeWriteQueue.catch(() => undefined).then(async () => {
+            const a = await getActive();
+            if (mutator(a) === false) return;
+            return new Promise((resolve, reject) => chrome.storage.local.set({ [ACTIVE]: a }, () => {
+                const err = chrome.runtime.lastError;
+                if (err) reject(new Error(`Could not update the active login: ${err.message || err}`));
+                else resolve();
+            }));
+        });
+        activeWriteQueue = operation;
+        return operation;
+    }
+    function setActive(origin, id, storeId) {
+        return mutateActive((a) => {
+            const key = activeKey(origin, storeId);
+            if (id) a[key] = id; else delete a[key];
+            if (storeId != null) delete a[origin]; // remove the old origin-only marker after migration
+        });
+    }
+
+    function clearActiveSnapshot(origin, id) {
+        return mutateActive((a) => {
+            const prefix = `${origin}::cookie-store::`;
+            let changed = false;
+            for (const key of Object.keys(a)) {
+                if ((key === origin || key.startsWith(prefix)) && a[key] === id) {
+                    delete a[key];
+                    changed = true;
+                }
+            }
+            return changed;
+        });
     }
 
     const cookieUrl = (c) => {
@@ -44,21 +95,86 @@
         return (c.secure ? 'https://' : 'http://') + domain + (c.path || '/');
     };
 
-    function setCookie(c) {
-        return new Promise((resolve) => {
+    function cookieError(action) {
+        const err = chrome.runtime.lastError;
+        return err ? new Error(`${action}: ${err.message || err}`) : null;
+    }
+
+    const cookiePartitionKey = (c) => c && c.partitionKey ? c.partitionKey : null;
+
+    function cookieKey(c) {
+        return [
+            c.name || '', (c.domain || '').replace(/^\./, '').toLowerCase(), c.path || '/',
+            c.hostOnly ? 'host' : 'domain', JSON.stringify(cookiePartitionKey(c) || null)
+        ].join('\u0000');
+    }
+
+    function getCookieStoreId(tabId) {
+        if (tabId == null) return Promise.resolve(null);
+        return new Promise((resolve, reject) => {
+            chrome.cookies.getAllCookieStores((stores) => {
+                const err = cookieError('Could not read cookie stores');
+                if (err) return reject(err);
+                const store = (stores || []).find((s) => (s.tabIds || []).includes(tabId));
+                if (!store) return reject(new Error('Could not find the cookie store for this tab'));
+                resolve(store.id);
+            });
+        });
+    }
+
+    function getCookies(details) {
+        return new Promise((resolve, reject) => {
+            chrome.cookies.getAll(details, (cookies) => {
+                const err = cookieError('Could not read cookies');
+                if (err) reject(err); else resolve(cookies || []);
+            });
+        });
+    }
+
+    async function getCookiesForTab(tab, urls) {
+        if (!tab || !tab.url) throw new Error('No website tab was provided');
+        const storeId = await getCookieStoreId(tab.id);
+        const unique = new Map();
+        for (const url of [...new Set((urls || [tab.url]).filter(Boolean))]) {
+            const details = { url };
+            if (storeId != null) details.storeId = storeId;
+            for (const cookie of await getCookies(details)) unique.set(cookieKey(cookie), cookie);
+        }
+        return { cookies: [...unique.values()], storeId };
+    }
+
+    function setCookie(c, targetStoreId) {
+        return new Promise((resolve, reject) => {
             const details = {
                 url: cookieUrl(c),
                 name: c.name, value: c.value,
                 path: c.path, secure: c.secure, httpOnly: c.httpOnly,
-                sameSite: c.sameSite, storeId: c.storeId,
+                sameSite: c.sameSite,
             };
+            if (targetStoreId != null) details.storeId = targetStoreId;
+            else if (c.storeId != null) details.storeId = c.storeId;
+            if (cookiePartitionKey(c)) details.partitionKey = cookiePartitionKey(c);
             if (!c.hostOnly) details.domain = c.domain;
             if (!c.session && c.expirationDate) details.expirationDate = c.expirationDate;
-            chrome.cookies.set(details, () => { void chrome.runtime.lastError; resolve(); });
+            chrome.cookies.set(details, (created) => {
+                const err = cookieError(`Could not restore cookie "${c.name}"`);
+                if (err || !created) reject(err || new Error(`Could not restore cookie "${c.name}"`));
+                else resolve(created);
+            });
         });
     }
-    function removeCookie(c) {
-        return new Promise((resolve) => chrome.cookies.remove({ url: cookieUrl(c), name: c.name, storeId: c.storeId }, () => { void chrome.runtime.lastError; resolve(); }));
+
+    function removeCookie(c, targetStoreId) {
+        return new Promise((resolve, reject) => {
+            const details = { url: cookieUrl(c), name: c.name };
+            if (targetStoreId != null) details.storeId = targetStoreId;
+            else if (c.storeId != null) details.storeId = c.storeId;
+            if (cookiePartitionKey(c)) details.partitionKey = cookiePartitionKey(c);
+            chrome.cookies.remove(details, (removed) => {
+                const err = cookieError(`Could not remove cookie "${c.name}"`);
+                if (err) reject(err); else resolve(removed || null);
+            });
+        });
     }
 
     // Read a tab's localStorage + sessionStorage. Many modern apps (ABP/OIDC
@@ -66,56 +182,81 @@
     // leaves the old token behind and the API returns "NotAuthorized". We must
     // capture and restore this too.
     async function readStorage(tabId) {
-        try {
-            const [r] = await chrome.scripting.executeScript({
-                target: { tabId },
-                func: () => {
-                    const dump = (s) => { const o = {}; try { for (let i = 0; i < s.length; i++) { const k = s.key(i); o[k] = s.getItem(k); } } catch (e) {} return o; };
-                    return { local: dump(window.localStorage), session: dump(window.sessionStorage) };
-                },
-            });
-            return (r && r.result) || { local: {}, session: {} };
-        } catch (e) { return { local: {}, session: {} }; }   // e.g. injection blocked
+        const [r] = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+                const dump = (s) => { const o = {}; for (let i = 0; i < s.length; i++) { const k = s.key(i); o[k] = s.getItem(k); } return o; };
+                return { local: dump(window.localStorage), session: dump(window.sessionStorage) };
+            },
+        });
+        if (!r || !r.result) throw new Error('Could not read this page\'s login storage');
+        return r.result;
     }
 
     async function writeStorage(tabId, storage) {
         if (!storage) return;
-        try {
-            await chrome.scripting.executeScript({
-                target: { tabId },
-                args: [storage],
-                func: (data) => {
-                    try { window.localStorage.clear(); } catch (e) {}
-                    try { window.sessionStorage.clear(); } catch (e) {}
-                    if (data && data.local) for (const k in data.local) { try { window.localStorage.setItem(k, data.local[k]); } catch (e) {} }
-                    if (data && data.session) for (const k in data.session) { try { window.sessionStorage.setItem(k, data.session[k]); } catch (e) {} }
-                },
-            });
-        } catch (e) { /* injection blocked - cookies alone will have to do */ }
+        const results = await chrome.scripting.executeScript({
+            target: { tabId },
+            args: [storage],
+            func: (data) => {
+                window.localStorage.clear();
+                window.sessionStorage.clear();
+                if (data && data.local) for (const k in data.local) window.localStorage.setItem(k, data.local[k]);
+                if (data && data.session) for (const k in data.session) window.sessionStorage.setItem(k, data.session[k]);
+                return true;
+            },
+        });
+        if (!results || !results[0] || results[0].result !== true) throw new Error('Could not restore this page\'s login storage');
     }
 
+    const storageHasData = (storage) => !!storage && (
+        Object.keys(storage.local || {}).length || Object.keys(storage.session || {}).length
+    );
+
+    const saveOperations = new Map();
+
     // ── save / list / delete ──
-    async function saveCurrent(tab, name) {
+    async function saveCurrentOnce(tab, name, operationId) {
         if (!tab || !tab.url || !/^https?:/i.test(tab.url)) return { ok: false, error: 'Open a website first' };
         const origin = originOf(tab.url);
-        const cookies = await new Promise((res) => chrome.cookies.getAll({ url: tab.url }, (c) => { void chrome.runtime.lastError; res(c || []); }));
-        const storage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
         const all = await getStore();
         if (!all[origin]) all[origin] = [];
-        const id = 'snap_' + Date.now();
+        const duplicate = operationId && all[origin].find((s) => s.operationId === operationId);
+        if (duplicate) {
+            await setActive(origin, duplicate.id, await getCookieStoreId(tab.id));
+            return { ok: true, id: duplicate.id, duplicate: true };
+        }
+
+        const captured = await getCookiesForTab(tab);
+        const cookies = captured.cookies;
+        const storage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
+        if (!cookies.length && !storageHasData(storage)) return { ok: false, error: 'No login data was found on this page' };
+        const id = 'snap_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
         // Remember the exact page this login was saved on: it's on the right app
         // path AND is a page this user is allowed to see - the best place to land
         // when switching back (some apps live on a sub-path, not the site root).
         all[origin].push({
             id, name: name || `Login ${all[origin].length + 1}`, url: tab.url, cookies, storage,
+            operationId: operationId || null,
             identity: extractIdentity(storage),   // WHO this login is - survives cookie rotation
             createdAt: Date.now(),
         });
         await setStore(all);
-        await setActive(origin, id);   // what we just saved IS the current login
+        await setActive(origin, id, captured.storeId);   // what we just saved IS the current login
         rebuildMenuFor(tab);
         notifyTabs(origin);
-        return { ok: true };
+        return { ok: true, id };
+    }
+
+    function saveCurrent(tab, name, operationId) {
+        if (!operationId) return saveCurrentOnce(tab, name, null).catch((e) => ({ ok: false, error: e.message || String(e) }));
+        const operationKey = `${tab && tab.url ? originOf(tab.url) : ''}\u0000${operationId}`;
+        if (saveOperations.has(operationKey)) return saveOperations.get(operationKey);
+        const pending = saveCurrentOnce(tab, name, operationId)
+            .catch((e) => ({ ok: false, error: e.message || String(e) }))
+            .finally(() => saveOperations.delete(operationKey));
+        saveOperations.set(operationKey, pending);
+        return pending;
     }
 
     // ── WHO you are, not WHICH session token you hold ────────────────────────
@@ -154,14 +295,17 @@
     // only WHETHER a session exists. Existence, not value - so a rotated cookie no
     // longer wipes CURRENT. (`qaActiveLogin` is only ever set BY US, on save/update/
     // restore, so it already points at the right snapshot.)
-    async function sessionAlive(snapCookies) {
+    async function sessionAlive(snapCookies, storeId) {
         if (!snapCookies || !snapCookies.length) return false;
         const auth = snapCookies.filter((c) => c.httpOnly);
         const check = auth.length ? auth : snapCookies;
         for (const c of check) {
-            const live = await new Promise((res) => chrome.cookies.get(
-                { url: cookieUrl(c), name: c.name, storeId: c.storeId },
-                (r) => { void chrome.runtime.lastError; res(r); }));
+            const live = await new Promise((res) => {
+                const details = { url: cookieUrl(c), name: c.name };
+                if (storeId != null) details.storeId = storeId;
+                if (cookiePartitionKey(c)) details.partitionKey = cookiePartitionKey(c);
+                chrome.cookies.get(details, (r) => { void chrome.runtime.lastError; res(r); });
+            });
             if (!live || !live.value) return false;      // logged out
         }
         return true;
@@ -172,15 +316,27 @@
         const origin = originOf(url);
         const all = await getStore();
         const snaps = all[origin] || [];
-        let active = (await getActive())[origin];
+        let storeId = null;
+        try { storeId = await getCookieStoreId(tabId); } catch (e) { storeId = null; }
+        const activeMap = await getActive();
+        const storeKey = activeKey(origin, storeId);
+        const hasStoreMarker = Object.prototype.hasOwnProperty.call(activeMap, storeKey);
+        const storedActive = activeFor(activeMap, origin, storeId);
+        let active = storedActive;
+        let activeConfidence = null;
 
-        const liveId = tabId != null ? extractIdentity(await readStorage(tabId)) : null;
+        let liveId = null;
+        if (tabId != null) {
+            try { liveId = extractIdentity(await readStorage(tabId)); }
+            catch (e) { liveId = null; } // cookie-only pages can still be listed safely
+        }
 
         if (liveId) {
             // We know WHO is signed in. The snapshot for that person is CURRENT -
             // whatever the cookie value happens to be right now.
             const match = snaps.find((s) => s.identity && s.identity === liveId);
             active = match ? match.id : null;
+            activeConfidence = match ? 'verified' : null;
         } else {
             const snap = snaps.find((s) => s.id === active);
             if (!snap) {
@@ -191,27 +347,35 @@
                 // stray request (even a favicon fetch) can hand you a fresh session
                 // cookie while you are logged out, and that used to keep CURRENT lit.
                 active = null;
-            } else if (!(await sessionAlive(snap.cookies))) {
+            } else if (!(await sessionAlive(snap.cookies, storeId))) {
                 active = null;      // pure cookie-auth site, and the cookie is gone
-            }
+            } else activeConfidence = 'assumed';
         }
-        await setActive(origin, active);
+        if (active !== storedActive || (storeId != null && !hasStoreMarker)) await setActive(origin, active, storeId);
 
-        return snaps.map((s) => ({ id: s.id, name: s.name, count: s.cookies.length, createdAt: s.createdAt, active: s.id === active }));
+        return snaps.map((s) => ({
+            id: s.id, name: s.name, count: s.cookies.length, createdAt: s.createdAt,
+            active: s.id === active, activeConfidence: s.id === active ? activeConfidence : null
+        }));
     }
 
     async function remove(url, id) {
         const origin = originOf(url);
         const all = await getStore();
+        let removed = false;
         if (all[origin]) {
+            const before = all[origin].length;
             all[origin] = all[origin].filter((s) => s.id !== id);
+            removed = all[origin].length !== before;
             if (!all[origin].length) delete all[origin];
-            await setStore(all);
+            if (removed) await setStore(all);
         }
-        if ((await getActive())[origin] === id) await setActive(origin, null);   // deleted the active one
+        if (!removed) return { ok: false, error: 'saved login not found' };
+        await clearActiveSnapshot(origin, id);   // delete this marker from regular and incognito stores
         // Rebuild the context menu on the current tab, and refresh open FABs.
         if (chrome.tabs) chrome.tabs.query({ active: true, currentWindow: true }, (t) => { if (t && t[0]) rebuildMenuFor(t[0]); });
         notifyTabs(origin);
+        return { ok: true };
     }
 
     // Re-capture the session you're logged in as RIGHT NOW into an existing
@@ -224,13 +388,15 @@
         const all = await getStore();
         const snap = (all[origin] || []).find((s) => s.id === id);
         if (!snap) return { ok: false, error: 'saved login not found' };
-        snap.cookies = await new Promise((res) => chrome.cookies.getAll({ url: tab.url }, (c) => { void chrome.runtime.lastError; res(c || []); }));
+        const captured = await getCookiesForTab(tab);
+        snap.cookies = captured.cookies;
         snap.storage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
+        if (!snap.cookies.length && !storageHasData(snap.storage)) return { ok: false, error: 'No login data was found on this page' };
         snap.identity = extractIdentity(snap.storage);
         snap.url = tab.url;              // also refreshes the landing page
         snap.createdAt = Date.now();
         await setStore(all);
-        await setActive(origin, id);     // you ARE this login now
+        await setActive(origin, id, captured.storeId);     // you ARE this login now
         rebuildMenuFor(tab);
         notifyTabs(origin);
         return { ok: true, name: snap.name };
@@ -240,7 +406,10 @@
         const origin = originOf(url);
         const all = await getStore();
         const s = (all[origin] || []).find((x) => x.id === id);
-        if (s) { s.name = name; await setStore(all); }
+        if (!s) return { ok: false, error: 'saved login not found' };
+        s.name = name;
+        await setStore(all);
+        return { ok: true };
     }
 
     // ── the swap ──
@@ -250,21 +419,68 @@
         const all = await getStore();
         const snap = (all[origin] || []).find((s) => s.id === id);
         if (!snap) return { ok: false, error: 'snapshot not found' };
-        // Clear the site's current cookies, then lay down the saved ones...
-        const current = await new Promise((res) => chrome.cookies.getAll({ url: tab.url }, (c) => { void chrome.runtime.lastError; res(c || []); }));
-        for (const c of current) await removeCookie(c);
-        for (const c of snap.cookies) await setCookie(c);
-        // ...and restore localStorage/sessionStorage (where OIDC/SPA apps keep
-        // the token) so the new page boots as that user.
-        if (tab.id != null) await writeStorage(tab.id, snap.storage);
+        const dest = snap.url || (origin + '/');
+        const captured = await getCookiesForTab(tab, [tab.url, dest]);
+        const current = captured.cookies;
+        const targetStoreId = captured.storeId;
+        const previousActive = activeFor(await getActive(), origin, targetStoreId) || null;
+        const currentStorage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
+
+        const rollback = async () => {
+            const partial = await getCookiesForTab(tab, [tab.url, dest]);
+            for (const c of partial.cookies) await removeCookie(c, targetStoreId);
+            for (const c of current) await setCookie(c, targetStoreId);
+            if (tab.id != null) await writeStorage(tab.id, currentStorage);
+        };
+
+        // Treat the swap as a transaction. If any cookie/storage write fails,
+        // restore the login that was active before this attempt instead of
+        // leaving a half-old, half-new session while reporting success.
+        try {
+            for (const c of current) await removeCookie(c, targetStoreId);
+            for (const c of snap.cookies || []) await setCookie(c, targetStoreId);
+            if (tab.id != null) await writeStorage(tab.id, snap.storage);
+
+            const live = await getCookiesForTab(tab, [dest]);
+            const liveByKey = new Map(live.cookies.map((c) => [cookieKey(c), c]));
+            for (const expected of snap.cookies || []) {
+                const actual = liveByKey.get(cookieKey(expected));
+                if (!actual || actual.value !== expected.value) throw new Error(`Cookie verification failed for "${expected.name}"`);
+            }
+        } catch (error) {
+            let rollbackError = null;
+            try {
+                await rollback();
+                await setActive(origin, previousActive, targetStoreId);
+            } catch (rollbackFailure) { rollbackError = rollbackFailure; }
+            return {
+                ok: false,
+                error: (error.message || String(error)) + (rollbackError
+                    ? '; rollback also failed: ' + (rollbackError.message || rollbackError)
+                    : '; previous login restored')
+            };
+        }
+        try {
+            await setActive(origin, id, targetStoreId);
+        } catch (error) {
+            let rollbackError = null;
+            try {
+                await rollback();
+                await setActive(origin, previousActive, targetStoreId);
+            } catch (rollbackFailure) { rollbackError = rollbackFailure; }
+            return {
+                ok: false,
+                error: (error.message || String(error)) + (rollbackError
+                    ? '; rollback also failed: ' + (rollbackError.message || rollbackError)
+                    : '; previous login restored')
+            };
+        }
         // Land on the page THIS login was saved on, not the current URL: the
         // current page may be a permission-gated deep link the switched-to user
         // can't view ("NotAuthorized"), and the site root may be a different app
         // (apps often live on a sub-path like /en/web/mof, not the root). The
         // saved page is on the right path AND was allowed for this user. Older
         // snapshots without a url fall back to the site root.
-        await setActive(origin, id);   // this snapshot is now the current login
-        const dest = snap.url || (origin + '/');
         // Navigate, and REPORT whether it actually happened. A bad saved url (an
         // old snapshot pointing at a page that no longer resolves, a non-http
         // scheme, etc.) used to make tabs.update fail silently - the popup showed
@@ -278,30 +494,62 @@
                     chrome.tabs.update(tab.id, { url: origin + '/' }, () => res(!chrome.runtime.lastError));
                 });
             });
-            notifyTabs(origin);
-            if (!navd) return { ok: false, error: 'could not navigate the tab' };
-        } else {
-            notifyTabs(origin);
+            if (!navd) {
+                try {
+                    await rollback();
+                    await setActive(origin, previousActive, targetStoreId);
+                    return { ok: false, error: 'could not navigate the tab; previous login restored' };
+                } catch (rollbackFailure) {
+                    return { ok: false, error: 'could not navigate the tab; rollback also failed: ' + (rollbackFailure.message || rollbackFailure) };
+                }
+            }
         }
+        notifyTabs(origin);
         return { ok: true };
     }
 
     // ── right-click menu (switch without opening the popup) ──
-    let menuBuilt = false;
-    async function rebuildMenuFor(tab) {
-        if (!chrome.contextMenus) return;
-        await new Promise((res) => chrome.contextMenus.removeAll(() => { void chrome.runtime.lastError; res(); }));
-        menuBuilt = false;
+    let menuBuildGeneration = 0;
+    let menuBuildQueue = Promise.resolve();
+
+    function removeMenuItem(id) {
+        return new Promise((resolve) => chrome.contextMenus.remove(id, () => {
+            void chrome.runtime.lastError; // missing items are expected on startup
+            resolve();
+        }));
+    }
+
+    async function clearSwapMenus() {
+        const all = await getStore();
+        const ids = new Set(['swapSaveNow', 'swapSep']);
+        Object.values(all).forEach((snaps) => (snaps || []).forEach((s) => ids.add('swap:' + s.id)));
+        for (const id of ids) await removeMenuItem(id);
+        await removeMenuItem(MENU_ROOT); // removes any stale children left by deleted snapshots
+    }
+
+    async function rebuildMenuForNow(tab, generation) {
+        if (!chrome.contextMenus || generation !== menuBuildGeneration) return;
+        await clearSwapMenus();
+        if (generation !== menuBuildGeneration) return;
         if (!tab || !tab.url || !/^https?:/i.test(tab.url)) return;
 
         const snaps = await listFor(tab.url, tab.id);
+        if (generation !== menuBuildGeneration) return;
         chrome.contextMenus.create({ id: MENU_ROOT, title: `Switch login (${hostOf(tab.url)})`, contexts: ['page'] }, () => void chrome.runtime.lastError);
         for (const s of snaps) {
             chrome.contextMenus.create({ id: 'swap:' + s.id, parentId: MENU_ROOT, title: '↪ ' + s.name, contexts: ['page'] }, () => void chrome.runtime.lastError);
         }
         if (snaps.length) chrome.contextMenus.create({ id: 'swapSep', parentId: MENU_ROOT, type: 'separator', contexts: ['page'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'swapSaveNow', parentId: MENU_ROOT, title: '💾 Save current login…', contexts: ['page'] }, () => void chrome.runtime.lastError);
-        menuBuilt = true;
+    }
+
+    function rebuildMenuFor(tab) {
+        const generation = ++menuBuildGeneration;
+        menuBuildQueue = menuBuildQueue
+            .catch(() => undefined)
+            .then(() => rebuildMenuForNow(tab, generation))
+            .catch((error) => console.warn('Could not rebuild session menus:', error));
+        return menuBuildQueue;
     }
 
     if (chrome.contextMenus) {

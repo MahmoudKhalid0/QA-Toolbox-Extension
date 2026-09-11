@@ -13,7 +13,10 @@ function plain(value) {
 }
 
 function loadCaptureWorker() {
-    const calls = { createdTabs: [], createdWindows: [], queriedTabs: 0 };
+    const calls = { createdTabs: [], createdWindows: [], queriedTabs: 0, menus: new Map([
+        ['qaSwapRoot', { id: 'qaSwapRoot' }],
+        ['swapSaveNow', { id: 'swapSaveNow', parentId: 'qaSwapRoot' }]
+    ]) };
     const chrome = {
         action: {
             setBadgeBackgroundColor() { },
@@ -21,8 +24,13 @@ function loadCaptureWorker() {
         },
         commands: { onCommand: event() },
         contextMenus: {
-            create(_options, callback) { if (callback) callback(); },
+            create(options, callback) { calls.menus.set(options.id, options); if (callback) callback(); },
             onClicked: event(),
+            remove(id, callback) {
+                calls.menus.delete(id);
+                for (const [childId, item] of calls.menus) if (item.parentId === id) calls.menus.delete(childId);
+                if (callback) callback();
+            },
             removeAll(callback) { if (callback) callback(); }
         },
         offscreen: {
@@ -140,4 +148,14 @@ test('the shared capture path retains the initiating tab', () => {
     assert.deepEqual(context.result.captureTab, sourceTab);
     assert.deepEqual(context.result.delayedTab, sourceTab);
     assert.equal(calls.queriedTabs, 0);
+});
+
+test('rebuilding capture menus does not remove session menus', async () => {
+    const { calls, context } = loadCaptureWorker();
+
+    await context.capBuildMenus();
+
+    assert.ok(calls.menus.has('qaSwapRoot'));
+    assert.ok(calls.menus.has('swapSaveNow'));
+    assert.ok(calls.menus.has('qa-cap-root'));
 });
