@@ -30,7 +30,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'toggle-mic') { toggleMic(); sendResponse({ success: true }); return true; }
 
     if (message.type === 'capture-screen') {
-        captureScreenshot();
+        captureScreenshot(message.sourceTabId);
         sendResponse({ success: true });
         return true;
     }
@@ -283,7 +283,7 @@ function toggleMic() {
 // One frame of the screen. Same reasoning as the recorder: this document asks for
 // the screen itself, so there is no window of ours to appear in the very shot it
 // is taking (the old path opened a 710x540 window and then had to minimise it).
-async function captureScreenshot() {
+async function captureScreenshot(sourceTabId) {
     try {
         const captureStream = await navigator.mediaDevices.getDisplayMedia({
             audio: false,
@@ -324,6 +324,7 @@ async function captureScreenshot() {
             type: 'screenshot-captured',
             target: 'background',
             mode: 'screen',              // a shot of the SCREEN - the real browser
+            sourceTabId: Number.isInteger(sourceTabId) ? sourceTabId : null,
             imageDataUrl: imageDataUrl   // chrome is already in the picture
         }).catch(() => { });
 
@@ -478,6 +479,7 @@ async function stitchFullPage(data) {
             type: 'screenshot-captured',
             target: 'background',
             mode: 'fullpage',            // stitched page - NOT a shot of the screen
+            sourceTabId: Number.isInteger(data.sourceTabId) ? data.sourceTabId : null,
             imageDataUrl: fullImageDataUrl
         }).catch(() => { });
 

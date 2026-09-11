@@ -43,8 +43,8 @@ const CAP_PANEL_SETTLE_MS = 500;
 // Only the captures that photograph the TAB come through here. Screen and Record
 // take the screen instead, so the panel's width was never part of their picture.
 function capPerform(tab, act) {
-    if (act === 'capture') captureScreenshot();
-    else if (act === 'delayed') handleDelayedCapture();
+    if (act === 'capture') captureScreenshot(undefined, tab);
+    else if (act === 'delayed') handleDelayedCapture(undefined, tab);
     else if (act === 'area') chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/area-selection.js'] });
     else if (act === 'full') chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/full-page.js'] });
 }
@@ -140,6 +140,34 @@ function capEditorTabProps(tab, path) {
     return props;
 }
 
+// The manifest uses Chrome's default "spanning" incognito mode. Chrome lets
+// that shared worker capture an incognito tab, but it explicitly refuses to
+// load an extension page (our editor) in the main frame of an incognito tab.
+// Put the editor in an existing regular window, or create one if the private
+// window is the only window open. chrome.storage.local is shared in spanning
+// mode, so the captured image is still available to the editor there.
+async function capCreateEditorTab(tab, path) {
+    if (!tab || !tab.incognito) return chrome.tabs.create(capEditorTabProps(tab, path));
+
+    const url = chrome.runtime.getURL(path);
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    const regular = windows.find((w) => !w.incognito && w.focused)
+        || windows.find((w) => !w.incognito);
+
+    if (regular) return chrome.tabs.create({ url, windowId: regular.id, active: true });
+    return chrome.windows.create({
+        url,
+        incognito: false,
+        focused: true,
+        state: 'maximized'
+    });
+}
+
+function capReportEditorOpenFailure(error) {
+    console.error('Could not open capture editor:', error);
+    capNotify('!', '#ef4444');
+}
+
 function capOpenEditor(tab, dataUrl, extra) {
     if (!dataUrl) return;
     const captureId = Date.now().toString();
@@ -160,8 +188,9 @@ function capOpenEditor(tab, dataUrl, extra) {
         }, rest);
 
         chrome.storage.local.set(payload, () => {
-            chrome.tabs.create(capEditorTabProps(tab,
-                `capture/editor.html?id=${captureId}&title=${encodeURIComponent(tab.title || 'screenshot')}` + ((extra && extra.cropArea) ? '&crop=true' : '')));
+            capCreateEditorTab(tab,
+                `capture/editor.html?id=${captureId}&title=${encodeURIComponent(tab.title || 'screenshot')}` + ((extra && extra.cropArea) ? '&crop=true' : ''))
+                .catch(capReportEditorOpenFailure);
         });
     });
 
@@ -219,10 +248,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // The panel's own capture buttons. It sends this and shuts itself; the worker
   // does the waiting, because the panel's script stops the moment it closes.
   if (request.action === "capPanelAction") {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tab = tabs && tabs[0];
-      if (tab) capStartAfterPanelCloses(tab, request.act);
-    });
+    const start = (tab) => { if (tab) capStartAfterPanelCloses(tab, request.act); };
+    if (Number.isInteger(request.targetTabId)) {
+      chrome.tabs.get(request.targetTabId, (tab) => {
+        void chrome.runtime.lastError;
+        start(tab);
+      });
+    } else {
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => start(tabs && tabs[0]));
+    }
     return true;
   }
 
@@ -267,12 +301,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "capture") {
-    captureScreenshot(sendResponse);
+    captureScreenshot(sendResponse, sender.tab);
     return true;
   }
 
   if (request.action === "delayedCapture") {
-    handleDelayedCapture(sendResponse);
+    handleDelayedCapture(sendResponse, sender.tab);
     return true;
   }
 
@@ -434,12 +468,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Handle screenshot from offscreen document or capture page
   if (request.type === 'screenshot-captured' && request.target === 'background') {
-    handleScreenshotCaptured(request.imageDataUrl, request.mode);
+    handleScreenshotCaptured(request.imageDataUrl, request.mode, request.sourceTabId);
     return true;
   }
 
   if (request.action === "areaSelected") {
-    handleAreaCapture(request.selection);
+    handleAreaCapture(request.selection, sender.tab);
     return true;
   }
 
@@ -453,7 +487,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "fullPageComplete") {
-    handleFullPageComplete(request);
+    handleFullPageComplete(request, sender.tab);
     sendResponse({ success: true });
     return true;
   }
@@ -461,45 +495,50 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-function handleFullPageComplete(data) {
+function handleFullPageComplete(data, sourceTab) {
   // Use offscreen to stitch
   setupOffscreenDocument().then(() => {
     chrome.runtime.sendMessage({
       target: 'offscreen',
       type: 'stitch-full-page',
-      data: data
+      data: Object.assign({}, data, {
+        sourceTabId: sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null
+      })
     });
   });
 }
 
 // Area Capture and Cropping Logic
-function handleAreaCapture(selection) {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (!tabs[0]) return;
+function handleAreaCapture(selection, sourceTab) {
+  const run = (tab) => {
+    if (!tab) return;
     // the editor does the cropping - a service worker has no canvas
-    capSafeCaptureVisible(tabs[0], (dataUrl) => {
-      capOpenEditor(tabs[0], dataUrl, { cropArea: selection, mode: 'area' });
+    capSafeCaptureVisible(tab, (dataUrl) => {
+      capOpenEditor(tab, dataUrl, { cropArea: selection, mode: 'area' });
     });
-  });
+  };
+  if (sourceTab) run(sourceTab);
+  else chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => run(tabs && tabs[0]));
 }
 
 // Screenshots
-function captureScreenshot(sendResponse) {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (!tabs[0]) return;
-    capSafeCaptureVisible(tabs[0], (dataUrl) => {
-      capOpenEditor(tabs[0], dataUrl, { mode: 'visible' });
+function captureScreenshot(sendResponse, sourceTab) {
+  const run = (tab) => {
+    if (!tab) return;
+    capSafeCaptureVisible(tab, (dataUrl) => {
+      capOpenEditor(tab, dataUrl, { mode: 'visible' });
       if (typeof sendResponse === 'function') sendResponse({ success: !!dataUrl });
     });
-  });
+  };
+  if (sourceTab) run(sourceTab);
+  else chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => run(tabs && tabs[0]));
 }
 
-function handleDelayedCapture(sendResponse) {
+function handleDelayedCapture(sendResponse, sourceTab) {
   chrome.storage.sync.get(['delaySeconds'], (result) => {
     const delaySeconds = Math.min(10, Math.max(1, parseInt(result.delaySeconds, 10) || 3));
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (!tabs[0]) return;
-      const tab = tabs[0];
+    const run = (tab) => {
+      if (!tab) return;
 
       const armTimer = () => {
         isCountdownInProgress = true;
@@ -508,7 +547,12 @@ function handleDelayedCapture(sendResponse) {
           isCountdownInProgress = false;
           chrome.storage.local.set({ isCountdownInProgress: false });
           chrome.action.setBadgeText({ text: '' });
-          captureScreenshot(sendResponse);
+          // Keep the window that initiated the delayed capture. In a spanning
+          // incognito extension, "currentWindow" can otherwise resolve to the
+          // regular window while the countdown is running.
+          chrome.tabs.query({ active: true, windowId: tab.windowId }, (tabs) => {
+            captureScreenshot(sendResponse, (tabs && tabs[0]) || tab);
+          });
         }, (delaySeconds * 1000) + 500);
       };
 
@@ -531,7 +575,9 @@ function handleDelayedCapture(sendResponse) {
           armTimer();
         })
         .catch(() => { badgeCountdown(); armTimer(); });
-    });
+    };
+    if (sourceTab) run(sourceTab);
+    else chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => run(tabs && tabs[0]));
   });
 }
 
@@ -562,8 +608,9 @@ async function handleRecordingFinished(captureId) {
     // placement is all we have.
     const openEditor = (ctx, srcTab) => {
       chrome.storage.local.set({ [`ctx_${captureId}`]: ctx || null }, () => {
-        chrome.tabs.create(capEditorTabProps(srcTab,
-          `capture/editor.html?id=${captureId}&title=${encodeURIComponent(tabTitle)}&type=video`));
+        capCreateEditorTab(srcTab,
+          `capture/editor.html?id=${captureId}&title=${encodeURIComponent(tabTitle)}&type=video`)
+          .catch(capReportEditorOpenFailure);
         chrome.action.setBadgeText({ text: '' });
         chrome.storage.local.remove(['tempTabTitle', 'tempTabId', 'recordingStartTime']);
       });
@@ -615,7 +662,10 @@ async function capChooseAndCapture(tab, mode) {
     await capOffscreenReady();
 
     if (mode !== 'record') {
-      chrome.runtime.sendMessage({ target: 'offscreen', type: 'capture-screen' });
+      chrome.runtime.sendMessage({
+        target: 'offscreen', type: 'capture-screen',
+        sourceTabId: tab && Number.isInteger(tab.id) ? tab.id : null
+      });
       return;
     }
 
@@ -747,13 +797,21 @@ async function setupOffscreenDocument() {
   await new Promise(resolve => setTimeout(resolve, 500));
 }
 
-async function handleScreenshotCaptured(imageDataUrl, mode) {
+async function handleScreenshotCaptured(imageDataUrl, mode, sourceTabId) {
   if (!imageDataUrl) return;
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tab = tabs[0] || { id: -1, title: 'screenshot' };
+  const open = (tab) => {
+    tab = tab || { id: -1, title: 'screenshot' };
     capOpenEditor(tab, imageDataUrl, { mode: mode || 'screen' });
     chrome.storage.local.remove(['tempTabTitle']);
-  });
+  };
+  if (Number.isInteger(sourceTabId)) {
+    chrome.tabs.get(sourceTabId, (tab) => {
+      void chrome.runtime.lastError;
+      open(tab);
+    });
+  } else {
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => open(tabs && tabs[0]));
+  }
 }
 
 let badgeInterval = null;
@@ -908,8 +966,8 @@ chrome.runtime.onStartup.addListener(capBuildMenus);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (!tab) return;
     switch (info.menuItemId) {
-        case 'qa-cap-visible': captureScreenshot(); break;
-        case 'qa-cap-delayed': handleDelayedCapture(); break;
+        case 'qa-cap-visible': captureScreenshot(undefined, tab); break;
+        case 'qa-cap-delayed': handleDelayedCapture(undefined, tab); break;
         case 'qa-cap-area':
             chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['capture/area-selection.js'] }).catch(() => { });
             break;

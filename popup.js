@@ -1973,8 +1973,15 @@ chrome.runtime.onMessage.addListener((req) => {
     // the way. (The waiting cannot live here: this script stops the moment the
     // panel closes.)
     const closePanel = (delay = 60) => setTimeout(() => window.close(), delay);
-    const capture = (act) => {
-        chrome.runtime.sendMessage({ action: 'capPanelAction', act });
+    const capture = async (act) => {
+        // Pass the exact tab before closing the panel. In Chrome's default
+        // spanning-incognito mode the worker's "current window" can be the
+        // regular window even though this panel belongs to a private one.
+        const tab = await activeTab();
+        chrome.runtime.sendMessage({
+            action: 'capPanelAction', act,
+            targetTabId: tab && Number.isInteger(tab.id) ? tab.id : null
+        });
         closePanel();
     };
 
