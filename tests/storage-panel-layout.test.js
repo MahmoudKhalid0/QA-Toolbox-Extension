@@ -2,8 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'content.js'), 'utf8');
+const backgroundSource = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 
 test('storage panel action buttons cannot be stretched by host-page CSS', () => {
     assert.match(source, /#qa-storage \.st-head \.qa-minbtn, #qa-storage \.st-close \{[^}]*min-width: 26px !important;[^}]*max-width: 26px !important;/s);
@@ -14,4 +16,22 @@ test('storage panel action buttons cannot be stretched by host-page CSS', () => 
 test('storage panel keeps readable space for cookie names', () => {
     assert.match(source, /#qa-storage \{[^}]*width: 480px;[^}]*max-width: calc\(100vw - 32px\);/s);
     assert.match(source, /#qa-storage \.st-k \{[^}]*min-width: 90px;/s);
+});
+
+test('cookie change refreshes are scoped to the same domain', () => {
+    const start = backgroundSource.indexOf('function qaCookieDomainMatchesUrl');
+    const end = backgroundSource.indexOf('\n\nif (chrome.cookies', start);
+    assert.ok(start >= 0 && end > start);
+    const context = vm.createContext({ URL });
+    vm.runInContext(backgroundSource.slice(start, end), context);
+
+    assert.equal(context.qaCookieDomainMatchesUrl('.example.com', 'https://example.com/account'), true);
+    assert.equal(context.qaCookieDomainMatchesUrl('.example.com', 'https://app.example.com/account'), true);
+    assert.equal(context.qaCookieDomainMatchesUrl('.example.com', 'https://notexample.com/'), false);
+    assert.equal(context.qaCookieDomainMatchesUrl('.example.com', 'chrome://extensions/'), false);
+});
+
+test('content panel debounces live cookie refresh messages', () => {
+    assert.match(source, /request\.action === 'storageCookiesChanged'/);
+    assert.match(source, /function stQueueCookieRefresh\(\)[\s\S]*setTimeout\([\s\S]*stRefresh\(true\)[\s\S]*}, 150\);/);
 });

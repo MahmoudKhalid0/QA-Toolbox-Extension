@@ -86,6 +86,30 @@ chrome.webNavigation && chrome.webNavigation.onCommitted && chrome.webNavigation
 });
 chrome.tabs.onRemoved.addListener((tabId) => { consoleLogs.delete(tabId); networkReqs.delete(tabId); });
 
+// Keep an open Cookies & Storage panel in sync with cookies created or rotated
+// by the page after the panel's initial snapshot. Domain matching is explicit so
+// unrelated browsing activity never refreshes another site's panel.
+function qaCookieDomainMatchesUrl(cookieDomain, tabUrl) {
+    try {
+        const host = new URL(tabUrl).hostname.toLowerCase();
+        const domain = String(cookieDomain || '').replace(/^\./, '').toLowerCase();
+        return !!domain && (host === domain || host.endsWith('.' + domain));
+    } catch (e) { return false; }
+}
+
+if (chrome.cookies && chrome.cookies.onChanged) {
+    chrome.cookies.onChanged.addListener((changeInfo) => {
+        const cookie = changeInfo && changeInfo.cookie;
+        if (!cookie) return;
+        chrome.tabs.query({}, (tabs) => {
+            for (const tab of tabs || []) {
+                if (!tab.id || !qaCookieDomainMatchesUrl(cookie.domain, tab.url)) continue;
+                chrome.tabs.sendMessage(tab.id, { action: 'storageCookiesChanged' }).catch(() => { });
+            }
+        });
+    });
+}
+
 // ===== Auto Refresh: per-tab reload interval (seconds). The page's content
 // script re-arms a timer on each load; the interval is kept here (and in
 // storage) so it survives the reloads. =====

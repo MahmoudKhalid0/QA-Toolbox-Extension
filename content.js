@@ -36,6 +36,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse && sendResponse({ ok: true });
         return;
     }
+    if (request.action === 'storageCookiesChanged') {
+        stQueueCookieRefresh();
+        sendResponse && sendResponse({ ok: true });
+        return;
+    }
     if (request.action === 'startRecording') {
         // Store appendToProfileId if provided
         currentAppendToProfileId = request.appendToProfileId || null;
@@ -4178,7 +4183,16 @@ function doClearData() {
 let stSection = 'cookies';
 let stCookies = [];
 let stFilter = '';
+let stCookieRefreshTimer = null;
 function stGetStore() { return stSection === 'session' ? sessionStorage : localStorage; }
+
+function stQueueCookieRefresh() {
+    clearTimeout(stCookieRefreshTimer);
+    stCookieRefreshTimer = setTimeout(() => {
+        stCookieRefreshTimer = null;
+        if (stSection === 'cookies' && document.getElementById('qa-storage')) stRefresh(true);
+    }, 150);
+}
 
 const ST_IC = (() => {
     const w = (p) => `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
