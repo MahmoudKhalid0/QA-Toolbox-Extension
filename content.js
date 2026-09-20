@@ -4212,12 +4212,13 @@ function openStoragePanel() {
     panel.id = 'qa-storage';
     panel.innerHTML = `
         <style>
-            #qa-storage { position: fixed; top: 16px; right: 16px; width: 400px; max-height: 88vh; z-index: 2147483647; display: flex; flex-direction: column; direction: ltr; text-align: left;
+            #qa-storage { position: fixed; top: 16px; right: 16px; width: 480px; max-width: calc(100vw - 32px); max-height: 88vh; z-index: 2147483647; display: flex; flex-direction: column; direction: ltr; text-align: left;
                 background: #17151f; border: 1px solid #2a2738; border-radius: 14px; box-shadow: 0 14px 44px rgba(0,0,0,0.6); color: #e5e7eb; font-family: -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 13px; overflow: hidden; }
             #qa-storage * { box-sizing: border-box; }
+            #qa-storage button { min-width: 0 !important; margin: 0; line-height: 1 !important; text-transform: none !important; }
             #qa-storage .st-head { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; background: #1c1a26; border-bottom: 1px solid #2a2738; cursor: move; user-select: none; }
             #qa-storage .st-title { font-weight: 600; font-size: 13px; color: #fff; }
-            #qa-storage .st-close { background: rgba(255,255,255,0.08); border: none; color: #e5e7eb; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
+            #qa-storage .st-head .qa-minbtn, #qa-storage .st-close { background: rgba(255,255,255,0.08); border: none; color: #e5e7eb; cursor: pointer; width: 26px !important; min-width: 26px !important; max-width: 26px !important; height: 26px !important; min-height: 26px !important; padding: 0 !important; border-radius: 6px; font-size: 13px; display: inline-flex !important; align-items: center !important; justify-content: center !important; flex: 0 0 26px !important; }
             #qa-storage .st-close:hover { background: #3a1d24; color: #f87171; }
             #qa-storage .st-tabs { display: flex; gap: 4px; padding: 10px 12px 0; }
             #qa-storage .st-tab { flex: 1; background: #1d1a28; border: 1px solid transparent; color: #a9a6b8; border-radius: 8px; padding: 7px 6px; font-size: 11.5px; cursor: pointer; font-family: inherit; }
@@ -4226,7 +4227,7 @@ function openStoragePanel() {
             #qa-storage .st-tools { display: flex; gap: 6px; padding: 10px 12px 0; align-items: center; }
             #qa-storage .st-search { flex: 1; background: #0f0e16; border: 1px solid #2a2738; border-radius: 8px; color: #fff; padding: 7px 10px; font-size: 12px; outline: none; }
             #qa-storage .st-search:focus { border-color: #7c3aed; }
-            #qa-storage .st-tools button { background: #1d1a28; border: 1px solid #2a2738; color: #a9a6b8; cursor: pointer; width: 30px; height: 30px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+            #qa-storage .st-tools button { background: #1d1a28; border: 1px solid #2a2738; color: #a9a6b8; cursor: pointer; width: 30px !important; min-width: 30px !important; max-width: 30px !important; height: 30px !important; min-height: 30px !important; padding: 0 !important; margin: 0 !important; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 30px !important; }
             #qa-storage .st-tools button:hover { background: #262335; color: #fff; }
             #qa-storage .st-tools button.st-clear:hover { background: #3a1d24; color: #f87171; border-color: #7f1d1d; }
             #qa-storage .st-add { display: flex; gap: 6px; padding: 10px 12px; }
@@ -4236,12 +4237,12 @@ function openStoragePanel() {
             #qa-storage .st-add button { background: #7c3aed; border: none; color: #fff; font-weight: 600; border-radius: 8px; padding: 0 13px; cursor: pointer; font-family: inherit; }
             #qa-storage .st-add button:hover { background: #6d28d9; }
             #qa-storage .st-body { overflow-y: auto; padding: 0 12px 12px; }
-            #qa-storage .st-row { display: flex; align-items: center; gap: 5px; padding: 7px 0; border-bottom: 1px solid #221f2e; }
-            #qa-storage .st-k { width: 32%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12px; }
+            #qa-storage .st-row { display: flex; align-items: center; gap: 5px; width: 100%; min-width: 0; padding: 7px 0; border-bottom: 1px solid #221f2e; }
+            #qa-storage .st-k { flex: 0 1 34%; width: 34%; min-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12px; }
             #qa-storage .st-k .st-flags { display: block; color: #f59e0b; font-size: 9px; font-weight: 700; }
             #qa-storage .st-v { flex: 1; min-width: 0; background: #0f0e16; border: 1px solid #2a2738; border-radius: 6px; color: #e5e7eb; padding: 6px 7px; font: 11.5px Consolas, monospace; outline: none; }
             #qa-storage .st-v:focus { border-color: #7c3aed; }
-            #qa-storage .st-row button { background: #1d1a28; border: 1px solid #2a2738; color: #8b8898; cursor: pointer; width: 24px; height: 24px; border-radius: 6px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; }
+            #qa-storage .st-row button { background: #1d1a28; border: 1px solid #2a2738; color: #8b8898; cursor: pointer; width: 24px !important; min-width: 24px !important; max-width: 24px !important; height: 24px !important; min-height: 24px !important; padding: 0 !important; margin: 0 !important; border-radius: 6px; flex: 0 0 24px !important; display: inline-flex; align-items: center; justify-content: center; }
             #qa-storage .st-row button:hover { background: #262335; color: #fff; }
             #qa-storage .st-row button.st-del:hover { color: #f87171; background: #3a1d24; }
             #qa-storage .st-row button.st-exp.on { color: #a78bfa; border-color: #7c3aed; }
