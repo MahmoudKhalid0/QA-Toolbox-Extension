@@ -9203,17 +9203,28 @@ function axParseFetch(text) {
 // advance them per page instead of re-requesting page 1 forever.
 function axDetectBodyPaging(body) {
     if (typeof body !== 'string' || !body.trim().startsWith('{')) return null;
-    let obj; try { obj = JSON.parse(body); } catch (e) { return null; }
-    if (!obj || typeof obj !== 'object') return null;
-    const lc = {}; for (const k of Object.keys(obj)) lc[k.toLowerCase()] = k;
-    const find = (names) => { for (const n of names) { const real = lc[n]; if (real !== undefined && /^\d+$/.test(String(obj[real]).trim())) return real; } return null; };
+    let root; try { root = JSON.parse(body); } catch (e) { return null; }
+    if (!root || typeof root !== 'object') return null;
     const SKIP = ['skipcount', 'skip', 'offset', 'start', 'startindex', 'from'];
-    const SIZE = ['maxresultcount', 'take', 'limit', 'top', 'pagesize', 'perpage', 'per_page', 'size', 'rows'];
+    const SIZE = ['maxresultcount', 'maxrecords', 'take', 'limit', 'top', 'pagesize', 'perpage', 'per_page', 'size', 'rows'];
     const PAGE = ['pagenumber', 'pageindex', 'page', 'pageno'];
-    const sizeKey = find(SIZE), skipKey = find(SKIP), pageKey = find(PAGE);
-    const size = sizeKey ? (parseInt(obj[sizeKey]) || 100) : 100;
-    if (skipKey) return { where: 'body', mode: 'skip', skipParam: skipKey, sizeParam: sizeKey, size, start: parseInt(obj[skipKey]) || 0 };
-    if (pageKey) return { where: 'body', mode: 'page', pageParam: pageKey, sizeParam: sizeKey, size, start: parseInt(obj[pageKey]) || 1 };
+    // The paging keys may sit in a nested object (OutSystems: screenData.variables.<X>Pagination
+    // .StartIndex/MaxRecords). Walk breadth-first so the shallowest match wins; objPath is where
+    // the walker writes the advanced values back.
+    const queue = [{ obj: root, path: [] }];
+    while (queue.length) {
+        const { obj, path } = queue.shift();
+        const lc = {}; for (const k of Object.keys(obj)) lc[k.toLowerCase()] = k;
+        const find = (names) => { for (const n of names) { const real = lc[n]; if (real !== undefined && /^\d+$/.test(String(obj[real]).trim())) return real; } return null; };
+        const sizeKey = find(SIZE), skipKey = find(SKIP), pageKey = find(PAGE);
+        const size = sizeKey ? (parseInt(obj[sizeKey]) || 100) : 100;
+        if (skipKey) return { where: 'body', objPath: path, mode: 'skip', skipParam: skipKey, sizeParam: sizeKey, size, start: parseInt(obj[skipKey]) || 0 };
+        if (pageKey) return { where: 'body', objPath: path, mode: 'page', pageParam: pageKey, sizeParam: sizeKey, size, start: parseInt(obj[pageKey]) || 1 };
+        if (path.length < 6) for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            if (v && typeof v === 'object' && !Array.isArray(v)) queue.push({ obj: v, path: path.concat(k) });
+        }
+    }
     return null;
 }
 
@@ -9273,12 +9284,38 @@ function axExtractItems(json) {
     if (json && typeof json === 'object') {
         for (const k of ['items', 'data', 'results', 'value', 'records', 'rows', 'list', 'content']) if (Array.isArray(json[k])) return json[k];
         for (const k in json) if (Array.isArray(json[k])) return json[k];
+        // Nothing at the top level: the rows are nested (OutSystems: data.<Output>.List). Take
+        // the largest array of records anywhere below; the shallowest one wins a tie.
+        let best = [];
+        const queue = [{ v: json, d: 0 }];
+        while (queue.length) {
+            const { v, d } = queue.shift();
+            if (Array.isArray(v)) {
+                if (v.length > best.length && v.some((x) => x && typeof x === 'object' && !Array.isArray(x))) best = v;
+                continue;
+            }
+            if (d < 6) for (const k in v) if (v[k] && typeof v[k] === 'object') queue.push({ v: v[k], d: d + 1 });
+        }
+        return best;
     }
     return [];
 }
 function axExtractTotal(json) {
-    if (json && typeof json === 'object') {
-        for (const k of ['totalCount', 'total', 'count', 'totalRecords', 'totalItems', 'recordsTotal', 'totalElements']) if (typeof json[k] === 'number') return json[k];
+    if (!json || typeof json !== 'object') return null;
+    const KEYS = ['totalcount', 'total', 'count', 'totalrecords', 'totalitems', 'recordstotal', 'totalelements'];
+    // Top level first (exact numbers), then nested objects. OutSystems serializes Long Integer
+    // as a string ("TotalCount":"118"), so numeric strings count there.
+    const queue = [{ v: json, d: 0 }];
+    while (queue.length) {
+        const { v, d } = queue.shift();
+        const lc = {}; for (const k of Object.keys(v)) lc[k.toLowerCase()] = k;
+        for (const n of KEYS) {
+            const real = lc[n]; if (real === undefined) continue;
+            const x = v[real];
+            if (typeof x === 'number') return x;
+            if (typeof x === 'string' && /^\d+$/.test(x.trim())) return parseInt(x);
+        }
+        if (d < 6) for (const k of Object.keys(v)) if (v[k] && typeof v[k] === 'object' && !Array.isArray(v[k])) queue.push({ v: v[k], d: d + 1 });
     }
     return null;
 }
@@ -9594,10 +9631,11 @@ function openApiExportPanel() {
                 let pageBody = parsed.body;
                 if (pag && pag.where === 'body') {
                     // advance the skip/page value inside the JSON body
-                    let o = {}; try { o = JSON.parse(parsed.body); } catch (e) { }
+                    let root = {}; try { root = JSON.parse(parsed.body); } catch (e) { }
+                    let o = root; for (const k of (pag.objPath || [])) o = o[k];
                     if (pag.mode === 'skip') { o[pag.skipParam] = cur; if (pag.sizeParam) o[pag.sizeParam] = pag.size; }
                     else { o[pag.pageParam] = cur; if (pag.sizeParam) o[pag.sizeParam] = pag.size; }
-                    pageBody = JSON.stringify(o);
+                    pageBody = JSON.stringify(root);
                 } else if (pag) {
                     const u = new URL(parsed.url);
                     if (pag.mode === 'skip') { u.searchParams.set(pag.skipParam, String(cur)); u.searchParams.set(pag.sizeParam, String(pag.size)); }
