@@ -5579,9 +5579,16 @@ function rvKillHover(doc, on) {
                 }
             }
         };
+        // Walk a sheet only when it is NEW or its rule count changed. This runs 5x a second
+        // per device, and re-walking every rule each time (OutSystems ships ~15k) ate ~40%
+        // of the main thread - which all same-origin devices share - so the mirrored
+        // scroll dropped to ~16fps.
+        const seen = doc.__rvHoverSeen || (doc.__rvHoverSeen = new WeakMap());
         for (const sheet of doc.styleSheets) {
             let rules; try { rules = sheet.cssRules; } catch (e) { continue; }
-            if (rules) walk(rules);
+            if (!rules || seen.get(sheet) === rules.length) continue;
+            walk(rules);
+            seen.set(sheet, rules.length);
         }
     } catch (e) { }
 }
