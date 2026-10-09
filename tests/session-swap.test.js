@@ -5,7 +5,11 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
-const event = () => ({ addListener() { } });
+// A real-enough chrome event: listeners can be added, removed and fired.
+const event = () => {
+    const ls = new Set();
+    return { addListener(f) { ls.add(f); }, removeListener(f) { ls.delete(f); }, fire(...args) { for (const f of [...ls]) f(...args); } };
+};
 
 function loadSessionSwap() {
     const state = {
@@ -15,6 +19,9 @@ function loadSessionSwap() {
         cookieReads: [],
         cookieSets: [],
         failSetName: null,
+        scriptRuns: 0,
+        pageMessages: [],
+        onLoad: null,          // (tabId) => void - what the server does when the page loads
         menus: new Map([
             ['qa-cap-root', { id: 'qa-cap-root' }],
             ['qa-cap-visible', { id: 'qa-cap-visible', parentId: 'qa-cap-root' }]
@@ -60,7 +67,8 @@ function loadSessionSwap() {
             getAll(details, cb) {
                 state.cookieReads.push(clone(details));
                 const cookies = (state.jars.get(details.storeId || '0') || [])
-                    .filter((c) => !details.url || matchesUrl(c, details.url));
+                    .filter((c) => !details.url || matchesUrl(c, details.url))
+                    .filter((c) => !details.domain || matchesUrl(c, 'https://' + details.domain + '/'));
                 callback(cb, clone(cookies));
             },
             get(details, cb) {
@@ -105,6 +113,7 @@ function loadSessionSwap() {
         scripting: {
             async executeScript(options) {
                 const tabId = options.target.tabId;
+                state.scriptRuns++;
                 if (options.args) {
                     state.pageStorage.set(tabId, clone(options.args[0]));
                     return [{ result: true }];
@@ -114,8 +123,11 @@ function loadSessionSwap() {
         },
         tabs: {
             query(_query, cb) { callback(cb, []); },
-            sendMessage(_id, _message, cb) { if (cb) callback(cb); },
-            update(_id, options, cb) { callback(cb, { id: _id, ...options }); },
+            sendMessage(_id, message, cb) { state.pageMessages.push(clone(message)); if (cb) callback(cb); },
+            update(_id, options, cb) {
+                callback(cb, { id: _id, ...options });
+                setTimeout(() => { if (state.onLoad) state.onLoad(_id); this.onUpdated.fire(_id, { status: 'complete' }); }, 0);   // the page finishes loading
+            },
             get(id, cb) { callback(cb, { id, url: 'https://app.test/' }); },
             onActivated: event(),
             onUpdated: event()
@@ -132,11 +144,15 @@ function loadSessionSwap() {
         }
     };
 
-    const context = vm.createContext({ chrome, console, self: {}, URL, setTimeout, clearTimeout });
+    const context = vm.createContext({ chrome, console, self: {}, URL, setTimeout, clearTimeout, atob });
     const source = fs.readFileSync(path.join(__dirname, '..', 'session-swap.js'), 'utf8');
     vm.runInContext(source, context, { filename: 'session-swap.js' });
     return { api: context.self.SessionSwap, state };
 }
+
+// An unsigned JWT - the code only reads its payload.
+const b64u = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const jwt = (payload) => `${b64u({ alg: 'none' })}.${b64u(payload)}.sig`;
 
 function authCookie(value, storeId, extra = {}) {
     return {
@@ -229,4 +245,71 @@ test('rebuilding session menus does not remove capture menus', async () => {
     assert.ok(state.menus.has('qa-cap-root'));
     assert.ok(state.menus.has('qa-cap-visible'));
     assert.ok(state.menus.has('qaSwapRoot'));
+});
+
+test('save and switch carry the SSO server cookies named by the token issuer', async () => {
+    const { api, state } = loadSessionSwap();
+    const idp = (value, storeId) => authCookie(value, storeId, { name: 'KEYCLOAK_SESSION', domain: 'idp.test', path: '/realms/x/' });
+    state.jars.set('0', [authCookie('alice-app', '0'), idp('alice-idp', '0')]);
+    state.pageStorage.set(10, { local: { token: jwt({ sub: 'alice', email: 'alice@x.test', iss: 'https://idp.test/realms/x' }) }, session: {} });
+    await api.saveCurrent({ id: 10, url: 'https://app.test/' }, 'Alice', 'op-alice');
+    const snap = state.local.qaLoginSnapshots['https://app.test'][0];
+    assert.deepEqual(snap.ssoHosts, ['idp.test']);
+    assert.ok(snap.cookies.some((c) => c.value === 'alice-idp'));
+
+    state.jars.set('1', [authCookie('bob-app', '1'), idp('bob-idp', '1')]);
+    const result = await api.restore({ id: 20, url: 'https://app.test/' }, snap.id);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.problem, undefined);
+    assert.deepEqual(state.jars.get('1').map((c) => c.value).sort(), ['alice-app', 'alice-idp']);
+    assert.equal((await api.listFor('https://app.test/', 20))[0].user, 'alice@x.test');
+});
+
+test('a public IdP (Microsoft/Google) is never swapped', async () => {
+    const { api, state } = loadSessionSwap();
+    state.jars.set('0', [authCookie('a', '0')]);
+    state.pageStorage.set(10, { local: { token: jwt({ sub: 'a', iss: 'https://login.microsoftonline.com/tenant/v2.0' }) }, session: {} });
+    await api.saveCurrent({ id: 10, url: 'https://app.test/' }, 'A', 'op-a');
+    assert.deepEqual(state.local.qaLoginSnapshots['https://app.test'][0].ssoHosts, []);
+});
+
+test('switching to an expired login reports it instead of claiming success', async () => {
+    const { api, state } = loadSessionSwap();
+    state.jars.set('0', [authCookie('alice', '0')]);
+    state.pageStorage.set(10, { local: { token: jwt({ sub: 'alice' }) }, session: {} });
+    await api.saveCurrent({ id: 10, url: 'https://app.test/' }, 'Alice', 'op-alice');
+    const id = state.local.qaLoginSnapshots['https://app.test'][0].id;
+    state.onLoad = (tabId) => state.pageStorage.set(tabId, { local: {}, session: {} });   // server rejects: SPA drops the token
+
+    const result = await api.restore({ id: 20, url: 'https://app.test/' }, id);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.problem, 'expired');
+    assert.equal(state.local.qaLoginSnapshots['https://app.test'][0].problem, 'expired');
+    assert.ok(state.pageMessages.some((m) => m.action === 'swapProblem' && m.problem === 'expired'));
+
+    // Update from a fresh login clears the flag.
+    state.pageStorage.set(20, { local: { token: jwt({ sub: 'alice' }) }, session: {} });
+    await api.updateSnapshot({ id: 20, url: 'https://app.test/' }, id);
+    assert.equal(state.local.qaLoginSnapshots['https://app.test'][0].problem, undefined);
+});
+
+test('switching that lands on another user (SSO) is reported', async () => {
+    const { api, state } = loadSessionSwap();
+    state.jars.set('0', [authCookie('alice', '0')]);
+    state.pageStorage.set(10, { local: { token: jwt({ sub: 'alice' }) }, session: {} });
+    await api.saveCurrent({ id: 10, url: 'https://app.test/' }, 'Alice', 'op-alice');
+    const id = state.local.qaLoginSnapshots['https://app.test'][0].id;
+    state.onLoad = (tabId) => state.pageStorage.set(tabId, { local: { token: jwt({ sub: 'bob' }) }, session: {} });
+
+    const result = await api.restore({ id: 20, url: 'https://app.test/' }, id);
+    assert.equal(result.problem, 'other-user');
+});
+
+test('a site with no saved logins is listed without injecting into the page', async () => {
+    const { api, state } = loadSessionSwap();
+    assert.equal((await api.listFor('https://nothing-saved.test/', 10)).length, 0);
+    await api.rebuildMenuFor({ id: 10, url: 'https://nothing-saved.test/' });
+    assert.equal(state.scriptRuns, 0);
 });

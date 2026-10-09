@@ -36,6 +36,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse && sendResponse({ ok: true });
         return;
     }
+    // A switch went through but the server didn't take it (see verifySwitch in
+    // session-swap.js) - say so on the page, where the user is looking.
+    if (request.action === 'swapProblem') {
+        showFabAiStatus('error', request.problem === 'other-user'
+            ? `"${request.name}" opened as a different user (SSO sign-in). Log in as them, then press Update.`
+            : request.reloginError
+                ? `"${request.name}" has expired and the automatic login failed: ${request.reloginError}`
+                : `"${request.name}" has expired. Log in again, then press Update to refresh it.`);
+        sendResponse && sendResponse({ ok: true });
+        return;
+    }
     if (request.action === 'storageCookiesChanged') {
         stQueueCookieRefresh();
         sendResponse && sendResponse({ ok: true });
@@ -5648,12 +5659,23 @@ function rvStartSyncLoop() {
                 catch (e) { continue; }             // cross-origin frame - skip
                 if (f.__rvSX === undefined) { f.__rvSX = sx; f.__rvSY = sy; continue; }
                 if (sx === f.__rvSX && sy === f.__rvSY) continue;   // this frame didn't move
-                // f moved → it's the one being scrolled. Mirror to the rest.
+                // f moved → it's the one being scrolled. Mirror to the rest PROPORTIONALLY:
+                // each device goes to the same fraction of ITS OWN scroll range, so a short
+                // page moves slower and every device reaches the top/bottom together (a 1:1
+                // pixel mirror had the short device hit its end while the long one was mid-way).
+                const range = (win) => {
+                    const se = win.document.scrollingElement || win.document.documentElement;
+                    return { x: Math.max(0, se.scrollWidth - win.innerWidth), y: Math.max(0, se.scrollHeight - win.innerHeight) };
+                };
+                const fr = range(w);
+                const px = fr.x ? sx / fr.x : 0, py = fr.y ? sy / fr.y : 0;
                 for (const g of frames) {
                     if (g === f) continue;
                     try {
                         const gw = g.contentWindow;
-                        if (gw.scrollX !== sx || gw.scrollY !== sy) gw.scrollTo({ left: sx, top: sy, behavior: 'instant' });
+                        const gr = range(gw);
+                        const tx = Math.round(px * gr.x), ty = Math.round(py * gr.y);
+                        if (Math.abs(gw.scrollX - tx) >= 1 || Math.abs(gw.scrollY - ty) >= 1) gw.scrollTo({ left: tx, top: ty, behavior: 'instant' });
                         // Record g's ACTUAL position, not the target. A shorter device
                         // clamps to its own bottom; recording the (larger) target made
                         // the next tick see g as "moved" and mirror it BACK to the

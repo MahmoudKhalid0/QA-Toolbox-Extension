@@ -2210,25 +2210,14 @@
                     #tab-sessions .sw-card.sw-current { border-color: rgba(16,185,129,0.4); background: rgba(16,185,129,0.06); }
                     #tab-sessions .sw-badge { flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: .5px; color: #10b981; background: rgba(16,185,129,0.15); padding: 5px 11px; border-radius: 20px; }
                     #tab-sessions .sw-x { background: rgba(255,255,255,0.06); border: none; color: #94a3b8; width: 28px; height: 28px; border-radius: 7px; cursor: pointer; flex-shrink: 0; }
-                    #tab-sessions .sw-x:hover { background: rgba(239,68,68,0.4); color: #fff; }
+                    #tab-sessions .sw-x:hover { background: rgba(99,102,241,0.35); color: #fff; }
+                    #tab-sessions .sw-x.sw-del:hover { background: rgba(239,68,68,0.4); }
+                    #tab-sessions .sw-x.sw-key.on { color: #fbbf24; }
+                    #tab-sessions .sw-card.sw-bad { border-color: rgba(245,158,11,0.4); }
+                    #tab-sessions .sw-warn { font-size: 9.5px; font-weight: 700; color: #fbbf24; background: rgba(245,158,11,0.15); padding: 2px 7px; border-radius: 10px; margin-left: 4px; vertical-align: 1px; cursor: help; }
                     #tab-sessions .sw-empty { text-align: center; color: #64748b; padding: 18px 12px; font-size: 12px; }
                     #tab-sessions .sw-tip { display: flex; gap: 8px; background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.25); border-radius: 10px; padding: 9px 11px; font-size: 11px; color: #6ee7b7; line-height: 1.5; margin: 12px 0; }
                     #tab-sessions .sw-tip i { margin-top: 1px; }
-
-                    /* ── custom prompt (replaces the browser's window.prompt) ── */
-                    #tab-sessions .sw-modal { position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; background: rgba(2,6,23,0.66); backdrop-filter: blur(2px); }
-                    #tab-sessions .sw-modal.show { display: flex; }
-                    #tab-sessions .sw-modal-box { width: 86%; max-width: 300px; background: #131a2b; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 18px; box-shadow: 0 20px 50px rgba(0,0,0,0.55); }
-                    #tab-sessions .sw-modal-title { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 14px; }
-                    #tab-sessions .sw-modal-title .sw-modal-ic { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, #10b981, #059669); display: flex; align-items: center; justify-content: center; font-size: 13px; }
-                    #tab-sessions .sw-modal-input { width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; color: #fff; padding: 11px 12px; font-size: 13.5px; outline: none; margin-bottom: 16px; }
-                    #tab-sessions .sw-modal-input:focus { border-color: #10b981; }
-                    #tab-sessions .sw-modal-actions { display: flex; gap: 9px; justify-content: flex-end; }
-                    #tab-sessions .sw-modal-btn { border: none; border-radius: 10px; padding: 9px 18px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
-                    #tab-sessions .sw-modal-cancel { background: rgba(255,255,255,0.08); color: #cbd5e1; }
-                    #tab-sessions .sw-modal-cancel:hover { background: rgba(255,255,255,0.14); }
-                    #tab-sessions .sw-modal-ok { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
-                    #tab-sessions .sw-modal-ok:hover { filter: brightness(1.08); }
 
                     /* ── Reusable in-panel confirm / prompt (qaConfirm / qaPrompt in
                        popup.js). Replaces the browser's native confirm()/prompt(),
@@ -2264,27 +2253,14 @@
                     #tab-sessions .se-adv.open .se-adv-body { display: block; }
                 </style>
 
-                <!-- ── PRIMARY: Quick login switch (no debugger) ── -->
-                <div class="se-intro" style="margin-bottom:8px;">Save each user's login once, then switch between them in one click &mdash; no retyping username/password, no "being debugged" bar.</div>
-                <div class="se-note"><i class="fas fa-shield-halved"></i><span>Saved logins contain sensitive cookies/tokens and stay in this browser profile. Delete snapshots you no longer need.</span></div>
+                <!-- ── Quick login switch (Snapshot & Swap) ── -->
+                <div class="se-intro" style="margin-bottom:8px;">Save each user's login once, then switch between them in one click. <span title="Saved logins hold this site's cookies/tokens and stay in this browser profile only."><i class="fas fa-shield-halved"></i> Stored locally</span></div>
                 <div class="sw-site" id="sw-site">Current site: <b>&mdash;</b></div>
                 <button class="sw-save" id="sw-save"><i class="fas fa-floppy-disk"></i> Save current login</button>
                 <div id="sw-list" class="sw-list">
                     <div class="sw-empty">No saved logins for this site yet.</div>
                 </div>
                 <div class="sw-tip"><i class="fas fa-lightbulb"></i><span>Tip: switch without opening this popup &mdash; open the extension's floating button on the page &rarr; <b>Switch login</b>.</span></div>
-
-                <!-- custom prompt for naming a saved login -->
-                <div class="sw-modal" id="sw-modal">
-                    <div class="sw-modal-box">
-                        <div class="sw-modal-title"><span class="sw-modal-ic"><i class="fas fa-floppy-disk"></i></span><span id="sw-modal-title">Save this login as</span></div>
-                        <input type="text" id="sw-modal-input" class="sw-modal-input" placeholder="e.g. Admin" autocomplete="off">
-                        <div class="sw-modal-actions">
-                            <button class="sw-modal-btn sw-modal-cancel" id="sw-modal-cancel">Cancel</button>
-                            <button class="sw-modal-btn sw-modal-ok" id="sw-modal-ok">Save</button>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
     </div>

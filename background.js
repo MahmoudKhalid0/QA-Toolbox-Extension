@@ -4,11 +4,8 @@ importScripts('config.js');
 importScripts('sync.js');
 importScripts('capture/cap-store.js');
 importScripts('capture/cap-background.js');
-importScripts('session-cookie-jar.js');   // pure cookie-jar logic
-importScripts('session-isolation.js');    // per-tab session isolation via chrome.debugger
 importScripts('session-swap.js');         // quick login switch (Snapshot & Swap, no debugger)
 importScripts('automation.js');           // AI automation-code generator (prompts + framework matrix)
-if (self.SessionIsolation) self.SessionIsolation.loadFromStorage();
 
 // A recording is handed to the editor as a Blob in IndexedDB. If that editor tab
 // was never opened - the browser was closed, it crashed - the Blob would sit
@@ -2796,44 +2793,6 @@ function updateTempMailUnread() {
 }
 updateTempMailUnread();
 
-// ── Session isolation (chrome.debugger engine) - popup message bridge ───────
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    const SI = self.SessionIsolation;
-    if (!request || !request.action || !SI) return false;
-    switch (request.action) {
-        case 'isoListSessions':
-            sendResponse({ sessions: SI.listSessions() });
-            return true;
-        case 'isoCreateSession':
-            sendResponse({ id: SI.createSession(request.name, request.color) });
-            return true;
-        case 'isoDeleteSession':
-            SI.deleteSession(request.id);
-            sendResponse({ ok: true });
-            return true;
-        case 'isoClearJar':
-            SI.clearJar(request.id);
-            sendResponse({ ok: true });
-            return true;
-        case 'isoOpenTab':
-            SI.openIsolatedTab(request.sessionId, request.url).then(sendResponse);
-            return true;   // async
-        case 'isoIsolateActive':
-            SI.isolateExistingTab(request.tabId, request.sessionId).then(sendResponse);
-            return true;   // async
-        case 'isoStop':
-            SI.stopIsolation(request.tabId).then(() => sendResponse({ ok: true }));
-            return true;
-        case 'isoTabStatus':
-            sendResponse({ isolated: SI.isTabIsolated(request.tabId), sessionId: SI.sessionOfTab(request.tabId) });
-            return true;
-        case 'isoDebugState':
-            sendResponse(SI.debugState ? SI.debugState() : {});
-            return true;
-    }
-    return false;
-});
-
 // ── Quick login switch (Snapshot & Swap, no debugger) - popup message bridge ─
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const SW = self.SessionSwap;
@@ -2870,6 +2829,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         case 'swapRename':
             SW.rename(request.url, request.id, request.name).then(sendResponse)
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
+            return true;
+        case 'swapGetCreds':
+            SW.credsInfo(request.id).then((creds) => sendResponse({ ok: true, creds }))
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
+            return true;
+        case 'swapSaveCreds':
+            SW.saveCreds(request.id, request.creds || {}).then(sendResponse)
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
+            return true;
+        case 'swapClearCreds':
+            SW.setCreds(request.id, null).then(sendResponse)
+                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
+            return true;
+        case 'swapRelogin':
+            SW.relogin(request.tab || (sender && sender.tab), request.id).then(sendResponse)
                 .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
             return true;
     }

@@ -20,9 +20,7 @@
         "favicon",
         "desktopCapture",
         "offscreen",
-        "unlimitedStorage",
-        "debugger",
-        "tabGroups"
+        "unlimitedStorage"
     ],
     "web_accessible_resources": [
         {

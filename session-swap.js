@@ -9,6 +9,10 @@
 (function (root) {
     'use strict';
     const STORE = 'qaLoginSnapshots'; // { [origin]: [ { id, name, cookies:[...], createdAt } ] }
+    // { [snapshotId]: { username, password, loginUrl } } - the fallback for when a saved
+    // session has died on the server. Kept OUT of the snapshot store, and NOT in sync.js's
+    // key list, so passwords never leave this browser profile.
+    const CREDS = 'qaLoginCreds';
     const ACTIVE = 'qaActiveLogin';   // { [origin]: snapshotId } - the login currently in use
     const MENU_ROOT = 'qaSwapRoot';
 
@@ -131,12 +135,16 @@
         });
     }
 
-    async function getCookiesForTab(tab, urls) {
+    // `hosts` = extra hosts whose cookies belong to this login as a WHOLE (the SSO
+    // server - see ssoHostsOf). Read by domain, not URL: an IdP scopes its cookies to
+    // paths like /realms/x/, which a URL lookup would miss.
+    async function getCookiesForTab(tab, urls, hosts) {
         if (!tab || !tab.url) throw new Error('No website tab was provided');
         const storeId = await getCookieStoreId(tab.id);
         const unique = new Map();
-        for (const url of [...new Set((urls || [tab.url]).filter(Boolean))]) {
-            const details = { url };
+        const queries = [...new Set((urls || [tab.url]).filter(Boolean))].map((url) => ({ url }))
+            .concat([...new Set(hosts || [])].map((domain) => ({ domain })));
+        for (const details of queries) {
             if (storeId != null) details.storeId = storeId;
             for (const cookie of await getCookies(details)) unique.set(cookieKey(cookie), cookie);
         }
@@ -227,9 +235,10 @@
             return { ok: true, id: duplicate.id, duplicate: true };
         }
 
-        const captured = await getCookiesForTab(tab);
-        const cookies = captured.cookies;
         const storage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
+        const ssoHosts = ssoHostsOf(storage, tab.url);
+        const captured = await getCookiesForTab(tab, null, ssoHosts);
+        const cookies = captured.cookies;
         if (!cookies.length && !storageHasData(storage)) return { ok: false, error: 'No login data was found on this page' };
         const id = 'snap_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
         // Remember the exact page this login was saved on: it's on the right app
@@ -239,6 +248,8 @@
             id, name: name || `Login ${all[origin].length + 1}`, url: tab.url, cookies, storage,
             operationId: operationId || null,
             identity: extractIdentity(storage),   // WHO this login is - survives cookie rotation
+            displayName: extractDisplayName(storage),
+            ssoHosts,
             createdAt: Date.now(),
         });
         await setStore(all);
@@ -270,25 +281,59 @@
     // The identity inside the auth token does not change. These apps (ABP/OIDC,
     // Liferay) keep a JWT in local/session storage; its payload names the user. So
     // we fingerprint the USER at save time and compare that instead.
-    function extractIdentity(storage) {
-        if (!storage) return null;
-        const values = [];
+    // Every readable JWT payload in the page's storage.
+    function jwtPayloads(storage) {
+        const out = [];
+        if (!storage) return out;
         for (const bag of [storage.local, storage.session]) {
             if (!bag) continue;
-            for (const k in bag) if (typeof bag[k] === 'string') values.push(bag[k]);
+            for (const k in bag) {
+                if (typeof bag[k] !== 'string') continue;
+                const m = bag[k].match(/eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*/);
+                if (!m) continue;
+                try {
+                    const body = m[0].split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+                    out.push(JSON.parse(atob(body + '==='.slice((body.length + 3) % 4))));
+                } catch (e) { /* not a JWT we can read - keep looking */ }
+            }
         }
-        for (const v of values) {
-            const m = v.match(/eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*/);
-            if (!m) continue;
-            try {
-                const body = m[0].split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-                const p = JSON.parse(atob(body + '==='.slice((body.length + 3) % 4)));
-                const id = p.sub || p.preferred_username || p.email || p.unique_name
-                    || p.upn || p.user_id || p.uid || p.nameid || p.name;
-                if (id) return String(id);
-            } catch (e) { /* not a JWT we can read - keep looking */ }
+        return out;
+    }
+
+    function extractIdentity(storage) {
+        for (const p of jwtPayloads(storage)) {
+            const id = p.sub || p.preferred_username || p.email || p.unique_name
+                || p.upn || p.user_id || p.uid || p.nameid || p.name;
+            if (id) return String(id);
         }
         return null;
+    }
+
+    // A human label for the card (an email/username beats an opaque `sub` GUID).
+    function extractDisplayName(storage) {
+        for (const p of jwtPayloads(storage)) {
+            const n = p.email || p.preferred_username || p.upn || p.unique_name || p.name;
+            if (n) return String(n);
+        }
+        return null;
+    }
+
+    // The SSO server this login came from. Its cookies live on ANOTHER host (Keycloak,
+    // Azure AD, IdentityServer…), so saving only the app's cookies left the IdP still
+    // signed in as whoever logged in last - and "Switch" silently brought that user
+    // back. The token's `iss` claim names the IdP, so we save/swap its cookies too.
+    // Public IdPs are skipped: their cookies are YOUR own Microsoft/Google sign-in for
+    // the whole browser, and swapping them would log you out of Outlook/Gmail. A wrong
+    // user there is still caught - by the check after the switch (verifySwitch).
+    const SHARED_IDP = /(^|\.)(microsoftonline\.com|windows\.net|live\.com|microsoft\.com|google\.com|googleapis\.com|apple\.com|facebook\.com)$/i;
+    function ssoHostsOf(storage, appUrl) {
+        const appHost = hostOf(appUrl);
+        const hosts = new Set();
+        for (const p of jwtPayloads(storage)) {
+            const h = p.iss ? hostOf(String(p.iss)) : '';
+            if (h && h !== appHost && !SHARED_IDP.test(h)) hosts.add(h);
+        }
+        return [...hosts];
     }
 
     // Fallback for sites with no token at all (pure cookie auth): we cannot tell WHO,
@@ -316,6 +361,9 @@
         const origin = originOf(url);
         const all = await getStore();
         const snaps = all[origin] || [];
+        // Nothing saved for this site (most pages): skip injecting a storage reader.
+        // This runs on every page load (floating button + right-click menu).
+        if (!snaps.length) return [];
         let storeId = null;
         try { storeId = await getCookieStoreId(tabId); } catch (e) { storeId = null; }
         const activeMap = await getActive();
@@ -352,9 +400,11 @@
             } else activeConfidence = 'assumed';
         }
         if (active !== storedActive || (storeId != null && !hasStoreMarker)) await setActive(origin, active, storeId);
+        const creds = await getCreds();
 
         return snaps.map((s) => ({
             id: s.id, name: s.name, count: s.cookies.length, createdAt: s.createdAt,
+            user: s.displayName || null, problem: s.problem || null, hasCreds: !!creds[s.id],
             active: s.id === active, activeConfidence: s.id === active ? activeConfidence : null
         }));
     }
@@ -371,6 +421,7 @@
             if (removed) await setStore(all);
         }
         if (!removed) return { ok: false, error: 'saved login not found' };
+        await setCreds(id, null);                // its username/password go with it
         await clearActiveSnapshot(origin, id);   // delete this marker from regular and incognito stores
         // Rebuild the context menu on the current tab, and refresh open FABs.
         if (chrome.tabs) chrome.tabs.query({ active: true, currentWindow: true }, (t) => { if (t && t[0]) rebuildMenuFor(t[0]); });
@@ -382,18 +433,23 @@
     // saved login (same name, same landing page). Server sessions expire - after
     // a reboot or a timeout the saved cookies are dead, so you log in once and
     // refresh the slot instead of deleting and re-adding it.
-    async function updateSnapshot(tab, id) {
+    async function updateSnapshot(tab, id, opts = {}) {
         if (!tab || !tab.url || !/^https?:/i.test(tab.url)) return { ok: false, error: 'Open a website first' };
         const origin = originOf(tab.url);
         const all = await getStore();
         const snap = (all[origin] || []).find((s) => s.id === id);
         if (!snap) return { ok: false, error: 'saved login not found' };
-        const captured = await getCookiesForTab(tab);
+        const storage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
+        const ssoHosts = ssoHostsOf(storage, tab.url);
+        const captured = await getCookiesForTab(tab, null, ssoHosts);
+        if (!captured.cookies.length && !storageHasData(storage)) return { ok: false, error: 'No login data was found on this page' };
         snap.cookies = captured.cookies;
-        snap.storage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
-        if (!snap.cookies.length && !storageHasData(snap.storage)) return { ok: false, error: 'No login data was found on this page' };
-        snap.identity = extractIdentity(snap.storage);
-        snap.url = tab.url;              // also refreshes the landing page
+        snap.storage = storage;
+        snap.ssoHosts = ssoHosts;
+        snap.identity = extractIdentity(storage);
+        snap.displayName = extractDisplayName(storage);
+        delete snap.problem;             // fresh session - clear any "expired" flag
+        if (!opts.keepUrl) snap.url = tab.url;   // also refreshes the landing page (not after an auto re-login)
         snap.createdAt = Date.now();
         await setStore(all);
         await setActive(origin, id, captured.storeId);     // you ARE this login now
@@ -420,14 +476,15 @@
         const snap = (all[origin] || []).find((s) => s.id === id);
         if (!snap) return { ok: false, error: 'snapshot not found' };
         const dest = snap.url || (origin + '/');
-        const captured = await getCookiesForTab(tab, [tab.url, dest]);
+        const sso = snap.ssoHosts || [];
+        const captured = await getCookiesForTab(tab, [tab.url, dest], sso);
         const current = captured.cookies;
         const targetStoreId = captured.storeId;
         const previousActive = activeFor(await getActive(), origin, targetStoreId) || null;
         const currentStorage = tab.id != null ? await readStorage(tab.id) : { local: {}, session: {} };
 
         const rollback = async () => {
-            const partial = await getCookiesForTab(tab, [tab.url, dest]);
+            const partial = await getCookiesForTab(tab, [tab.url, dest], sso);
             for (const c of partial.cookies) await removeCookie(c, targetStoreId);
             for (const c of current) await setCookie(c, targetStoreId);
             if (tab.id != null) await writeStorage(tab.id, currentStorage);
@@ -441,7 +498,7 @@
             for (const c of snap.cookies || []) await setCookie(c, targetStoreId);
             if (tab.id != null) await writeStorage(tab.id, snap.storage);
 
-            const live = await getCookiesForTab(tab, [dest]);
+            const live = await getCookiesForTab(tab, [dest], sso);
             const liveByKey = new Map(live.cookies.map((c) => [cookieKey(c), c]));
             for (const expected of snap.cookies || []) {
                 const actual = liveByKey.get(cookieKey(expected));
@@ -486,6 +543,8 @@
         // scheme, etc.) used to make tabs.update fail silently - the popup showed
         // "Switching…" forever and nothing moved. Now we check, fall back to the
         // site root, and only claim success once a navigation is under way.
+        // Listen BEFORE navigating - a fast page can finish loading before we'd attach.
+        const loaded = tab.id != null ? waitForLoad(tab.id, 20000) : Promise.resolve(false);
         if (tab.id != null) {
             const navd = await new Promise((res) => {
                 chrome.tabs.update(tab.id, { url: dest }, () => {
@@ -504,8 +563,271 @@
                 }
             }
         }
+        // Writing the cookies back is not proof the SERVER still accepts them. An expired
+        // session used to report "Switched" and land you on the login page. Check what
+        // actually loaded, and say so on the card + the page.
+        let problem = tab.id != null ? await verifySwitch(tab.id, snap, dest, targetStoreId, loaded) : null;
+        // Dead session + saved username/password: log in for real, re-save, carry on.
+        let reloginError = null;
+        if (problem && (await getCreds())[id]) {
+            const r = await autoLogin(tab, id);
+            if (r.ok) { notifyTabs(origin); return { ok: true, relogged: true }; }
+            reloginError = r.error;
+        }
+        await setProblem(origin, id, problem);
         notifyTabs(origin);
+        if (problem) {
+            chrome.tabs.sendMessage(tab.id, { action: 'swapProblem', name: snap.name, problem, reloginError }, () => void chrome.runtime.lastError);
+            return { ok: true, problem, reloginError };
+        }
         return { ok: true };
+    }
+
+    // Resolve when the tab finishes loading (or after `ms`, whichever comes first).
+    function waitForLoad(tabId, ms) {
+        return new Promise((resolve) => {
+            let done = false;
+            const finish = (v) => { if (done) return; done = true; chrome.tabs.onUpdated.removeListener(onUpd); clearTimeout(t); resolve(v); };
+            const onUpd = (id, info) => { if (id === tabId && info.status === 'complete') finish(true); };
+            const t = setTimeout(() => finish(false), ms);
+            chrome.tabs.onUpdated.addListener(onUpd);
+        });
+    }
+
+    // null = the switch really worked; otherwise 'expired' or 'other-user'.
+    async function verifySwitch(tabId, snap, dest, storeId, loaded) {
+        if (!(await loaded)) return null;                      // still loading - can't judge, don't cry wolf
+        await new Promise((r) => setTimeout(r, 1500));         // SPAs write their token after load
+        if (snap.identity) {
+            let liveId = null;
+            try { liveId = extractIdentity(await readStorage(tabId)); } catch (e) { return null; }
+            if (liveId === snap.identity) return null;
+            return liveId ? 'other-user' : 'expired';
+        }
+        // Cookie-only site: the server deleting our cookie, or bouncing us to a login
+        // page we weren't sent to, both mean the saved session is dead.
+        if (!(await sessionAlive(snap.cookies, storeId))) return 'expired';
+        // A site that shows its login form in place (no redirect) - a password box on
+        // the page we were sent to means we are not signed in.
+        const probe = await probePage(tabId);
+        if (probe && probe.password) return 'expired';
+        const t = await new Promise((r) => chrome.tabs.get(tabId, (x) => { void chrome.runtime.lastError; r(x); }));
+        const LOGIN = /(log-?in|sign-?in|logon|\/auth\b|\/sso\b|\/account\/login)/i;
+        let landed = '', meant = '';
+        try { landed = new URL(t.url).pathname; meant = new URL(dest).pathname; } catch (e) { return null; }
+        return LOGIN.test(landed) && !LOGIN.test(meant) ? 'expired' : null;
+    }
+
+    async function setProblem(origin, id, problem) {
+        const all = await getStore();
+        const s = (all[origin] || []).find((x) => x.id === id);
+        if (!s || (s.problem || null) === (problem || null)) return;
+        if (problem) s.problem = problem; else delete s.problem;
+        await setStore(all);
+    }
+
+    // ── saved username/password + automatic re-login ──
+    function getCreds() {
+        return new Promise((resolve) => chrome.storage.local.get([CREDS], (r) => { void chrome.runtime.lastError; resolve((r && r[CREDS]) || {}); }));
+    }
+    async function setCreds(id, creds) {
+        const all = await getCreds();
+        if (creds) all[id] = creds; else delete all[id];
+        await new Promise((resolve, reject) => chrome.storage.local.set({ [CREDS]: all }, () => {
+            const err = chrome.runtime.lastError;
+            if (err) reject(new Error(`Could not save the login details: ${err.message || err}`)); else resolve();
+        }));
+        return { ok: true };
+    }
+    // What the dialog may show: never the password itself.
+    async function credsInfo(id) {
+        const c = (await getCreds())[id];
+        return c ? { username: c.username, loginUrl: c.loginUrl, hasPassword: !!c.password } : null;
+    }
+    // Save from the dialog. An empty password keeps the one already saved.
+    async function saveCreds(id, { username, password, loginUrl }) {
+        if (!/^https?:\/\//i.test(loginUrl || '')) return { ok: false, error: 'Login page must be a http(s) address' };
+        const old = (await getCreds())[id];
+        const pass = password || (old && old.password);
+        if (!username || !pass) return { ok: false, error: 'Username and password are required' };
+        return setCreds(id, { username, password: pass, loginUrl });
+    }
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // executeScript can stay pending FOREVER when the page navigates away under a
+    // running async script (the two-step login's "Next") - cap every page call.
+    const capped = (p, ms) => Promise.race([p, sleep(ms).then(() => { throw new Error('page did not answer'); })]);
+    const getTab = (tabId) => new Promise((r) => chrome.tabs.get(tabId, (t) => { void chrome.runtime.lastError; r(t || null); }));
+    const navigate = (tabId, url) => new Promise((r) => chrome.tabs.update(tabId, { url }, () => r(!chrome.runtime.lastError)));
+
+    // One look at the page: is a password box showing (and is it empty), plus its
+    // storage so we can read WHO is signed in. null while the page is mid-navigation.
+    async function probePage(tabId) {
+        try {
+            const [r] = await capped(chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                    const vis = (el) => { const b = el.getBoundingClientRect(), cs = getComputedStyle(el); return b.width > 0 && b.height > 0 && cs.visibility !== 'hidden'; };
+                    const pw = [...document.querySelectorAll('input[type=password]')].find(vis);
+                    // Step 1 of a two-step login has NO password box yet: a username/email
+                    // field in a form whose button reads Next/Sign in. (Named fields only, so
+                    // a site's search box does not count.)
+                    const userOnly = !pw && [...document.querySelectorAll('form input:not([type=hidden])')].filter(vis).some((i) => {
+                        const named = i.type === 'email' || /username|email|login|account|user/i.test([i.name, i.id, i.autocomplete, i.placeholder].join(' '));
+                        const btn = [...i.form.querySelectorAll('button, input[type=submit]')].some((b) => vis(b) && /next|continue|log ?in|sign ?in|التالي|متابعة|دخول/i.test(b.innerText || b.value || ''));
+                        return named && btn;
+                    });
+                    const dump = (s) => { const o = {}; for (let i = 0; i < s.length; i++) { const k = s.key(i); o[k] = s.getItem(k); } return o; };
+                    return { password: !!pw || userOnly, passwordEmpty: !!pw && !pw.value, storage: { local: dump(localStorage), session: dump(sessionStorage) } };
+                },
+            }), 5000);
+            return (r && r.result) || null;
+        } catch (e) { return null; }
+    }
+
+    // Injected into the login page. Self-contained (it is serialized). Finds the
+    // username + password boxes, types into them the way React/Angular notice (native
+    // value setter + input/change events), and presses the form's submit. Handles the
+    // two-step "username → Next → password" form when it happens on the same page.
+    // Resolves { ok, step:'both'|'user' } or { ok:false, error }.
+    function autoLoginInPage(user, pass) {
+        const vis = (el) => {
+            if (!el || el.disabled || el.readOnly) return false;
+            const b = el.getBoundingClientRect(), cs = getComputedStyle(el);
+            return b.width > 0 && b.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+        };
+        const setVal = (el, v) => {
+            el.focus();
+            const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+            if (d && d.set) d.set.call(el, v); else el.value = v;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const find = () => {
+            const pw = [...document.querySelectorAll('input[type=password]')].find(vis) || null;
+            const texts = [...document.querySelectorAll('input:not([type]), input[type=text], input[type=email], input[type=tel]')].filter(vis);
+            let userEl = null;
+            if (pw) {
+                // the username box is the last text box BEFORE the password box
+                const before = texts.filter((t) => t.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING);
+                userEl = before[before.length - 1] || null;
+            } else {
+                userEl = texts.find((t) => /user|mail|login|account|name|id/i.test([t.name, t.id, t.autocomplete, t.placeholder].join(' ')))
+                    || (texts.length === 1 ? texts[0] : null);
+            }
+            return { pw, userEl };
+        };
+        const LABEL = /log ?in|sign ?in|next|continue|submit|دخول|تسجيل|التالي|متابعة/i;
+        const submitBtn = (from) => {
+            const form = from && from.form;
+            const cands = [...(form || document).querySelectorAll('button, input[type=submit], [role=button]')].filter(vis);
+            const byText = cands.find((b) => LABEL.test(b.innerText || b.value || b.getAttribute('aria-label') || ''));
+            const bySubmit = cands.find((b) => b.type === 'submit');
+            // Inside a form its submit button is the answer; on a form-less page a random
+            // header button is "submit" too, so trust the label first there.
+            return form ? (bySubmit || byText) : (byText || bySubmit);
+        };
+        const press = (btn, anchor) => {
+            if (btn) return btn.click();
+            if (anchor && anchor.form) return anchor.form.requestSubmit ? anchor.form.requestSubmit() : anchor.form.submit();
+            if (anchor) anchor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+        };
+        const wait = (fn, ms) => new Promise((res) => {
+            const t0 = Date.now();
+            (function loop() { const v = fn(); if (v || Date.now() - t0 > ms) return res(v || null); setTimeout(loop, 200); })();
+        });
+        return (async () => {
+            let f = await wait(() => { const x = find(); return (x.pw || x.userEl) ? x : null; }, 10000);
+            if (!f) return { ok: false, error: 'No login form was found on the login page' };
+            if (!f.pw) {
+                // Step 1 of a two-step form: username, then Next. Reply BEFORE pressing it -
+                // Next may navigate, which would leave this script's reply hanging. The
+                // caller waits for the password box (same page or new) and runs us again.
+                const next = submitBtn(f.userEl), field = f.userEl;
+                setVal(field, user);
+                setTimeout(() => press(next, field), 60);
+                return { ok: true, step: 'user' };
+            }
+            if (f.userEl) setVal(f.userEl, user);
+            setVal(f.pw, pass);
+            const btn = submitBtn(f.pw);
+            setTimeout(() => press(btn, f.pw), 60);              // reply first, then submit (it may navigate)
+            return { ok: true, step: 'both' };
+        })();
+    }
+
+    // Log in from scratch with the saved username/password, then re-save the snapshot
+    // from that fresh session. The site's dead cookies/storage are cleared first, so it
+    // shows its login form even when it would never redirect there by itself.
+    async function autoLogin(tab, id) {
+        const creds = (await getCreds())[id];
+        if (!creds) return { ok: false, error: 'No username/password saved for this login' };
+        if (!tab || tab.id == null) return { ok: false, error: 'no tab' };
+        const origin = originOf(tab.url);
+        const snap = ((await getStore())[origin] || []).find((s) => s.id === id);
+        if (!snap) return { ok: false, error: 'saved login not found' };
+
+        const dead = await getCookiesForTab(tab, [tab.url, creds.loginUrl, snap.url], snap.ssoHosts);
+        for (const c of dead.cookies) { try { await removeCookie(c, dead.storeId); } catch (e) { } }
+        try { await writeStorage(tab.id, { local: {}, session: {} }); } catch (e) { }
+
+        const loaded = waitForLoad(tab.id, 20000);
+        if (!(await navigate(tab.id, creds.loginUrl))) return { ok: false, error: 'Could not open the login page' };
+        await loaded;
+
+        // Cookie-only site: signed in = the password box is gone AND the server handed us
+        // new cookies since we submitted. (Not "the URL changed": many sites show the
+        // login form and the home page on the very same URL.)
+        const cookieSig = async () => {
+            const t = (await getTab(tab.id)) || tab;
+            const c = await getCookiesForTab(t, [t.url, snap.url], snap.ssoHosts).catch(() => ({ cookies: [] }));
+            return c.cookies.map((x) => x.name + '=' + x.value).sort().join(';');
+        };
+        let before = '';
+        const signedIn = async (probe) => {
+            if (!probe) return false;
+            if (snap.identity) return extractIdentity(probe.storage) === snap.identity;
+            return !probe.password && (await cookieSig()) !== before;
+        };
+
+        // Up to 3 rounds only for a username-first form that NAVIGATES to its password
+        // page. Once a password has been submitted we never submit again: retrying a
+        // wrong password could lock the account.
+        for (let round = 0; round < 3; round++) {
+            let res = null;
+            before = await cookieSig();
+            try {
+                const [r] = await capped(chrome.scripting.executeScript({ target: { tabId: tab.id }, func: autoLoginInPage, args: [creds.username, creds.password] }), 25000);
+                res = r && r.result;
+            } catch (e) { res = null; }                          // the page navigated mid-script
+            if (res && !res.ok) return { ok: false, error: res.error };
+
+            let probe = null, ok = false;
+            const t0 = Date.now();
+            while (Date.now() - t0 < 15000) {
+                await sleep(700);
+                probe = await probePage(tab.id);
+                if (await signedIn(probe)) { ok = true; break; }
+                if ((!res || res.step !== 'both') && probe && probe.passwordEmpty) break;   // the password step has loaded
+            }
+            if (ok) {
+                await sleep(1000);                                // let the app finish writing its token
+                const live = await getTab(tab.id);
+                const up = await updateSnapshot(live || tab, id, { keepUrl: true });
+                if (!up.ok) return up;
+                if (snap.url && live && live.url !== snap.url) await navigate(tab.id, snap.url);
+                return { ok: true };
+            }
+            if (res && res.step === 'both') break;             // a password went in and failed - stop
+        }
+        return { ok: false, error: 'Automatic login did not go through - check the saved username/password' };
+    }
+
+    // "Log in again" from the panel, any time.
+    async function relogin(tab, id) {
+        const r = await autoLogin(tab, id);
+        if (r.ok) { await setProblem(originOf(tab.url), id, null); notifyTabs(originOf(tab.url)); }
+        return r;
     }
 
     // ── right-click menu (switch without opening the popup) ──
@@ -533,7 +855,9 @@
         if (generation !== menuBuildGeneration) return;
         if (!tab || !tab.url || !/^https?:/i.test(tab.url)) return;
 
-        const snaps = await listFor(tab.url, tab.id);
+        // The menu only needs names - read the store directly instead of listFor,
+        // which would inject a script into the page to work out who is signed in.
+        const snaps = (await getStore())[originOf(tab.url)] || [];
         if (generation !== menuBuildGeneration) return;
         chrome.contextMenus.create({ id: MENU_ROOT, title: `Switch login (${hostOf(tab.url)})`, contexts: ['page'] }, () => void chrome.runtime.lastError);
         for (const s of snaps) {
@@ -606,5 +930,5 @@
         });
     }
 
-    root.SessionSwap = { saveCurrent, listFor, remove, rename, restore, updateSnapshot, rebuildMenuFor };
+    root.SessionSwap = { saveCurrent, listFor, remove, rename, restore, updateSnapshot, rebuildMenuFor, credsInfo, saveCreds, setCreds, relogin };
 })(typeof self !== 'undefined' ? self : globalThis);
