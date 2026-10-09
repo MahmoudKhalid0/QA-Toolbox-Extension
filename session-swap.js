@@ -493,14 +493,20 @@
         // Treat the swap as a transaction. If any cookie/storage write fails,
         // restore the login that was active before this attempt instead of
         // leaving a half-old, half-new session while reporting success.
+        // A saved cookie whose expiry date has PASSED can't be restored - Chrome silently
+        // refuses it (cookies.set returns null, no error), and the browser would have
+        // dropped it anyway. That used to fail the whole switch ("Could not restore cookie
+        // osVisit") for an old snapshot; skip it instead.
+        const nowSec = Date.now() / 1000;
+        const restorable = (snap.cookies || []).filter((c) => c.session || !c.expirationDate || c.expirationDate > nowSec + 5);
         try {
             for (const c of current) await removeCookie(c, targetStoreId);
-            for (const c of snap.cookies || []) await setCookie(c, targetStoreId);
+            for (const c of restorable) await setCookie(c, targetStoreId);
             if (tab.id != null) await writeStorage(tab.id, snap.storage);
 
             const live = await getCookiesForTab(tab, [dest], sso);
             const liveByKey = new Map(live.cookies.map((c) => [cookieKey(c), c]));
-            for (const expected of snap.cookies || []) {
+            for (const expected of restorable) {
                 const actual = liveByKey.get(cookieKey(expected));
                 if (!actual || actual.value !== expected.value) throw new Error(`Cookie verification failed for "${expected.name}"`);
             }
@@ -514,7 +520,7 @@
                 ok: false,
                 error: (error.message || String(error)) + (rollbackError
                     ? '; rollback also failed: ' + (rollbackError.message || rollbackError)
-                    : '; previous login restored')
+                    : '; nothing was changed - the page is as it was')
             };
         }
         try {
@@ -529,7 +535,7 @@
                 ok: false,
                 error: (error.message || String(error)) + (rollbackError
                     ? '; rollback also failed: ' + (rollbackError.message || rollbackError)
-                    : '; previous login restored')
+                    : '; nothing was changed - the page is as it was')
             };
         }
         // Land on the page THIS login was saved on, not the current URL: the
@@ -557,7 +563,7 @@
                 try {
                     await rollback();
                     await setActive(origin, previousActive, targetStoreId);
-                    return { ok: false, error: 'could not navigate the tab; previous login restored' };
+                    return { ok: false, error: 'could not navigate the tab; nothing was changed - the page is as it was' };
                 } catch (rollbackFailure) {
                     return { ok: false, error: 'could not navigate the tab; rollback also failed: ' + (rollbackFailure.message || rollbackFailure) };
                 }

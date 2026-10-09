@@ -1,4 +1,4 @@
-// Floating capture eye — a blinking eye pinned top-right of every page.
+// Floating capture eye — a blinking eye pinned near the top-right of every page.
 // Click it to open the capture menu without leaving the page or hunting for
 // the side panel. Lives in a shadow root so no page CSS can reach it.
 (function capEye() {
@@ -8,7 +8,8 @@
 
     const host = document.createElement('div');
     host.id = HOST_ID;
-    host.style.cssText = 'position:fixed;top:14px;right:14px;z-index:2147483646;';
+    // top:90px - below a typical site header (OutSystems' is 64px) instead of on it
+    host.style.cssText = 'position:fixed;top:90px;right:14px;z-index:2147483646;';
 
     const shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML = `

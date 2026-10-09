@@ -6,6 +6,7 @@ importScripts('capture/cap-store.js');
 importScripts('capture/cap-background.js');
 importScripts('session-swap.js');         // quick login switch (Snapshot & Swap, no debugger)
 importScripts('automation.js');           // AI automation-code generator (prompts + framework matrix)
+importScripts('spellcheck-bg.js');        // Spelling & language check - AI proofreading + cache
 
 // A recording is handed to the editor as a Blob in IndexedDB. If that editor tab
 // was never opened - the browser was closed, it crashed - the Blob would sit
@@ -823,7 +824,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === 'getSettings') {
         chrome.storage.sync.get(['formFillerSettings'], (result) => {
-            const defaultSettings = { randomDigits: 5, showFloatingButton: true, fieldAiIcon: true, charCounter: true, selectionAiTools: true };
+            const defaultSettings = { randomDigits: 5, showFloatingButton: true, fieldAiIcon: true, charCounter: true };
             sendResponse({ settings: result.formFillerSettings || defaultSettings });
         });
         return true;
@@ -1621,35 +1622,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
-    // Selection tools: translate the selected text (smart model)
-    if (request.action === 'aiTranslateText') {
-        (async () => {
-            try {
-                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
-                const text = await translateTextWithAI(AI_CONFIG.apiKey, request.text);
-                sendResponse({ text });
-            } catch (err) {
-                console.error('aiTranslateText error:', err);
-                sendResponse({ error: String(err.message || err) });
-            }
-        })();
-        return true;
-    }
-
-    // Selection tools: review spelling/grammar of the selected text (smart model)
-    if (request.action === 'aiReviewText') {
-        (async () => {
-            try {
-                if (!AI_CONFIG || !AI_CONFIG.apiKey) { sendResponse({ error: 'no_api_key' }); return; }
-                const review = await reviewTextWithAI(AI_CONFIG.apiKey, request.text);
-                sendResponse({ review });
-            } catch (err) {
-                console.error('aiReviewText error:', err);
-                sendResponse({ error: String(err.message || err) });
-            }
-        })();
-        return true;
-    }
 
 
     // Right-click fill: generate one valid/invalid value for a single field
@@ -2171,107 +2143,6 @@ async function explainPerformanceWithAI(apiKey, metrics, url) {
     return JSON.parse(block.text);
 }
 
-async function callClaudeText(apiKey, prompt, maxTokens = 2048) {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-            model: AI_CONFIG.smartModel || AI_CONFIG.model,
-            max_tokens: maxTokens,
-            messages: [{ role: 'user', content: prompt }]
-        })
-    });
-    if (!response.ok) {
-        let message = `Claude API error (${response.status})`;
-        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
-        throw new Error(message);
-    }
-    const data = await response.json();
-    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
-    const block = (data.content || []).find(b => b.type === 'text');
-    return (block && block.text ? block.text : '').trim();
-}
-
-// Translate selected text: Arabic -> English, anything else -> Arabic.
-async function translateTextWithAI(apiKey, text) {
-    const prompt = [
-        'Translate the text below. If it is Arabic, translate it to English. If it is in any other language, translate it to Arabic.',
-        'Return ONLY the translation - no quotes, no notes, no explanation.',
-        '',
-        'Text:',
-        text
-    ].join('\n');
-    return callClaudeText(apiKey, prompt);
-}
-
-// Review the selected text's spelling & grammar, in its own language.
-async function reviewTextWithAI(apiKey, text) {
-    const schema = {
-        type: 'object',
-        properties: {
-            isCorrect: { type: 'boolean', description: 'true if the text has no real mistakes' },
-            issues: {
-                type: 'array',
-                items: {
-                    type: 'object',
-                    properties: {
-                        original: { type: 'string', description: 'the exact wrong word/phrase, copied verbatim from the text' },
-                        correction: { type: 'string', description: 'the corrected word/phrase' },
-                        context: { type: 'string', description: 'a short snippet (a few words before AND after) copied verbatim from the text that contains the mistake, so the user can locate it' },
-                        type: { type: 'string', enum: ['spelling', 'grammar', 'word-choice', 'punctuation', 'spacing', 'other'] },
-                        explanation: { type: 'string', description: 'one short sentence on why, in the SAME language as the text' }
-                    },
-                    required: ['original', 'correction', 'context', 'type', 'explanation'],
-                    additionalProperties: false
-                }
-            }
-        },
-        required: ['isCorrect', 'issues'],
-        additionalProperties: false
-    };
-    const prompt = [
-        'You are a meticulous proofreader. Detect the language of the text below, then review it IN THAT LANGUAGE (apply that language\'s rules, not English).',
-        'Catch ALL issue kinds, not just grammar:',
-        '- spelling, grammar, word-choice',
-        '- punctuation AND spacing/formatting (e.g. a space before a colon like "Word :" should be "Word:", double spaces, missing space after punctuation, wrong bracket/quote spacing)',
-        'Return each issue separately: the exact wrong fragment, its correction, a short CONTEXT snippet (a few words before and after the mistake, copied verbatim from the text so the user can find where it is), the type, and a one-sentence reason in the SAME language as the text.',
-        'Do NOT rewrite the whole text. Do NOT translate. List every real issue you find (be thorough). If there are none, set isCorrect to true and return an empty issues array.',
-        '',
-        'Text:',
-        text
-    ].join('\n');
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-            model: AI_CONFIG.smartModel || AI_CONFIG.model,
-            max_tokens: 4096,
-            output_config: { format: { type: 'json_schema', schema } },
-            messages: [{ role: 'user', content: prompt }]
-        })
-    });
-    if (!response.ok) {
-        let message = `Claude API error (${response.status})`;
-        try { const e = await response.json(); if (e && e.error && e.error.message) message = e.error.message; } catch (e) { }
-        throw new Error(message);
-    }
-    const data = await response.json();
-    if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
-    const block = (data.content || []).find(b => b.type === 'text');
-    if (!block || !block.text) throw new Error('Empty AI response');
-    return JSON.parse(block.text);
-}
 
 // Generate a short, robust RELATIVE XPath for one element (Element Inspector).
 // The model gets the element + its ancestor chain and must anchor on stable
@@ -2326,7 +2197,7 @@ async function generateRelativeXPathWithAI(apiKey, context, url, extensionXpath,
         body: JSON.stringify({
             // Sonnet: locator accuracy matters more than cost here
             model: AI_CONFIG.smartModel || AI_CONFIG.model,
-            max_tokens: 512,
+            max_tokens: 4096,   // room for adaptive thinking + the JSON (512 left no text block)
             output_config: { format: { type: 'json_schema', schema } },
             messages: [{ role: 'user', content: prompt }]
         })
@@ -2344,7 +2215,9 @@ async function generateRelativeXPathWithAI(apiKey, context, url, extensionXpath,
     const data = await response.json();
     if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
     const textBlock = (data.content || []).find(b => b.type === 'text');
-    if (!textBlock || !textBlock.text) throw new Error('Empty AI response');
+    if (!textBlock || !textBlock.text) throw new Error(data.stop_reason === 'max_tokens'
+        ? 'The AI ran out of room before answering - try again'
+        : 'Empty AI response');
     return JSON.parse(textBlock.text);
 }
 
@@ -2391,7 +2264,9 @@ async function callClaudeJson(apiKey, { system, prompt, schema, maxTokens }) {
     }
 
     const textBlock = (data.content || []).find(b => b.type === 'text');
-    if (!textBlock || !textBlock.text) throw new Error('Empty AI response');
+    if (!textBlock || !textBlock.text) throw new Error(data.stop_reason === 'max_tokens'
+        ? 'The AI ran out of room before answering - try again'
+        : 'Empty AI response');
 
     try {
         return JSON.parse(textBlock.text);
@@ -2496,7 +2371,7 @@ async function generateFieldValueWithAI(apiKey, field, mode, url) {
         },
         body: JSON.stringify({
             model: AI_CONFIG.smartModel || AI_CONFIG.model,
-            max_tokens: 1024,
+            max_tokens: 4096,   // room for adaptive thinking + the JSON
             temperature: 1, // variety across repeated clicks on the same field
             output_config: { format: { type: 'json_schema', schema } },
             messages: [{ role: 'user', content: prompt }]
@@ -2515,7 +2390,9 @@ async function generateFieldValueWithAI(apiKey, field, mode, url) {
     const data = await response.json();
     if (data.stop_reason === 'refusal') throw new Error('The AI declined this request');
     const textBlock = (data.content || []).find(b => b.type === 'text');
-    if (!textBlock || !textBlock.text) throw new Error('Empty AI response');
+    if (!textBlock || !textBlock.text) throw new Error(data.stop_reason === 'max_tokens'
+        ? 'The AI ran out of room before answering - try again'
+        : 'Empty AI response');
     return JSON.parse(textBlock.text);
 }
 

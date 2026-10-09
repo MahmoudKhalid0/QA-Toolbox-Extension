@@ -306,51 +306,43 @@ async function initFloatingButton() {
     }, 100);
 }
 
-// Show WHICH saved login you are currently in, as a status line at the top of the
-// page. `active` comes from the worker, which works it out from WHO is signed in
-// (the identity in the auth token) - so it appears when you really are that user,
-// and goes when you log out. Read-only: it never takes a click.
-// Is what sits BEHIND the badge light or dark? Walk up from the element under that
-// point until something actually paints a background, then measure its luminance.
-// (The badge is pointer-events:none, so elementFromPoint sees straight past it.)
-function loginBadgeOnLightBg() {
-    try {
-        let el = document.elementFromPoint(Math.round(window.innerWidth / 2), 24);
-        let bg = '';
-        while (el && el !== document.documentElement) {
-            const c = getComputedStyle(el).backgroundColor;
-            if (c && !/^rgba\(0,\s*0,\s*0,\s*0\)$|transparent/.test(c)) { bg = c; break; }
-            el = el.parentElement;
-        }
-        if (!bg) bg = getComputedStyle(document.body).backgroundColor;
-        if (!bg || /^rgba\(0,\s*0,\s*0,\s*0\)$|transparent/.test(bg)) bg = getComputedStyle(document.documentElement).backgroundColor;
-
-        const n = (bg || '').match(/[\d.]+/g);
-        if (!n || n.length < 3) return true;                  // nothing painted -> white page
-        const [r, g, b] = n.slice(0, 3).map(Number);
-        const a = n.length > 3 ? Number(n[3]) : 1;
-        if (a < 0.15) return true;                            // effectively transparent
-        return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.55;
-    } catch (e) { return true; }
+// Show WHICH saved login you are currently in - INSIDE the floating button, as the
+// user's name under the ⚡ icon (the button widens to fit it). A bar on the page always
+// covered something, and a dot on the button's corner sat on the notification count.
+// `active` comes from the worker, which works it out from WHO is signed in, so the name
+// goes when you log out.
+function renderLoginBadge() {
+    const old = document.getElementById('ff-login-badge'); if (old) old.remove();   // the old on-page bar
+    const btn = document.getElementById('ff-floating-btn'); if (!btn) return;
+    const current = (matchingLogins || []).find((s) => s.active);
+    let label = btn.querySelector('.ff-fab-user');
+    if (current && !label) {
+        label = document.createElement('span');
+        label.className = 'ff-fab-user';
+        btn.insertBefore(label, btn.querySelector('#ff-badge'));
+    }
+    if (label) label.textContent = current ? current.name : '';   // textContent = no injection
+    btn.classList.toggle('ff-has-login', !!current);
+    if (current) btn.title = 'Logged in as ' + current.name; else btn.removeAttribute('title');
 }
 
-function renderLoginBadge() {
-    const existing = document.getElementById('ff-login-badge');
-    const current = (matchingLogins || []).find((s) => s.active);
-
-    if (!current) { if (existing) existing.remove(); return; }
-
-    const badge = existing || document.createElement('div');
-    if (!existing) {
-        badge.id = 'ff-login-badge';
-        document.documentElement.appendChild(badge);
-    }
-    badge.innerHTML =
-        '<span class="ff-lb-dot"></span>' +
-        '<span class="ff-lb-who">Logged in as</span>' +
-        '<span class="ff-lb-name"></span>';
-    badge.querySelector('.ff-lb-name').textContent = current.name;   // textContent = no injection
-    badge.classList.toggle('ff-lb-on-light', loginBadgeOnLightBg());
+// Settings → General → "Floating buttons opacity" (qaFloatOpacity, 20-100). One rule for
+// both floating buttons - the fill button and the capture eye (#qa-cap-eye, its shadow
+// HOST lives in the page, so a page-level rule reaches it). Solid again on hover, so a
+// faint button is still easy to use. Live: follows the setting without a reload.
+function qaApplyFloatOpacity(pct) {
+    const v = Math.min(100, Math.max(20, parseInt(pct, 10) || 100)) / 100;
+    let st = document.getElementById('qa-float-opacity');
+    if (v >= 1) { if (st) st.remove(); return; }
+    if (!st) { st = document.createElement('style'); st.id = 'qa-float-opacity'; (document.head || document.documentElement).appendChild(st); }
+    st.textContent = `#ff-floating-btn, #qa-cap-eye { opacity: ${v}; transition: opacity .15s; }
+        #ff-floating-btn:hover, #qa-cap-eye:hover { opacity: 1; }`;
+}
+if (window.top === window) {
+    try {
+        chrome.storage.local.get(['qaFloatOpacity'], (r) => { void chrome.runtime.lastError; qaApplyFloatOpacity(r && r.qaFloatOpacity); });
+        chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.qaFloatOpacity) qaApplyFloatOpacity(ch.qaFloatOpacity.newValue); });
+    } catch (e) { }
 }
 
 function cleanupFloatingButton() {
@@ -2414,8 +2406,6 @@ function refreshFieldAiIconSetting() {
         if (!fieldAiIconEnabled) hideFieldAiIcon();
         charCounterEnabled = s.charCounter !== false;
         if (!charCounterEnabled) hideCharCounter();
-        selectionAiEnabled = s.selectionAiTools !== false;
-        if (!selectionAiEnabled) hideSelectionTools();
     });
 }
 refreshFieldAiIconSetting();
@@ -2467,258 +2457,22 @@ function updateCharCounter() {
         `<div><b style="color:#4ade80;">${words}</b> word${words === 1 ? '' : 's'}</div>`;
 }
 
-document.addEventListener('mouseup', () => setTimeout(() => { updateCharCounter(); updateSelectionTools(); }, 0), true);
+document.addEventListener('mouseup', () => setTimeout(() => { updateCharCounter(); }, 0), true);
 document.addEventListener('keyup', (e) => {
     // Selection via keyboard (Shift+arrows, Ctrl+A)
     if (e.shiftKey || e.key === 'a' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        setTimeout(() => { updateCharCounter(); updateSelectionTools(); }, 0);
+        setTimeout(() => { updateCharCounter(); }, 0);
     }
 }, true);
 document.addEventListener('selectionchange', () => {
     // Hide promptly when the selection is cleared
     const t = window.getSelection() ? window.getSelection().toString() : '';
-    if (!t.trim()) { hideCharCounter(); hideSelectionTools(); }
+    if (!t.trim()) { hideCharCounter(); }
 });
 
-// ==================== Selection AI tools (translate / review) ====================
-// A small icon appears next to a text selection; clicking it offers Translate
-// (AR<->EN) and Review language (spelling + grammar). Uses the smart model.
-
-let selectionAiEnabled = true;
-let selectedTextForAi = '';
-// WHERE that text is, not just what it says. The review comes back as a list of
-// mistakes, and a mistake you cannot find on the page is only half an answer - so
-// the selection's range is kept alive to point back at each one.
-let selectedRangeForAi = null;
-
-function hideSelectionTools() {
-    const icon = document.getElementById('ff-sel-icon');
-    if (icon) icon.remove();
-    const menu = document.getElementById('ff-sel-menu');
-    if (menu) menu.remove();
-}
-
-function updateSelectionTools() {
-    if (!selectionAiEnabled) return;
-    const sel = window.getSelection();
-    const text = sel ? sel.toString().trim() : '';
-    // Ignore tiny selections and selections inside our own UI
-    if (!text || text.length < 2) { hideSelectionTools(); return; }
-    if (sel.anchorNode && sel.anchorNode.parentElement &&
-        sel.anchorNode.parentElement.closest('#ff-sel-icon, #ff-sel-menu, #ff-char-counter, #ff-ai-field-icon, #ff-ai-field-menu, #ff-sel-result')) return;
-
-    selectedTextForAi = text;
-    // Cloned: the live selection is gone the moment the user clicks the menu.
-    try { selectedRangeForAi = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null; }
-    catch (e) { selectedRangeForAi = null; }
-
-    let icon = document.getElementById('ff-sel-icon');
-    if (!icon) {
-        icon = document.createElement('div');
-        icon.id = 'ff-sel-icon';
-        icon.title = 'Translate or review the selection';
-        icon.style.cssText = 'position:fixed;z-index:2147483646;width:24px;height:24px;border-radius:7px;' +
-            'background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;display:flex;align-items:center;justify-content:center;' +
-            'cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.4);font-size:12px;';
-        icon.innerHTML = '<i class="fas fa-language"></i>';
-        icon.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection
-        icon.addEventListener('click', (e) => { e.stopPropagation(); toggleSelectionMenu(); });
-        document.body.appendChild(icon);
-    }
-    positionSelectionIcon();
-}
-
-// Keep the selection icon pinned to the selection - recompute on scroll/resize
-function positionSelectionIcon() {
-    const icon = document.getElementById('ff-sel-icon');
-    if (!icon || icon.style.display === 'none') return;
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount || !sel.toString().trim()) return;
-    try {
-        const r = sel.getRangeAt(0).getBoundingClientRect();
-        if (r.width === 0 && r.height === 0) return;
-        let top = r.top - 30; if (top < 4) top = r.bottom + 6;
-        let left = r.right - 24; left = Math.max(4, Math.min(left, window.innerWidth - 28));
-        icon.style.top = top + 'px';
-        icon.style.left = left + 'px';
-        // The open menu moves with the icon too
-        const menu = document.getElementById('ff-sel-menu');
-        if (menu) {
-            const ir = icon.getBoundingClientRect();
-            let mt = ir.bottom + 4;
-            if (mt + menu.offsetHeight > window.innerHeight - 6) mt = ir.top - menu.offsetHeight - 4;
-            menu.style.top = mt + 'px';
-            menu.style.left = Math.max(4, Math.min(ir.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 6)) + 'px';
-        }
-    } catch (e) { }
-}
-window.addEventListener('scroll', positionSelectionIcon, true);
-window.addEventListener('resize', positionSelectionIcon, true);
-
-function toggleSelectionMenu() {
-    const existing = document.getElementById('ff-sel-menu');
-    if (existing) { existing.remove(); return; }
-    const icon = document.getElementById('ff-sel-icon');
-    if (!icon) return;
-
-    const menu = document.createElement('div');
-    menu.id = 'ff-sel-menu';
-    menu.style.cssText = 'position:fixed;z-index:2147483647;background:rgba(15,15,35,0.97);backdrop-filter:blur(8px);' +
-        'border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:5px;box-shadow:0 8px 28px rgba(0,0,0,0.5);' +
-        'font-family:\'Segoe UI\',Arial,sans-serif;min-width:175px;direction:ltr;text-align:left;';
-    menu.innerHTML = `
-        <div class="ff-sel-opt" data-act="translate" style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:7px;cursor:pointer;color:#e0e0e0;font-size:13px;">
-            <i class="fas fa-language" style="color:#38bdf8;"></i> Translate (AR &#8596; EN)
-        </div>
-        <div class="ff-sel-opt" data-act="review" style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:7px;cursor:pointer;color:#e0e0e0;font-size:13px;">
-            <i class="fas fa-spell-check" style="color:#4ade80;"></i> Review language
-        </div>`;
-    menu.addEventListener('mousedown', (e) => e.preventDefault());
-    menu.querySelectorAll('.ff-sel-opt').forEach(opt => {
-        opt.addEventListener('mouseenter', () => { opt.style.background = 'rgba(99,102,241,0.25)'; });
-        opt.addEventListener('mouseleave', () => { opt.style.background = 'transparent'; });
-        opt.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const act = opt.dataset.act;
-            const text = selectedTextForAi;
-            hideSelectionTools();
-            runSelectionAi(act, text);
-        });
-    });
-    document.body.appendChild(menu);
-    const ir = icon.getBoundingClientRect();
-    let top = ir.bottom + 4;
-    if (top + menu.offsetHeight > window.innerHeight - 6) top = ir.top - menu.offsetHeight - 4;
-    menu.style.top = top + 'px';
-    menu.style.left = Math.max(4, Math.min(ir.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 6)) + 'px';
-
-    const onOutside = (ev) => {
-        if (ev.target.closest && ev.target.closest('#ff-sel-icon, #ff-sel-menu')) return;
-        document.removeEventListener('mousedown', onOutside, true);
-        hideSelectionTools();
-    };
-    setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
-}
-
-function runSelectionAi(act, text) {
-    if (!text) return;
-    const isTranslate = act === 'translate';
-    showFabAiStatus('loading', isTranslate ? 'Translating…' : 'Reviewing language…');
-    chrome.runtime.sendMessage(
-        { action: isTranslate ? 'aiTranslateText' : 'aiReviewText', text },
-        (resp) => {
-            if (chrome.runtime.lastError || !resp || resp.error) {
-                const err = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'unknown';
-                showFabAiStatus('error', err === 'no_api_key' ? 'AI key is not configured' : ('Failed: ' + err));
-                return;
-            }
-            if (isTranslate) {
-                showFabAiStatus('success', 'Translated');
-                showSelectionResult('Translation', resp.text || '');
-            } else {
-                showFabAiStatus('success', 'Reviewed');
-                showReviewResult(resp.review || { isCorrect: true, issues: [] }, text);
-            }
-        }
-    );
-}
-
-// ── point at a mistake on the page ──────────────────────────────────────────
-// The review names the offending text; this finds it inside the range that was
-// reviewed and puts a marker round it - the same "show me exactly where" that
-// Text Match gives, because a list of mistakes you then have to hunt for by eye
-// is a list you end up ignoring.
-
-// Every text node inside a range, in document order, with the offsets the range
-// actually covers (the first and last nodes are usually only partly selected).
-function reviewTextNodesIn(range) {
-    const out = [];
-    if (!range) return out;
-    const root = range.commonAncestorContainer;
-    const walker = document.createTreeWalker(
-        root.nodeType === Node.TEXT_NODE ? root.parentNode : root,
-        NodeFilter.SHOW_TEXT,
-        {
-            acceptNode(n) {
-                if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-                if (!range.intersectsNode(n)) return NodeFilter.FILTER_REJECT;
-                const p = n.parentElement;
-                if (p && p.closest('#ff-sel-result, #ff-sel-icon, #ff-sel-menu, #qa-result-panel')) return NodeFilter.FILTER_REJECT;
-                return NodeFilter.FILTER_ACCEPT;
-            }
-        }
-    );
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-        const from = (n === range.startContainer) ? range.startOffset : 0;
-        const to = (n === range.endContainer) ? range.endOffset : n.nodeValue.length;
-        if (to > from) out.push({ node: n, from, to });
-    }
-    return out;
-}
-
-// Build a Range around `needle` inside the reviewed selection. The text may run
-// across several nodes (a bolded word mid-sentence), so the nodes are flattened
-// into one string, the match found there, and the position mapped back to the
-// node and offset it came from.
-function reviewRangeFor(needle, withinRange) {
-    const wanted = String(needle || '').replace(/\s+/g, ' ').trim();
-    if (!wanted) return null;
-
-    const parts = reviewTextNodesIn(withinRange);
-    if (!parts.length) return null;
-
-    let flat = '';
-    const map = [];                       // flat index -> { node, offset }
-    for (const p of parts) {
-        const s = p.node.nodeValue.slice(p.from, p.to);
-        for (let i = 0; i < s.length; i++) {
-            flat += s[i];
-            map.push({ node: p.node, offset: p.from + i });
-        }
-    }
-
-    // Match on collapsed whitespace, but keep a way back to the real offsets: walk
-    // the flat text building a normalised copy and remembering where each kept
-    // character came from.
-    let norm = '';
-    const normMap = [];
-    let prevSpace = false;
-    for (let i = 0; i < flat.length; i++) {
-        const isSpace = /\s/.test(flat[i]);
-        if (isSpace) {
-            if (prevSpace || !norm) continue;
-            norm += ' ';
-            normMap.push(i);
-            prevSpace = true;
-        } else {
-            norm += flat[i];
-            normMap.push(i);
-            prevSpace = false;
-        }
-    }
-
-    const at = norm.indexOf(wanted);
-    if (at === -1) return null;
-
-    const startFlat = normMap[at];
-    const endFlat = normMap[Math.min(at + wanted.length - 1, normMap.length - 1)];
-    const s = map[startFlat];
-    const e = map[endFlat];
-    if (!s || !e) return null;
-
-    try {
-        const r = document.createRange();
-        r.setStart(s.node, s.offset);
-        r.setEnd(e.node, e.offset + 1);
-        return r;
-    } catch (err) {
-        return null;
-    }
-}
-
-// Wait for a smooth scroll to actually finish. A fixed delay is a guess, and the
-// marker drawn on a guess lands wherever the page happened to be mid-animation -
-// which is how it ended up 187px above the word it was pointing at.
+// ==================== Scroll to a range and ring it ====================
+// Used by Text Match (clicking a difference row). Left over from the removed selection
+// Review tool, which it was written for.
 function reviewAfterScroll(done) {
     let last = -1;
     let still = 0;
@@ -2764,275 +2518,6 @@ function reviewFlashRange(range) {
             setTimeout(() => mark.remove(), 2600);
         }
     });
-}
-
-const REVIEW_TYPE_COLORS = {
-    spelling: '#fca5a5', grammar: '#fcd34d', 'word-choice': '#c4b5fd', punctuation: '#7dd3fc', spacing: '#fdba74', other: '#cbd5e1'
-};
-// Localized labels for the issue type (shown in the offending text's language)
-const REVIEW_TYPE_LABELS_AR = {
-    spelling: 'إملاء', grammar: 'نحو', 'word-choice': 'اختيار كلمة', punctuation: 'ترقيم', spacing: 'مسافات', other: 'أخرى'
-};
-function reviewTypeLabel(type, rtl) {
-    if (rtl && REVIEW_TYPE_LABELS_AR[type]) return REVIEW_TYPE_LABELS_AR[type];
-    return type;
-}
-
-// Download the review issues as a CSV file (UTF-8 with BOM for Excel/Arabic)
-function downloadReviewCsv(issues) {
-    const rows = [['#', 'Type', 'Original', 'Correction', 'Context', 'Explanation']];
-    issues.forEach((it, i) => rows.push([
-        i + 1, it.type || '', it.original || '', it.correction || '', it.context || '', it.explanation || ''
-    ]));
-    const csv = rows.map(r => r.map(c => {
-        const s = String(c == null ? '' : c).replace(/"/g, '""');
-        return /[",\n]/.test(s) ? `"${s}"` : s;
-    }).join(',')).join('\r\n');
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `language-review-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-}
-
-// Clipboard write with a fallback: navigator.clipboard needs a secure origin
-// and a focused document, neither of which is guaranteed on a tested page.
-function qaCopyText(text) {
-    try {
-        if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).catch(() => qaCopyFallback(text)); return; }
-    } catch (e) { }
-    qaCopyFallback(text);
-}
-function qaCopyFallback(text) {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); } catch (e) { }
-    ta.remove();
-}
-
-// Apply the AI's issue list to the original text ourselves instead of asking it
-// to echo the whole corrected text back: that doubled the output tokens, made
-// long selections crawl, and could blow past max_tokens mid-JSON.
-// Each issue carries a verbatim `context` snippet, so we anchor on that before
-// replacing `original` — which keeps repeated words from being fixed in the
-// wrong place.
-function buildCorrectedText(text, issues) {
-    let out = text || '';
-    let cursor = 0;
-    for (const it of issues || []) {
-        const wrong = it && it.original;
-        const right = it && it.correction;
-        if (!wrong || right == null || wrong === right) continue;
-
-        // Anchor inside the issue's context when we can find it, else fall back
-        // to a plain forward search, else search from the very start.
-        let from = it.context ? out.indexOf(it.context, cursor) : -1;
-        if (from < 0) from = cursor;
-        let pos = out.indexOf(wrong, from);
-        if (pos < 0) pos = out.indexOf(wrong, cursor);
-        if (pos < 0) pos = out.indexOf(wrong);
-        if (pos < 0) continue;                       // fragment isn't there — skip it
-
-        out = out.slice(0, pos) + right + out.slice(pos + wrong.length);
-        cursor = pos + right.length;
-    }
-    return out;
-}
-
-// Render the structured language review: each mistake as wrong -> correct + why
-function showReviewResult(review, originalText) {
-    const old = document.getElementById('ff-sel-result');
-    if (old) old.remove();
-    const issues = review.issues || [];
-    const corrected = buildCorrectedText(originalText || '', issues);
-    const correctedRtl = /[؀-ۿ]/.test(corrected);
-
-    // The whole fixed text, ready to copy back into the page/ticket
-    const fixedBlock = (corrected && issues.length)
-        ? `<div class="rv-fixed">
-             <div class="rv-fixed-hd">
-               <span>Corrected text</span>
-               <button id="sr-copy" title="Copy the corrected text"><i class="fas fa-copy"></i> Copy</button>
-             </div>
-             <div class="rv-fixed-tx" style="${correctedRtl ? 'direction:rtl;text-align:right;' : ''}">${escapeHtml(corrected)}</div>
-           </div>`
-        : '';
-
-    // Where each mistake actually sits on the page. Worked out now, once, while the
-    // reviewed range is still intact - and it also tells us which rows can be
-    // clicked, so a row that leads nowhere never pretends it can.
-    const reviewedRange = selectedRangeForAi ? selectedRangeForAi.cloneRange() : null;
-    const issueRanges = issues.map((it) => reviewRangeFor(it.original, reviewedRange));
-
-    const body = (review.isCorrect || issues.length === 0)
-        ? '<div style="padding:16px;text-align:center;color:#6ee7b7;"><i class="fas fa-circle-check"></i> No mistakes found.</div>'
-        : issues.map((it, i) => {
-            const rtl = /[؀-ۿ]/.test((it.context || '') + (it.original || '') + (it.explanation || ''));
-            const findable = !!issueRanges[i];
-            // Show the surrounding context with the wrong fragment highlighted in place
-            let ctx = '';
-            if (it.context) {
-                const safe = escapeHtml(it.context);
-                const wrong = escapeHtml(it.original);
-                const highlighted = (wrong && safe.includes(wrong))
-                    ? safe.replace(wrong, `<mark class="rv-mark">${wrong}</mark>`)
-                    : safe;
-                ctx = `<div class="rv-ctx">…${highlighted}…</div>`;
-            }
-            return `<div class="rv-item${findable ? ' rv-findable' : ''}" data-i="${i}"
-                         style="${rtl ? 'direction:rtl;' : ''}"
-                         title="${findable ? 'Click to show it on the page' : ''}">
-                <div class="rv-line"><span class="rv-wrong">${escapeHtml(it.original)}</span><svg class="rv-arrow" width="13" height="13" viewBox="0 0 24 24" fill="#94a3b8" aria-hidden="true"><path d="M4 11h12.2l-4.6-4.6L13 5l7 7-7 7-1.4-1.4 4.6-4.6H4z"/></svg><span class="rv-right">${escapeHtml(it.correction)}</span>
-                    ${findable ? '<i class="fas fa-location-crosshairs rv-goto" title="Show it on the page"></i>' : ''}
-                </div>
-                ${ctx}
-                <div class="rv-meta"><span class="rv-tag" style="color:${REVIEW_TYPE_COLORS[it.type] || '#cbd5e1'};">${escapeHtml(reviewTypeLabel(it.type, rtl))}</span> ${escapeHtml(it.explanation)}</div>
-            </div>`;
-        }).join('');
-
-    const panel = document.createElement('div');
-    panel.id = 'ff-sel-result';
-    panel.innerHTML = `
-        <style>
-            #ff-sel-result { position: fixed; top: 16px; right: 16px; width: 380px; max-height: 82vh; z-index: 2147483647; display: flex; flex-direction: column; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid rgba(139,92,246,0.5); border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff; font-family: 'Segoe UI', Arial, sans-serif; }
-            #ff-sel-result .sr-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
-            #ff-sel-result .sr-title { font: 700 13px/1.4 'Segoe UI', Arial; }
-            #ff-sel-result .sr-btns { display: flex; gap: 6px; }
-            #ff-sel-result .sr-btns button { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; }
-            #ff-sel-result .sr-btns button:hover { background: rgba(255,255,255,0.22); }
-            #ff-sel-result .sr-body { overflow-y: auto; padding: 8px 12px 12px; }
-            #ff-sel-result .rv-item { background: rgba(0,0,0,0.3); border-radius: 9px; padding: 10px 12px; margin-top: 8px; }
-            /* A mistake we can actually point at is worth clicking. One we cannot
-               find on the page looks exactly as it always did - so the row never
-               offers something it cannot do. */
-            #ff-sel-result .rv-item.rv-findable { cursor: pointer; transition: background .15s, border-color .15s; border: 1px solid transparent; }
-            #ff-sel-result .rv-item.rv-findable:hover { background: rgba(244,63,94,0.13); border-color: rgba(244,63,94,0.4); }
-            #ff-sel-result .rv-item.rv-findable:hover .rv-goto { opacity: 1; color: #fb7185; }
-            #ff-sel-result .rv-goto { margin-inline-start: auto; font-size: 11px; color: #64748b; opacity: .55; flex-shrink: 0; transition: opacity .15s, color .15s; }
-            #ff-sel-result .rv-line { font-size: 14px; line-height: 1.7; word-break: break-word; direction: ltr; text-align: left; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
-            #ff-sel-result .rv-wrong { color: #fca5a5; text-decoration: line-through; text-decoration-color: rgba(239,68,68,0.5); unicode-bidi: isolate; }
-            #ff-sel-result .rv-right { unicode-bidi: isolate; }
-            #ff-sel-result .rv-arrow { flex-shrink: 0; margin: 0 4px; }
-            #ff-sel-result .rv-right { color: #6ee7b7; font-weight: 600; }
-            #ff-sel-result .rv-ctx { font-size: 12.5px; color: #94a3b8; margin-top: 6px; line-height: 1.7; background: rgba(255,255,255,0.04); border-radius: 6px; padding: 5px 8px; word-break: break-word; }
-            #ff-sel-result .rv-mark { background: rgba(239,68,68,0.3); color: #fecaca; border-radius: 3px; padding: 0 2px; }
-            #ff-sel-result .rv-meta { font-size: 12px; color: #94a3b8; margin-top: 5px; line-height: 1.5; }
-            #ff-sel-result .rv-tag { font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; margin-right: 5px; }
-            #ff-sel-result .rv-fixed { background: rgba(16,185,129,0.10); border: 1px solid rgba(16,185,129,0.35); border-radius: 9px; padding: 10px 12px; margin-top: 8px; }
-            #ff-sel-result .rv-fixed-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
-            #ff-sel-result .rv-fixed-hd span { font: 700 11px/1 'Segoe UI', Arial; text-transform: uppercase; letter-spacing: 0.6px; color: #6ee7b7; }
-            #ff-sel-result .rv-fixed-hd button { background: rgba(16,185,129,0.18); border: 1px solid rgba(16,185,129,0.4); color: #6ee7b7; cursor: pointer; border-radius: 6px; padding: 4px 9px; font: 600 11px 'Segoe UI', Arial; display: inline-flex; align-items: center; gap: 5px; }
-            #ff-sel-result .rv-fixed-hd button:hover { background: rgba(16,185,129,0.3); color: #fff; }
-            #ff-sel-result .rv-fixed-tx { font-size: 13px; line-height: 1.8; color: #e2e8f0; white-space: pre-wrap; word-break: break-word; max-height: 30vh; overflow-y: auto; background: rgba(0,0,0,0.25); border-radius: 6px; padding: 8px 10px; }
-        </style>
-        <div class="sr-head">
-            <span class="sr-title">&#128221; Language Review${issues.length ? ' (' + issues.length + ')' : ''}</span>
-            <div class="sr-btns">
-                ${issues.length ? '<button id="sr-csv" title="Download as CSV"><i class="fas fa-file-csv"></i></button>' : ''}
-                <button id="sr-close" title="Close">&#10005;</button>
-            </div>
-        </div>
-        <div class="sr-body">${fixedBlock}${body}</div>
-    `;
-    document.body.appendChild(panel);
-    panel.querySelector('#sr-close').addEventListener('click', () => panel.remove());
-    const csvBtn = panel.querySelector('#sr-csv');
-    if (csvBtn) csvBtn.addEventListener('click', () => downloadReviewCsv(issues));
-
-    // Click a mistake -> scroll to it on the page and ring it. Same as Text Match:
-    // a list of mistakes you then have to find by eye is a list you stop reading.
-    panel.addEventListener('click', (e) => {
-        const row = e.target.closest('.rv-item.rv-findable');
-        if (!row) return;
-        const r = issueRanges[+row.dataset.i];
-        if (r) reviewFlashRange(r);
-    });
-
-    const copyBtn = panel.querySelector('#sr-copy');
-    if (copyBtn) copyBtn.addEventListener('click', () => {
-        qaCopyText(corrected);
-        const old = copyBtn.innerHTML;
-        copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied';
-        setTimeout(() => { copyBtn.innerHTML = old; }, 1400);
-    });
-
-    let drag = null;
-    const head = panel.querySelector('.sr-head');
-    head.addEventListener('mousedown', (e) => {
-        if (e.target.closest('button')) return;
-        const r = panel.getBoundingClientRect();
-        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-        e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => { if (!drag) return; panel.style.left = Math.max(0, e.clientX - drag.dx) + 'px'; panel.style.top = Math.max(0, e.clientY - drag.dy) + 'px'; panel.style.right = 'auto'; });
-    document.addEventListener('mouseup', () => { drag = null; });
-}
-
-function showSelectionResult(title, text) {
-    const old = document.getElementById('ff-sel-result');
-    if (old) old.remove();
-    const panel = document.createElement('div');
-    panel.id = 'ff-sel-result';
-    panel.innerHTML = `
-        <style>
-            #ff-sel-result {
-                position: fixed; top: 16px; right: 16px; width: 360px; max-height: 80vh;
-                z-index: 2147483647; display: flex; flex-direction: column;
-                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-                border: 2px solid rgba(139, 92, 246, 0.5); border-radius: 14px;
-                box-shadow: 0 10px 40px rgba(0,0,0,0.7); color: #fff;
-                font-family: 'Segoe UI', Arial, sans-serif;
-            }
-            #ff-sel-result .sr-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: move; user-select: none; }
-            #ff-sel-result .sr-title { font: 700 13px/1.4 'Segoe UI', Arial; }
-            #ff-sel-result .sr-btns button { background: rgba(255,255,255,0.1); border: none; color: #fff; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; font-size: 13px; margin-left: 4px; }
-            #ff-sel-result .sr-btns button:hover { background: rgba(255,255,255,0.22); }
-            #ff-sel-result .sr-text { margin: 12px 14px; padding: 10px 12px; background: rgba(0,0,0,0.35); border-radius: 8px; font: 13.5px/1.8 'Segoe UI', Tahoma, sans-serif; color: #e2e8f0; white-space: pre-wrap; word-break: break-word; overflow-y: auto; }
-            #ff-sel-result .sr-copy { margin: 0 14px 14px; border: none; border-radius: 8px; padding: 9px; font-size: 12px; font-weight: 600; cursor: pointer; color: #fff; background: linear-gradient(135deg, #8b5cf6, #6366f1); }
-            #ff-sel-result .sr-copy:hover { filter: brightness(1.12); }
-        </style>
-        <div class="sr-head">
-            <span class="sr-title">${escapeHtml(title)}</span>
-            <div class="sr-btns"><button id="sr-close" title="Close">&#10005;</button></div>
-        </div>
-        <div class="sr-text" id="sr-text"></div>
-        <button class="sr-copy" id="sr-copy"><i class="fas fa-copy"></i> Copy</button>
-    `;
-    document.body.appendChild(panel);
-    const textEl = panel.querySelector('#sr-text');
-    textEl.textContent = text;
-    // Align the result by the OUTPUT language: Arabic -> RTL/right, else LTR/left
-    // (explicit both ways so it doesn't inherit the page's direction).
-    const isRtl = /[؀-ۿݐ-ݿ]/.test(text);
-    textEl.style.direction = isRtl ? 'rtl' : 'ltr';
-    textEl.style.textAlign = isRtl ? 'right' : 'left';
-    panel.querySelector('#sr-close').addEventListener('click', () => panel.remove());
-    panel.querySelector('#sr-copy').addEventListener('click', (e) => {
-        ffCopyText(text).then(() => {
-            const b = e.currentTarget; const o = b.innerHTML;
-            b.innerHTML = '<i class="fas fa-check"></i> Copied!';
-            setTimeout(() => { b.innerHTML = o; }, 1400);
-        }).catch(() => { });
-    });
-
-    // Drag by header
-    let drag = null;
-    const head = panel.querySelector('.sr-head');
-    head.addEventListener('mousedown', (e) => {
-        if (e.target.closest('button')) return;
-        const r = panel.getBoundingClientRect();
-        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-        e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => { if (!drag) return; panel.style.left = Math.max(0, e.clientX - drag.dx) + 'px'; panel.style.top = Math.max(0, e.clientY - drag.dy) + 'px'; panel.style.right = 'auto'; });
-    document.addEventListener('mouseup', () => { drag = null; });
 }
 
 function isFillableField(el) {
@@ -3352,6 +2837,26 @@ function qaOpenPanel(titleHtml, tool) {
             #qa-result-panel .pf-bar-track { flex: 1; height: 8px; background: rgba(255,255,255,0.06); border-radius: 5px; overflow: hidden; }
             #qa-result-panel .pf-bar { height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6); border-radius: 5px; }
             #qa-result-panel .pf-bar-v { width: 52px; text-align: right; color: #94a3b8; flex-shrink: 0; font-family: Consolas, monospace; }
+            #qa-result-panel .pf-wf-cap { font-size: 10.5px; color: #64748b; margin: -2px 0 8px; }
+            #qa-result-panel .pf-wf { position: relative; padding-top: 22px; }
+            #qa-result-panel .pf-wf-row { display: flex; align-items: center; min-height: 24px; }
+            #qa-result-panel .pf-wf-l { width: 112px; box-sizing: border-box; flex-shrink: 0; font-size: 11px; font-weight: 600; color: #cbd5e1; line-height: 1.2; padding-right: 6px; }
+            #qa-result-panel .pf-wf-l small { display: block; font-size: 9.5px; font-weight: 400; color: #64748b; }
+            #qa-result-panel .pf-wf-row.sub .pf-wf-l { font-weight: 400; color: #94a3b8; padding-left: 10px; border-left: 2px dotted #475569; }
+            #qa-result-panel .pf-wf-track { position: relative; flex: 1; height: 24px; background: rgba(255,255,255,0.025); border-radius: 3px; }
+            #qa-result-panel .pf-wf-track > i { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed rgba(148,163,184,0.18); }
+            #qa-result-panel .pf-wf-track > b { position: absolute; top: 6px; height: 12px; border-radius: 2px; }
+            #qa-result-panel .pf-wf-net { background: #7aa7d8; }
+            #qa-result-panel .pf-wf-ren { background: #e2c582; }
+            #qa-result-panel .pf-wf-sub { background: rgba(226,197,130,0.45); }
+            #qa-result-panel .pf-wf-track > em { position: absolute; top: 5px; font-style: normal; font-size: 10px; color: #94a3b8; font-family: Consolas, monospace; white-space: nowrap; }
+            #qa-result-panel .pf-wf-row.axis .pf-wf-track { background: none; height: 16px; }
+            #qa-result-panel .pf-wf-row.axis span { position: absolute; top: 2px; transform: translateX(-50%); font-size: 9.5px; color: #64748b; white-space: nowrap; }
+            #qa-result-panel .pf-wf-ov { position: absolute; left: 112px; right: 0; top: 14px; bottom: 16px; pointer-events: none; z-index: 2; }
+            #qa-result-panel .pf-wf-total { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #94a3b8; }
+            #qa-result-panel .pf-wf-total::before { content: ''; position: absolute; top: -4px; left: -5px; width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
+            #qa-result-panel .pf-wf-total span { position: absolute; top: -18px; right: 6px; font-size: 10.5px; color: #cbd5e1; white-space: nowrap; }
+            #qa-result-panel .pf-wf-total b { color: #fff; font-size: 12px; }
             #qa-result-panel .pf-res { display: flex; justify-content: space-between; font-size: 11.5px; color: #cbd5e1; padding: 4px 2px; border-bottom: 1px solid rgba(255,255,255,0.04); }
             #qa-result-panel .pf-slow { background: rgba(255,255,255,0.03); border-radius: 7px; padding: 6px 8px; margin-bottom: 4px; }
             #qa-result-panel .pf-slow-top { display: flex; gap: 8px; font-size: 10.5px; }
@@ -3748,6 +3253,10 @@ async function collectPerf() {
         dcl: nav.domContentLoadedEventEnd || 0,
         load: nav.loadEventEnd || 0,
         phases: { dns: d('domainLookupEnd', 'domainLookupStart'), tcp: d('connectEnd', 'connectStart'), request: d('responseStart', 'requestStart'), response: d('responseEnd', 'responseStart'), dom: d('domComplete', 'responseEnd') },
+        // raw navigation marks (ms from navigation start) for the waterfall
+        timing: Object.fromEntries(['redirectStart', 'redirectEnd', 'domainLookupStart', 'domainLookupEnd', 'connectStart', 'connectEnd', 'requestStart', 'responseStart', 'responseEnd', 'domInteractive', 'domContentLoadedEventStart', 'domContentLoadedEventEnd', 'domComplete', 'loadEventStart', 'loadEventEnd']
+            .map((k) => [k, Math.max(0, nav[k] || 0)])),
+        capturedAt: Date.now(),
         resourceCount: resAll.length,
         totalSize,
         byType,
@@ -3759,6 +3268,9 @@ async function collectPerf() {
 let perfLast = null;
 async function runPerformance() {
     const body = qaOpenPanel('&#9889; Performance', 'perf');
+    const panelEl = body.closest('#qa-result-panel');
+    // the waterfall needs room for its time axis - wider than the 380px default
+    if (panelEl) { panelEl.style.width = '560px'; panelEl.style.maxWidth = 'calc(100vw - 32px)'; }
     try {
         const m = await collectPerf();
         if (qaAborted()) return;
@@ -3768,6 +3280,53 @@ async function runPerformance() {
         // qaActiveTool stays set - see the same note in runLinkHealth().
         if (!qaAborted()) qaToolDone('perf');
     }
+}
+
+// Navigation Timings as a WATERFALL on one shared time axis (like the "Page Load Time"
+// extension): each phase is a bar placed at its real start, so you see what ran when,
+// and a vertical marker shows the total Page Load Time.
+function perfWaterfall(t, capturedAt) {
+    if (!t) return '';
+    const end = t.loadEventEnd || t.loadEventStart || t.domComplete || t.responseEnd;
+    if (!end) return '<div class="qa-grp">Navigation timings</div><div class="qa-empty">No navigation timing for this page (it was restored from cache or is a single-page-app route).</div>';
+    const rows = [
+        { l: 'Redirect', a: t.redirectStart, b: t.redirectEnd, k: 'net' },
+        { l: 'DNS', a: t.domainLookupStart, b: t.domainLookupEnd, k: 'net' },
+        { l: 'Connect', a: t.connectStart, b: t.connectEnd, k: 'net' },
+        { l: 'Request', s: 'Network + server processing', a: t.requestStart, b: t.responseStart, k: 'net' },
+        { l: 'Response', a: t.responseStart, b: t.responseEnd, k: 'net' },
+        { l: 'Rendering', a: t.responseEnd, b: t.loadEventStart || t.domComplete, k: 'ren' },
+        { l: 'HTML Parse', s: 'DOM building', a: t.responseEnd, b: t.domInteractive, k: 'sub' },
+        { l: 'DOM + CSSOM ready', a: t.responseEnd, b: t.domContentLoadedEventStart, k: 'sub' },
+        { l: 'DCL event', s: 'DOMContentLoaded handlers', a: t.domContentLoadedEventStart, b: t.domContentLoadedEventEnd, k: 'sub' },
+        { l: 'Layout, Paint', s: '& subresources', a: t.domContentLoadedEventEnd, b: t.domComplete, k: 'sub' },
+        { l: 'Load event', a: t.loadEventStart, b: t.loadEventEnd, k: 'net' },
+    ];
+    // A "nice" axis step so there are ~5 gridlines: 1/2/5 × 10^n ms.
+    const raw = end / 5, pow = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+    const step = [1, 2, 5, 10].map((f) => f * pow).find((x) => x >= raw) || raw;
+    const max = Math.ceil(end / step) * step;
+    const pct = (v) => (v / max * 100).toFixed(2) + '%';
+    let ticks = '', grid = '';
+    for (let v = 0; v <= max + 0.001; v += step) {
+        grid += `<i style="left:${pct(v)}"></i>`;
+        ticks += `<span style="left:${pct(v)}">${v >= 1000 ? (v / 1000).toFixed(v % 1000 ? 1 : 0) + 's' : Math.round(v) + 'ms'}</span>`;
+    }
+    const bar = (r) => {
+        const a = Math.max(0, r.a || 0), b = Math.max(a, r.b || 0), dur = b - a;
+        return `<div class="pf-wf-row${r.k === 'sub' ? ' sub' : ''}">
+            <div class="pf-wf-l">${r.l}${r.s ? `<small>${r.s}</small>` : ''}</div>
+            <div class="pf-wf-track">${grid}${(r.a || r.b) ? `<b class="pf-wf-${r.k}" style="left:${pct(a)};width:max(2px,${pct(dur)})"></b><em style="left:calc(${pct(b)} + 4px)">${perfMs(dur) === '—' ? '0ms' : perfMs(dur)}</em>` : '<em style="left:0">0ms</em>'}</div>
+        </div>`;
+    };
+    const when = new Date(capturedAt || Date.now());
+    return `<div class="qa-grp">Navigation timings</div>
+        <div class="pf-wf-cap">Captured ${when.toLocaleTimeString()} · ${when.toLocaleDateString()}</div>
+        <div class="pf-wf">
+            <div class="pf-wf-ov"><div class="pf-wf-total" style="left:${pct(end)}"><span>Page Load Time: <b>${perfMs(end)}</b></span></div></div>
+            ${rows.map(bar).join('')}
+            <div class="pf-wf-row axis"><div class="pf-wf-l"></div><div class="pf-wf-track">${ticks}</div></div>
+        </div>`;
 }
 
 function perfRender(body, m) {
@@ -3783,15 +3342,7 @@ function perfRender(body, m) {
     </div>`;
     html += `<button class="qa-btn" id="pf-explain"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Optimize</button>`;
 
-    // Navigation phases as bars
-    const phases = m.phases; const maxP = Math.max(1, ...Object.values(phases));
-    html += `<div class="qa-grp">Load phases</div>`;
-    const labels = { dns: 'DNS', tcp: 'TCP', request: 'Request (TTFB)', response: 'Download', dom: 'DOM build' };
-    html += Object.keys(labels).map(k => `<div class="pf-bar-row">
-        <div class="pf-bar-l">${labels[k]}</div>
-        <div class="pf-bar-track"><div class="pf-bar" style="width:${Math.round((phases[k] / maxP) * 100)}%"></div></div>
-        <div class="pf-bar-v">${perfMs(phases[k])}</div>
-    </div>`).join('');
+    html += perfWaterfall(m.timing, m.capturedAt);
 
     // Resources summary
     html += `<div class="qa-grp">Resources (${m.resourceCount} · ${perfKb(m.totalSize)})</div>`;
@@ -6760,68 +6311,40 @@ function createFloatingButton() {
             transform: scale(1.1) translateY(-5px);
             box-shadow: 0 8px 30px rgba(102, 126, 234, 0.6);
         }
-        /* Which login you are actually in. Pinned to the TOP CENTRE so it reads like
-           a status line, and pointer-events:none so it can never intercept a click
-           meant for the page underneath. */
-        #ff-login-badge {
-            position: fixed;
-            top: 12px;
-            left: 50%;
-            transform: translateX(-50%);
-            max-width: 320px;
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            padding: 7px 14px;
-            /* ~80% see-through: the page reads straight through it, but there is
-               still just enough plate to hold the text. The dark halo on the glyphs
-               is what keeps it legible at that alpha, on a white page as well as a
-               dark one. */
-            background: rgba(15, 20, 32, 0.20);
-            border: 1px solid rgba(255, 255, 255, 0.10);
-            border-radius: 999px;
-            color: #f1f5f9;
-            font: 600 12.5px/1 -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
-            text-shadow:
-                0 0 3px rgba(0, 0, 0, 0.9),
-                0 1px 2px rgba(0, 0, 0, 0.75);
-            z-index: 999999999;
-            direction: ltr;
-            pointer-events: none;
-            user-select: none;
+        /* Logged in with a saved login: the user's name under the ⚡, and the button
+           grows sideways to fit it (anchored right, so it widens to the left). */
+        #ff-floating-btn.ff-has-login {
+            width: auto;
+            min-width: 54px;
+            padding: 0 10px;
+            box-sizing: border-box;
+            flex-direction: column;
+            gap: 3px;
         }
-        #ff-login-badge .ff-lb-dot {
-            width: 7px;
-            height: 7px;
+        /* ...plus a green "signed in" dot on the TOP-LEFT corner - the opposite corner
+           to the notification count (top-right), so the two never overlap. */
+        #ff-floating-btn.ff-has-login::after {
+            content: '';
+            position: absolute;
+            top: -4px;
+            left: -4px;
+            width: 12px;
+            height: 12px;
             border-radius: 50%;
-            background: #34d399;
-            flex-shrink: 0;
-            box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.22);
+            background: #10b981;
+            border: 2px solid #0f0f23;
+            pointer-events: none;
         }
-        #ff-login-badge .ff-lb-name {
+        #ff-floating-btn .ff-fab-user { display: none; }
+        #ff-floating-btn.ff-has-login .ff-fab-user {
+            display: block;
+            max-width: 150px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-        }
-        #ff-login-badge .ff-lb-who {
-            color: #cbd5e1;
-            font-weight: 500;
-        }
-        /* On a LIGHT page the whole thing flips: dark ink, a pale plate and a white
-           halo. Which one applies is decided from the colour actually behind the
-           badge, not from any OS theme setting. */
-        #ff-login-badge.ff-lb-on-light {
-            background: rgba(255, 255, 255, 0.22);
-            border-color: rgba(0, 0, 0, 0.14);
-            color: #0f172a;
-            text-shadow:
-                0 0 3px rgba(255, 255, 255, 0.95),
-                0 1px 2px rgba(255, 255, 255, 0.85);
-        }
-        #ff-login-badge.ff-lb-on-light .ff-lb-who { color: #475569; }
-        #ff-login-badge.ff-lb-on-light .ff-lb-dot {
-            background: #059669;
-            box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.18);
+            font: 600 10px/1.1 -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+            color: #fff;
+            direction: ltr;
         }
         #ff-floating-menu {
             position: fixed;

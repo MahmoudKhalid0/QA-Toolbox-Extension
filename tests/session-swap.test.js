@@ -80,6 +80,8 @@ function loadSessionSwap() {
             set(details, cb) {
                 state.cookieSets.push(clone(details));
                 if (details.name === state.failSetName) return callback(cb, null, 'mock cookie write failure');
+                // like Chrome: a cookie whose expiry has passed is silently NOT set (null, no error)
+                if (details.expirationDate != null && details.expirationDate * 1000 < Date.now()) return callback(cb, null);
                 const url = new URL(details.url);
                 const cookie = {
                     name: details.name,
@@ -232,7 +234,7 @@ test('restore rolls back the previous login when a cookie write fails', async ()
     const result = await api.restore({ id: 20, url: 'https://app.test/' }, id);
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /previous login restored/);
+    assert.match(result.error, /nothing was changed/);
     assert.deepEqual(state.jars.get('1').map((c) => c.value), ['old-private']);
     assert.deepEqual(state.pageStorage.get(20), { local: { token: 'old-private' }, session: {} });
 });
@@ -312,4 +314,19 @@ test('a site with no saved logins is listed without injecting into the page', as
     assert.equal((await api.listFor('https://nothing-saved.test/', 10)).length, 0);
     await api.rebuildMenuFor({ id: 10, url: 'https://nothing-saved.test/' });
     assert.equal(state.scriptRuns, 0);
+});
+
+test('a saved cookie that has since expired does not fail the switch', async () => {
+    const { api, state } = loadSessionSwap();
+    const past = Date.now() / 1000 - 3600;
+    state.jars.set('0', [authCookie('saved', '0'), authCookie('v1', '0', { name: 'osVisit', session: false, expirationDate: past })]);
+    await api.saveCurrent({ id: 10, url: 'https://app.test/' }, 'Old', 'op-old');
+    const id = state.local.qaLoginSnapshots['https://app.test'][0].id;
+    state.jars.set('1', [authCookie('other', '1')]);
+
+    const result = await api.restore({ id: 20, url: 'https://app.test/' }, id);
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.ok(state.jars.get('1').some((c) => c.value === 'saved'));
+    assert.ok(!state.jars.get('1').some((c) => c.name === 'osVisit'));
 });

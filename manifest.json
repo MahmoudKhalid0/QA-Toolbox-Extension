@@ -99,7 +99,8 @@
                 "<all_urls>"
             ],
             "js": [
-                "content.js"
+                "content.js",
+                "modules/spellcheck.js"
             ],
             "run_at": "document_idle"
         }

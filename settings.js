@@ -10,9 +10,40 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Toggle Handlers
     document.getElementById('floatingButtonToggle').addEventListener('change', (e) => updateSetting('showFloatingButton', e.target.checked));
+    // Spelling & language check: open pages start/stop live (modules/spellcheck.js listens to storage).
+    const spellToggle = document.getElementById('spellCheckToggle');
+    chrome.storage.local.get(['qaSpellCheck'], (r) => { spellToggle.checked = !!r.qaSpellCheck; });
+    spellToggle.addEventListener('change', () => {
+        chrome.storage.local.set({ qaSpellCheck: spellToggle.checked });
+        showToast(spellToggle.checked ? 'Spelling & language check on - pages are checked by themselves' : 'Spelling & language check off');
+    });
+    // Sites the spelling check may run on (one per line). Saved as you type; open pages follow live.
+    const spellDomains = document.getElementById('spellDomains');
+    chrome.storage.local.get(['qaSpellDomains'], (r) => { spellDomains.value = (r.qaSpellDomains || []).join('\n'); });
+    let domTimer = null;
+    spellDomains.addEventListener('input', () => {
+        clearTimeout(domTimer);
+        domTimer = setTimeout(() => {
+            // keep just the host: "https://site.com/path" → "site.com"
+            const list = spellDomains.value.split(/\r?\n/).map((l) => l.trim().toLowerCase()
+                .replace(/^[a-z]+:\/\//, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '').replace(/^\*\./, '')).filter(Boolean);
+            chrome.storage.local.set({ qaSpellDomains: [...new Set(list)] });
+            showToast(list.length ? `Spelling check limited to ${list.length} site${list.length === 1 ? '' : 's'}` : 'No sites - the spelling check runs nowhere');
+        }, 700);
+    });
+    // Floating buttons opacity: open pages pick it up live (content.js listens to storage).
+    const opRange = document.getElementById('floatOpacity'), opVal = document.getElementById('floatOpacityVal');
+    chrome.storage.local.get(['qaFloatOpacity'], (r) => {
+        const v = r.qaFloatOpacity || 100;
+        opRange.value = v; opVal.textContent = v + '%';
+    });
+    opRange.addEventListener('input', () => {
+        opVal.textContent = opRange.value + '%';
+        chrome.storage.local.set({ qaFloatOpacity: parseInt(opRange.value, 10) });
+    });
+    opRange.addEventListener('change', () => showToast(`Floating buttons opacity: ${opRange.value}%`));
     document.getElementById('fieldAiIconToggle').addEventListener('change', (e) => updateSetting('fieldAiIcon', e.target.checked));
     document.getElementById('charCounterToggle').addEventListener('change', (e) => updateSetting('charCounter', e.target.checked));
-    document.getElementById('selectionAiToggle').addEventListener('change', (e) => updateSetting('selectionAiTools', e.target.checked));
 
     // Clear Browsing Data settings
     initClearData();
@@ -228,7 +259,6 @@ async function loadSettings() {
     document.getElementById('floatingButtonToggle').checked = !!settings.showFloatingButton;
     document.getElementById('fieldAiIconToggle').checked = settings.fieldAiIcon !== false;
     document.getElementById('charCounterToggle').checked = settings.charCounter !== false;
-    document.getElementById('selectionAiToggle').checked = settings.selectionAiTools !== false;
 
     // AI save behavior lives in local storage (set here or via the on-page prompt)
     const aiResult = await chrome.storage.local.get(['aiSaveBehavior', 'aiAutoSaveProfiles']);
@@ -241,7 +271,7 @@ async function updateSetting(key, value) {
     const settings = result.formFillerSettings || { randomDigits: 5 };
 
     // Explicitly handle boolean types for toggles
-    if (key === 'showFloatingButton' || key === 'fieldAiIcon' || key === 'charCounter' || key === 'selectionAiTools') {
+    if (key === 'showFloatingButton' || key === 'fieldAiIcon' || key === 'charCounter') {
         settings[key] = !!value;
     } else {
         settings[key] = value;
@@ -260,7 +290,7 @@ async function updateSetting(key, value) {
         if (key === 'showFloatingButton') {
             chrome.tabs.sendMessage(tab.id, { action: 'recheckFloatingButton' }).catch(() => { });
         }
-        if (key === 'fieldAiIcon' || key === 'charCounter' || key === 'selectionAiTools') {
+        if (key === 'fieldAiIcon' || key === 'charCounter') {
             chrome.tabs.sendMessage(tab.id, { action: 'settingsChanged' }).catch(() => { });
         }
     });

@@ -416,6 +416,33 @@
             </div>
             <div class="setting-item">
                 <div class="setting-info">
+                    <h4>Spelling &amp; language check</h4>
+                    <p>AI proofreads every page by itself: <span style="color:#ef4444;font-weight:600">red</span> = a certain mistake (spelling, hamza, grammar, or wrong language - e.g. English left on an Arabic page), <span style="color:#f59e0b;font-weight:600">yellow</span> = probably wrong. Hover a word for the fix. The page's text is sent to the AI (each text only once) - turn this off on real data.</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="spellCheckToggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="setting-item" style="flex-direction:column;align-items:stretch;gap:8px;">
+                <div class="setting-info">
+                    <h4>Spelling check - only on these sites</h4>
+                    <p>One site per line (e.g. <code>test.example.com</code>). Its sub-domains are included. Every other site is never sent to the AI. Empty = the check runs nowhere.</p>
+                </div>
+                <textarea id="spellDomains" rows="4" spellcheck="false" placeholder="test.example.com" style="width:100%;box-sizing:border-box;resize:vertical;padding:9px 11px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:inherit;font:12.5px/1.6 Consolas,monospace;direction:ltr;"></textarea>
+            </div>
+            <div class="setting-item">
+                <div class="setting-info">
+                    <h4>Floating buttons opacity</h4>
+                    <p>How see-through the floating buttons (fill button &amp; capture eye) are. They turn solid when you hover them.</p>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+                    <input type="range" id="floatOpacity" min="20" max="100" step="5" value="100" style="width:130px;accent-color:#6366f1;cursor:pointer;">
+                    <span id="floatOpacityVal" style="min-width:38px;text-align:right;font-variant-numeric:tabular-nums;">100%</span>
+                </div>
+            </div>
+            <div class="setting-item">
+                <div class="setting-info">
                     <h4>AI Fill Icon on Fields</h4>
                     <p>Show a small AI icon on the field you're editing for quick valid / invalid fills</p>
                 </div>
@@ -431,17 +458,6 @@
                 </div>
                 <label class="switch">
                     <input type="checkbox" id="charCounterToggle">
-                    <span class="slider"></span>
-                </label>
-            </div>
-            <div class="setting-item">
-                <div class="setting-info">
-                    <h4>Selection AI Tools</h4>
-                    <p>Show a small icon when you select text to translate it (AR &#8596; EN) or review its spelling &amp;
-                        grammar</p>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" id="selectionAiToggle">
                     <span class="slider"></span>
                 </label>
             </div>
