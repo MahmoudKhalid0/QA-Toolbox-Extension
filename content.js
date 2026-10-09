@@ -4940,10 +4940,7 @@ function rvBuildOverlay() {
         }
         else if (act === 'isolate') { rvState.isolated = (rvState.isolated === id) ? null : id; rvApplyGeometry(); }
         else if (act === 'reload') { const f = frame.querySelector('iframe'); if (f) f.src = f.src; }
-        else if (act === 'shot') {
-            const w = s.rotated ? s.h : s.w, h = s.rotated ? s.w : s.h;
-            rvScreenshot(frame.querySelector('.rv-inner').getBoundingClientRect(), `${s.name}-${w}x${h}.png`);
-        }
+        else if (act === 'shot') { rvDeviceShot(frame, s); }
         else if (act === 'full') { rvFullShot(frame, s); }
     });
     // Click anywhere else (or Esc) closes an open frame options menu.
@@ -5160,17 +5157,87 @@ async function rvLoadBreakpoints() {
 
 // Full-page screenshot of one device: scroll its document step by step,
 // capture each step and stitch the crops into one tall PNG.
+// Screenshot ONE device at its real resolution, whatever the current zoom - like
+// ResponsivelyApp, which captures each device on its own. The old shot cropped the
+// screen as shown, so at 50% zoom a 390px phone came out 195px wide and blurry. Now the
+// device is shown alone at 100%, pinned to the top-left corner of the window, and a
+// device bigger than the window is captured in tiles and stitched.
+const rvCapTab = () => new Promise((res) => { try { chrome.runtime.sendMessage({ action: 'captureTab' }, (r) => res(r && r.dataUrl)); } catch (e) { res(null); } });
+const rvLoadImg = (u) => new Promise((res) => { if (!u) return res(null); const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = u; });
+// While capturing, hide every toast/status pill - one that pops up MID-capture sits
+// above the pinned device and was photographed as a 34px band in three slices in a row.
+function rvHideOverlaysWhileCapturing(on) {
+    let st = document.getElementById('rv-cap-hide');
+    if (on && !st) {
+        st = document.createElement('style'); st.id = 'rv-cap-hide';
+        st.textContent = '.qa-li-toast, #ff-ai-status, #toast { visibility: hidden !important; }';
+        (document.head || document.documentElement).appendChild(st);
+    } else if (!on && st) st.remove();
+}
+async function rvDeviceShot(frameEl, s) {
+    const w = s.rotated ? s.h : s.w, h = s.rotated ? s.w : s.h;
+    const dpr = window.devicePixelRatio || 1;
+    const inner = frameEl.querySelector('.rv-inner'), screenEl = frameEl.querySelector('.rv-screen');
+    const keep = { zoom: rvState.zoom, iso: rvState.isolated, innerStyle: inner.getAttribute('style') || '', screenR: screenEl.style.borderRadius };
+    document.querySelectorAll('.qa-li-toast').forEach((t) => t.remove());   // never photograph a toast
+    rvHideOverlaysWhileCapturing(true);
+    rvState.zoom = 1; rvState.isolated = s.id; rvApplyGeometry();
+    screenEl.style.borderRadius = '0';
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    const ctx = canvas.getContext('2d');
+    let ok = true;
+    try {
+        for (let y = 0; y < h && ok; y += vh) {
+            for (let x = 0; x < w && ok; x += vw) {
+                // pin the device so this tile sits at the window's top-left
+                Object.assign(inner.style, { position: 'fixed', left: -x + 'px', top: -y + 'px', zIndex: '2147483647', margin: '0', borderRadius: '0' });
+                await new Promise((r) => setTimeout(r, 550));   // paint + captureVisibleTab quota (2/s)
+                const img = await rvLoadImg(await rvCapTab());
+                if (!img) { ok = false; break; }
+                const tw = Math.min(vw, w - x), th = Math.min(vh, h - y);
+                ctx.drawImage(img, 0, 0, tw * dpr, th * dpr, x * dpr, y * dpr, tw * dpr, th * dpr);
+            }
+        }
+    } finally {
+        inner.setAttribute('style', keep.innerStyle); screenEl.style.borderRadius = keep.screenR;
+        rvHideOverlaysWhileCapturing(false);
+        rvState.zoom = keep.zoom; rvState.isolated = keep.iso; rvApplyGeometry();
+    }
+    if (!ok) { liToast('Screenshot failed - try again'); return; }
+    rvDownload(canvas.toDataURL('image/png'), `${s.name}-${w}x${h}.png`);
+}
+
+// Full-page capture at 100% (the device's real width) whatever zoom the grid is at -
+// the old capture was only as sharp as the current zoom (half size at the default 50%),
+// and refused to run unless you zoomed out yourself.
 async function rvFullShot(frameEl, s) {
+    const inner = frameEl.querySelector('.rv-inner');
+    const keep = { zoom: rvState.zoom, iso: rvState.isolated, sync: rvState.sync, innerStyle: inner.getAttribute('style') || '' };
+    rvHideOverlaysWhileCapturing(true);
+    rvState.isolated = s.id;
+    rvState.zoom = 1;
+    rvApplyGeometry();
+    await new Promise((r) => setTimeout(r, 250));
+    try { await rvFullShotAtZoom(frameEl, s); }
+    catch (e) { liToast('Full-page screenshot failed'); }
+    finally {
+        // ALWAYS un-pin the device, even if the capture threw half-way - otherwise it
+        // stays stuck over the top-left of the page.
+        inner.setAttribute('style', keep.innerStyle);
+        rvHideOverlaysWhileCapturing(false);
+        rvState.sync = keep.sync;
+        rvState.zoom = keep.zoom; rvState.isolated = keep.iso; rvApplyGeometry();
+    }
+}
+
+async function rvFullShotAtZoom(frameEl, s) {
     const iframe = frameEl.querySelector('iframe');
     let doc, win; try { doc = iframe.contentDocument; win = iframe.contentWindow; } catch (e) { doc = null; }
     if (!doc || !win) { liToast('Full-page capture needs a same-origin page'); return; }
     const inner = frameEl.querySelector('.rv-inner');
-    inner.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    await new Promise(r => setTimeout(r, 300));
-    const rect = inner.getBoundingClientRect();
-    if (rect.top < 0 || rect.bottom > innerHeight || rect.left < 0 || rect.right > innerWidth) {
-        liToast('Zoom out (use Fit) so the whole device is visible first'); return;
-    }
+    const innerStyle = inner.getAttribute('style') || '';
     const de = doc.documentElement;
     // Many sites don't scroll the WINDOW at all - a wrapper (<main> etc.)
     // scrolls instead. Find the real scroller, otherwise every capture would
@@ -5193,9 +5260,21 @@ async function rvFullShot(frameEl, s) {
     const z = rvState.zoom, dpr = window.devicePixelRatio || 1;
     // capture sub-rect inside the frame (whole viewport, or just the scroller)
     let srL = 0, srT = 0, srW = win.innerWidth, srH = win.innerHeight;
-    if (scEl) { const b = scEl.getBoundingClientRect(); srL = b.left; srT = b.top; srW = scEl.clientWidth; srH = scEl.clientHeight; }
+    // Only the part of the scroller that is ON the device screen. OutSystems sizes
+    // .main-content at 100% of the layout, so it runs ~64px (the header) past the
+    // device's bottom edge - capturing its full clientHeight photographed that hidden
+    // strip as a black band at the bottom of every slice.
+    let hiddenBelow = 0;
+    if (scEl) {
+        const b = scEl.getBoundingClientRect();
+        srL = Math.max(0, b.left); srT = Math.max(0, b.top);
+        srW = Math.min(scEl.clientWidth, win.innerWidth - srL);
+        srH = Math.min(scEl.clientHeight, win.innerHeight - srT);
+        hiddenBelow = Math.max(0, scEl.clientHeight - srH);
+    }
     if (srH < 40 || srW < 40) { liToast('Nothing scrollable to capture'); return; }
-    const totalH = Math.max(scEl ? scEl.scrollHeight : de.scrollHeight, srH);
+    // The last `hiddenBelow` px can never scroll into view on the device either.
+    const totalH = Math.max((scEl ? scEl.scrollHeight : de.scrollHeight) - hiddenBelow, srH);
     const steps = Math.min(Math.ceil(totalH / srH), 15);
     const getY = () => scEl ? scEl.scrollTop : (win.scrollY || de.scrollTop || 0);
     const setY = (y) => { if (scEl) scEl.scrollTop = y; else { win.scrollTo(0, y); try { de.scrollTop = y; } catch (e) { } } };
@@ -5222,39 +5301,60 @@ async function rvFullShot(frameEl, s) {
             }
         } catch (e) { }
     }
-    const capX = rect.left + srL * z, capY = rect.top + srT * z;
-    const capW = srW * z, capH = srH * z;
+    // Each scroll position is captured with the device PINNED to the window's top-left
+    // (same as rvDeviceShot), tile by tile when the device is bigger than the window -
+    // so the page comes out at its real width, not at the grid's zoom.
+    // The WHOLE device screen, not just the scroller: the header above it and any bottom
+    // bar below it belong in a full-page shot. Layout of the final image:
+    //   [ device rows 0..srT (header)                     ]  from the first capture
+    //   [ the scroller's full content, totalH tall        ]  one slice per scroll step
+    //   [ device rows below the scroller (bottom bar)     ]  from the last capture
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const devW = win.innerWidth, devH = win.innerHeight;
+    const aboveH = srT, belowH = Math.max(0, devH - (srT + srH));
     const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(capW * dpr));
-    canvas.height = Math.max(1, Math.round(totalH * z * dpr));
+    canvas.width = Math.max(1, Math.round(devW * z * dpr));
+    canvas.height = Math.max(1, Math.round((aboveH + totalH + belowH) * z * dpr));
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const cap = () => new Promise(res => { try { chrome.runtime.sendMessage({ action: 'captureTab' }, r => res(r && r.dataUrl)); } catch (e) { res(null); } });
     // NO toasts while capturing - they'd be photographed into every slice
     document.querySelectorAll('.qa-li-toast').forEach(t => t.remove());
-    let lastActual = -1, maxBottom = 0;
-    for (let i = 0; i < steps; i++) {
+    let failed = false;
+    // Copy device region (x,y,w,h) [device px] onto the canvas at (dx,dy) [device px]:
+    // the device is PINNED so each window-sized tile of the region sits at the window's
+    // top-left, captured, and drawn (same as rvDeviceShot).
+    const grab = async (x, y, w, h, dx, dy) => {
+        for (let ty = 0; ty < h * z && !failed; ty += vh) {
+            for (let tx = 0; tx < w * z && !failed; tx += vw) {
+                Object.assign(inner.style, { position: 'fixed', left: -(x * z + tx) + 'px', top: -(y * z + ty) + 'px', zIndex: '2147483647', margin: '0' });
+                await new Promise(r => setTimeout(r, 550));   // paint + captureVisibleTab quota (2/s)
+                const img = await rvLoadImg(await rvCapTab());
+                if (!img) { failed = true; break; }
+                const tw = Math.min(vw, w * z - tx), th = Math.min(vh, h * z - ty);
+                ctx.drawImage(img, 0, 0, tw * dpr, th * dpr, (dx * z + tx) * dpr, (dy * z + ty) * dpr, tw * dpr, th * dpr);
+            }
+        }
+    };
+    setY(0);
+    // 1) the full device screen at the top of the page (header, first screen, bottom bar)
+    await grab(0, 0, devW, devH, 0, 0);
+    // 2) the rest of the scroller, slice by slice, right under the header
+    let lastActual = 0;
+    for (let i = 1; i < steps && !failed; i++) {
         const target = Math.min(i * srH, Math.max(0, totalH - srH));
         if (i === 1) fixedEls.forEach(([el]) => { el.style.visibility = 'hidden'; });
         setY(target);
-        await new Promise(r => setTimeout(r, 650));   // paint + capture-rate quota
         const actual = Math.round(getY());
-        if (i > 0 && actual <= lastActual) break;     // the page can't scroll further
+        if (actual <= lastActual) break;              // the page can't scroll further
         lastActual = actual;
-        const dataUrl = await cap();
-        if (!dataUrl) break;
-        const img = await new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = dataUrl; });
-        if (!img) break;
-        const dy = Math.floor(actual * z * dpr);
-        const dh = Math.ceil(srH * z * dpr) + 2;   // slight overlap: no seam rows
-        // inset the source 1px on every edge: a sub-pixel spill would sample
-        // the dark stage around the frame and print it as hairlines
-        ctx.drawImage(img,
-            capX * dpr + 1, capY * dpr + 1, Math.max(1, capW * dpr - 2), Math.max(1, capH * dpr - 2),
-            0, dy, canvas.width, dh);
-        maxBottom = Math.max(maxBottom, Math.min(canvas.height, dy + dh));
+        await grab(srL, srT, srW, srH, srL, aboveH + actual);
     }
+    // 3) whatever sits BELOW the scroller (a bottom bar) goes at the very bottom
+    const contentEnd = Math.max(srH, lastActual + srH);  // how far the scroller's content actually went
+    if (belowH > 0 && !failed) await grab(0, srT + srH, devW, belowH, 0, aboveH + contentEnd);
+    const maxBottom = Math.round((aboveH + contentEnd + belowH) * z * dpr);
+    inner.setAttribute('style', innerStyle);
     fixedEls.forEach(([el, prev]) => { el.style.visibility = prev || ''; });
     screenEl.style.borderRadius = prevScreenR; inner.style.borderRadius = prevInnerR;
     de.style.scrollBehavior = prevBehavior;
@@ -5403,45 +5503,44 @@ function rvTouchCursorValue() {
     const ring = `<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='7.5' fill='rgba(96,165,250,0.22)' stroke='rgb(59,130,246)' stroke-width='1.5'/></svg>`;
     return `url("data:image/svg+xml;base64,${btoa(ring)}") 10 10, auto`;
 }
-function rvPath(el) {
-    const p = []; const body = el.ownerDocument.body;
-    while (el && el !== body && el.parentElement) { p.unshift(Array.prototype.indexOf.call(el.parentElement.children, el)); el = el.parentElement; }
-    return p;
+// Click-sync trace in the page's Console ("[QA sync]"): what was clicked and what each
+// other device did with it. One line per click - the only way to see why a click
+// didn't reach a device on a real site.
+function rvDescribe(el) {
+    if (!el || el.nodeType !== 1) return String(el);
+    const cls = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 4).join('.');
+    const text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 30);
+    const href = el.getAttribute('href');
+    const inner = !text && !cls && el.firstElementChild ? ` <${el.firstElementChild.tagName.toLowerCase()} class="${(el.firstElementChild.getAttribute('class') || '').slice(0, 40)}">` : '';
+    return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (cls ? '.' + cls : '') + (href ? `[href="${href.slice(0, 40)}"]` : '') + (text ? ` "${text}"` : '') + inner;
 }
-function rvResolve(doc, p) { let el = doc.body; for (const i of p) { if (!el) return null; el = el.children[i]; } return el; }
+// Bump on every change to click sync: the log line proves which code the page runs.
+const RV_SYNC_BUILD = 9;
+function rvSyncLog(what, el, results) {
+    try { console.log(`[QA sync #${RV_SYNC_BUILD}] ` + what + ': ' + rvDescribe(el) + (results ? '  →  ' + results.join('  |  ') : '')); } catch (e) { }
+}
+// How devices are paired - the same method ResponsivelyApp uses (BrowserSync "ghost
+// mode"): an element is identified by its tag + its index among ALL elements with that
+// tag in the page. It is the same app in every device, so the order of <a>/<button>/
+// <div>… is the same even where ids differ (OutSystems: "b5-b24-…" on a tablet vs
+// "b5-b18-…" on a phone). Every smarter heuristic (ids, classes, text, guessing which
+// popup closed) failed somewhere on the real app; this one is what works there.
+function rvTagIndex(el) {
+    return Array.prototype.indexOf.call(el.ownerDocument.getElementsByTagName(el.tagName), el);
+}
+function rvByTagIndex(doc, tagName, index) {
+    return index < 0 ? null : doc.getElementsByTagName(tagName)[index] || null;
+}
 
-// Find the element in ANOTHER device that corresponds to `el`. A raw child-index
-// path (rvResolve) only works when both devices render an identical DOM - but at
-// different widths responsive layouts add/drop/reorder nodes, so the same click
-// landed on the wrong element or nothing (the "click sync is imprecise, works
-// sometimes" bug). Match on stable signals first, fall back to the path.
-function rvFindMatch(el, otherDoc) {
-    if (!el || el.nodeType !== 1 || !otherDoc) return null;
-    const tag = el.tagName;
-    // 1) id - the strongest signal
-    if (el.id) { const m = otherDoc.getElementById(el.id); if (m) return m; }
-    // 2) a link - match by href (what the user is really after)
-    if (tag === 'A') {
-        const href = el.getAttribute('href');
-        if (href) { for (const a of otherDoc.getElementsByTagName('a')) if (a.getAttribute('href') === href) return a; }
-    }
-    // 3) a form control - match by name (+ type)
-    if (el.getAttribute && el.getAttribute('name')) {
-        const name = el.getAttribute('name'), type = el.getAttribute('type');
-        for (const c of otherDoc.getElementsByTagName(tag)) {
-            if (c.getAttribute('name') === name && (type == null || c.getAttribute('type') === type)) return c;
-        }
-    }
-    // 4) same tag + same trimmed text (buttons, links, menu items)
-    const text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80);
-    if (text) {
-        for (const c of otherDoc.getElementsByTagName(tag)) {
-            if ((c.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80) === text) return c;
-        }
-    }
-    // 5) last resort - the structural path
-    return rvResolve(otherDoc, rvPath(el));
+// Never mirror a sign-out: logging out of one device must not log out all of them.
+const RV_DANGER = /log ?out|sign ?out|log-off|logoff|تسجيل الخروج|خروج/i;
+function rvLooksDangerous(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const act = el.closest('a, button, [role="button"], [role="menuitem"], [role="link"]') || el;
+    const text = (act.textContent || act.value || '').trim().slice(0, 60);
+    return [act.getAttribute('href'), act.id, act.getAttribute('aria-label'), act.getAttribute('title'), text].some((b) => b && RV_DANGER.test(b));
 }
+
 // Some sites decide mobile/desktop from the User-Agent on the SERVER - if the
 // devices are phone-sized while the UA is still Desktop, nudge the user.
 function rvUaHint() {
@@ -5547,6 +5646,64 @@ function rvHideScrollbar(doc, hide) {
 // ~300ms - fine when a user clicks an anchor, but for scroll SYNC it means the
 // mirrored device eases toward each position and trails the one you're driving.
 // Force instant scrolling inside every device so sync is 1:1.
+// The element that actually scrolls a device's page. Usually the document - but app
+// layouts (OutSystems Reactive, Angular/SPA shells) lock html/body at 100% height and
+// scroll an inner container (.main-content…) instead, where window.scrollY stays 0
+// and sync never saw a move. Then: the largest visible scrollable element.
+// Cached per frame; re-checked twice a second while the page is still building.
+//
+// The element you ACTUALLY scrolled wins (f.__rvActive, set by a capturing 'scroll'
+// listener in rvBindResponsiveFrames) - guessing "the largest scrollable box" alone
+// picked the wrong one on real OutSystems pages.
+const rvCanScrollY = (el) => el && el.isConnected && el.scrollHeight - el.clientHeight > 2;
+function rvScroller(f) {
+    const doc = f.contentDocument, win = f.contentWindow;
+    if (!doc || !win) return null;
+    const act = f.__rvActive;
+    if (act && act.ownerDocument === doc && rvCanScrollY(act)) return act;
+    const c = f.__rvScr;
+    const now = Date.now();
+    if (c && c.doc === doc && c.el.isConnected && now - c.at < 1000) return c.el;
+    const se = doc.scrollingElement || doc.documentElement;
+    // Vertical only: a page that overflows SIDEWAYS (common at phone widths) still
+    // scrolls its content in an inner box - checking both axes chose the wrong one.
+    let el = se;
+    if (!rvCanScrollY(se)) {
+        let area = 0;
+        for (const x of doc.body ? doc.body.querySelectorAll('*') : []) {
+            if (x.scrollHeight - x.clientHeight <= 2) continue;          // cheap test first
+            const oy = win.getComputedStyle(x).overflowY;
+            if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') continue;
+            const a = x.clientWidth * x.clientHeight;
+            if (a > area) { area = a; el = x; }
+        }
+    }
+    f.__rvScr = { doc, el, at: now };
+    return el;
+}
+
+// The same scroll box in another device: the page itself, or - like BrowserSync - the
+// element with the same tag + index; then same id / tag+classes; else that device's
+// own main scroller.
+function rvScrollTwin(src, g) {
+    const doc = g.contentDocument; if (!doc) return null;
+    const sdoc = src.ownerDocument;
+    if (src === (sdoc.scrollingElement || sdoc.documentElement)) {
+        const se = doc.scrollingElement || doc.documentElement;
+        return rvCanScrollY(se) ? se : rvScroller(g);
+    }
+    const byIndex = rvByTagIndex(doc, src.tagName, rvTagIndex(src));
+    if (rvCanScrollY(byIndex)) return byIndex;
+    if (src.id) { const m = doc.getElementById(src.id); if (rvCanScrollY(m)) return m; }
+    const cls = (src.getAttribute('class') || '').trim();
+    if (cls) {
+        for (const m of doc.getElementsByTagName(src.tagName)) {
+            if ((m.getAttribute('class') || '').trim() === cls && rvCanScrollY(m)) return m;
+        }
+    }
+    return rvScroller(g);
+}
+
 function rvNoSmoothScroll(doc) {
     try {
         let st = doc.getElementById('rv-smooth-style');
@@ -5585,33 +5742,71 @@ function rvWireFrames() {
             rvNoSmoothScroll(doc);                    // kill CSS smooth-scroll so sync is instant
             if (doc.__rvBound) return;
             doc.__rvBound = true;
-            // Scroll sync is NOT done here per-frame any more - see rvStartSyncLoop.
-            // The old scroll-event approach had a shared `rvSyncing` guard that
-            // dropped every other frame's update, so the mirrored device trailed and
-            // looked slow. A single rAF loop that reads whichever frame moved and
-            // mirrors it to the others - with no echo guard blocking the source -
-            // keeps them in lockstep.
+            // Remember WHICH box the user is scrolling (scroll doesn't bubble - capture
+            // sees every element's). Only real input marks it: a wheel/touch/key/drag
+            // just before, so our own mirrored scrolls don't steal the role.
+            // Scroll sync is EVENT-driven, like BrowserSync (ResponsivelyApp): nothing runs
+            // until the user scrolls, then one mirror per animation frame. The old rAF loop
+            // read every device's scroll position 60x a second, forever.
+            let userScrollAt = 0, pointerDown = false;
+            const markUser = () => { userScrollAt = Date.now(); };
+            ['wheel', 'touchmove', 'keydown'].forEach((ev) => win.addEventListener(ev, markUser, { capture: true, passive: true }));
+            // Dragging the scrollbar can take longer than the 1.5s window - it counts as
+            // long as the button is held.
+            win.addEventListener('mousedown', () => { pointerDown = true; markUser(); }, { capture: true, passive: true });
+            win.addEventListener('mouseup', () => { pointerDown = false; }, { capture: true, passive: true });
+            doc.addEventListener('scroll', (e) => {
+                if (Date.now() < (f.__rvApplyUntil || 0)) return;          // our own mirrored scroll arriving
+                if (!pointerDown && Date.now() - userScrollAt > 1500) return;
+                const t = e.target === doc ? (doc.scrollingElement || doc.documentElement) : e.target;
+                if (!t || t.nodeType !== 1) return;
+                f.__rvActive = t;
+                if (rvState.sync) rvQueueScrollMirror(o, f, t);
+            }, true);
+            // Clicks and typing are mirrored the ResponsivelyApp / BrowserSync way: the
+            // EXACT element clicked (no climbing to a parent), found in each other device by
+            // tag + index, and only when that device is on the same page.
             win.addEventListener('click', (e) => {
                 if (!rvState.sync || rvClicking || !e.isTrusted) return;
-                // Click sync was flaky because e.target is often a child WITH NO IDENTITY -
-                // the <span>/<svg>/<i> inside a button or link. Matching that exact node in
-                // the other device fails (no id/href/text), so the click wasn't mirrored,
-                // while clicking the button's own text worked - hence "sometimes". Resolve
-                // to the nearest actionable ancestor first; it has the href/id/text that
-                // rvFindMatch can actually match on.
-                const target = (e.target.closest &&
-                    e.target.closest('a,button,input,select,textarea,label,summary,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[onclick],[tabindex]'))
-                    || e.target;
+                const t = e.target; if (!t || t.nodeType !== 1) return;
+                if (rvLooksDangerous(t)) { rvSyncLog('skip (logout-like)', t); return; }   // signing out of ONE device stays in that device
+                const tag = t.tagName, idx = rvTagIndex(t), page = win.location.pathname;
                 rvClicking = true;
-                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvFindMatch(target, other.contentDocument); if (el) el.click(); } catch (e) { } } });
+                const results = [];
+                o.querySelectorAll('iframe').forEach((other, i) => {
+                    if (other === f) { results.push(`device${i + 1}: (you clicked here)`); return; }
+                    let r;
+                    try {
+                        const ow = other.contentWindow, od = other.contentDocument;
+                        const m = ow.location.pathname !== page ? null : rvByTagIndex(od, tag, idx);
+                        if (ow.location.pathname !== page) r = 'other page - skipped';
+                        else if (!m) r = `NO ELEMENT (${tag.toLowerCase()} #${idx})`;
+                        else {
+                            // A synthetic click event, like BrowserSync - also works on <svg>/<path>,
+                            // which have no .click() method.
+                            ow.setTimeout(() => m.dispatchEvent(new ow.MouseEvent('click', { bubbles: true, cancelable: true, view: ow })), 0);
+                            r = 'clicked ' + rvDescribe(m);
+                        }
+                    } catch (x) { r = 'ERROR ' + (x && x.message || x); }
+                    results.push(`device${i + 1}: ` + r);
+                });
+                rvSyncLog(`click ${tag.toLowerCase()} #${idx}`, t, results);
                 setTimeout(() => { rvClicking = false; }, 80);
             }, true);
             win.addEventListener('input', (e) => {
                 if (!rvState.sync || rvClicking || !e.isTrusted) return;
                 const t = e.target; if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                 rvClicking = true;
-                const val = t.value;
-                o.querySelectorAll('iframe').forEach(other => { if (other !== f) { try { const el = rvFindMatch(t, other.contentDocument); if (el && 'value' in el) { el.value = val; el.dispatchEvent(new other.contentWindow.Event('input', { bubbles: true })); } } catch (e) { } } });
+                const val = t.value, idx = rvTagIndex(t), page = win.location.pathname;
+                o.querySelectorAll('iframe').forEach(other => {
+                    if (other === f) return;
+                    try {
+                        const ow = other.contentWindow;
+                        if (ow.location.pathname !== page) return;
+                        const el = rvByTagIndex(other.contentDocument, t.tagName, idx);
+                        if (el && 'value' in el) { el.value = val; el.dispatchEvent(new ow.Event('input', { bubbles: true })); el.dispatchEvent(new ow.Event('change', { bubbles: true })); }
+                    } catch (x) { }
+                });
                 setTimeout(() => { rvClicking = false; }, 40);
             }, true);
         };
@@ -5621,76 +5816,58 @@ function rvWireFrames() {
     rvStartSyncLoop();
 }
 
-// One rAF loop mirrors scroll across devices. Each tick it finds the frame whose
-// scroll changed since last tick (the one the user is scrolling) and writes that
-// position to every other frame, marking the followers' new position as "seen" so
-// their own scroll doesn't echo back. No per-frame scroll listeners, no shared
-// guard that skips frames - so the mirrored device tracks the driven one every
-// single frame instead of trailing behind and looking slow. Stops itself when the
-// overlay closes.
 let rvSyncLoopOn = false;
-let rvHoverTick = 0;
+// Mirror one user scroll to every other device - at most once per animation frame
+// (bursts of scroll events coalesce, like ResponsivelyApp). PROPORTIONALLY: each device
+// goes to the same fraction of ITS OWN scroll range, so a short page moves slower and
+// every device reaches the top/bottom together. Each follower gets a short "this scroll
+// is ours" window so its own scroll event doesn't echo back - per device, never a shared
+// lock, so the device you are scrolling is never blocked.
+let rvScrollPending = null;
+function rvQueueScrollMirror(o, f, el) {
+    const first = !rvScrollPending;
+    rvScrollPending = { o, f, el };
+    if (!first) return;
+    requestAnimationFrame(() => {
+        const p = rvScrollPending; rvScrollPending = null;
+        if (!p || !rvState || !rvState.sync) return;
+        const range = (s) => ({ x: Math.max(0, s.scrollWidth - s.clientWidth), y: Math.max(0, s.scrollHeight - s.clientHeight) });
+        const fr = range(p.el);
+        const px = fr.x ? p.el.scrollLeft / fr.x : 0, py = fr.y ? p.el.scrollTop / fr.y : 0;
+        for (const g of p.o.querySelectorAll('iframe')) {
+            if (g === p.f) continue;
+            try {
+                const ge = rvScrollTwin(p.el, g); if (!ge) continue;
+                const gr = range(ge);
+                const tx = Math.round(px * gr.x), ty = Math.round(py * gr.y);
+                if (Math.abs(ge.scrollLeft - tx) < 1 && Math.abs(ge.scrollTop - ty) < 1) continue;
+                g.__rvApplyUntil = Date.now() + 150;
+                ge.scrollTo({ left: tx, top: ty, behavior: 'instant' });
+            } catch (e) { }                       // cross-origin frame - skip
+        }
+    });
+}
+
+// Keep hover suppression + touch cursor applied to each touch frame's CURRENT document:
+// right away when the document changes (navigation), otherwise 5x a second - so an SPA
+// that injects new :hover styles between routes gets them neutered quickly. A timer,
+// not a 60fps rAF loop (scroll sync no longer needs one - see rvQueueScrollMirror).
 function rvStartSyncLoop() {
     if (rvSyncLoopOn) return;
     rvSyncLoopOn = true;
     const tick = () => {
         const o = document.getElementById('qa-rv');
-        if (!o) { rvSyncLoopOn = false; return; }   // overlay gone - stop the loop
-        // Keep hover suppression + touch cursor applied to each touch frame's CURRENT
-        // document. Runs immediately when the document object changes (navigation), and
-        // otherwise a few times a second - so an SPA that injects new :hover styles while
-        // you move between its routes gets them neutered within a fraction of a second
-        // instead of the hover coming back. Cheap: rvKillHover skips already-rewritten
-        // rules, and rvApplyCursor just re-sets one <style>.
-        rvHoverTick = (rvHoverTick + 1) % 12;                 // ~5x/sec at 60fps
+        if (!o) { rvSyncLoopOn = false; return; }   // overlay gone - stop
         for (const f of o.querySelectorAll('iframe')) {
             const host = f.closest('[data-id]');
             if (!host || host.dataset.touch !== '1') continue;
             let d; try { d = f.contentDocument; if (!d) continue; } catch (e) { continue; }
-            const fresh = f.__rvLastDoc !== d;               // navigated to a new document
-            if (fresh) f.__rvLastDoc = d;
-            if (fresh || rvHoverTick === 0) { rvKillHover(d, true); rvApplyCursor(d, true); }
+            if (f.__rvLastDoc !== d) f.__rvLastDoc = d;
+            rvKillHover(d, true); rvApplyCursor(d, true);
         }
-        if (rvState && rvState.sync) {
-            const frames = o.querySelectorAll('iframe');
-            for (const f of frames) {
-                let w, sx, sy;
-                try { w = f.contentWindow; if (!w) continue; sx = w.scrollX; sy = w.scrollY; }
-                catch (e) { continue; }             // cross-origin frame - skip
-                if (f.__rvSX === undefined) { f.__rvSX = sx; f.__rvSY = sy; continue; }
-                if (sx === f.__rvSX && sy === f.__rvSY) continue;   // this frame didn't move
-                // f moved → it's the one being scrolled. Mirror to the rest PROPORTIONALLY:
-                // each device goes to the same fraction of ITS OWN scroll range, so a short
-                // page moves slower and every device reaches the top/bottom together (a 1:1
-                // pixel mirror had the short device hit its end while the long one was mid-way).
-                const range = (win) => {
-                    const se = win.document.scrollingElement || win.document.documentElement;
-                    return { x: Math.max(0, se.scrollWidth - win.innerWidth), y: Math.max(0, se.scrollHeight - win.innerHeight) };
-                };
-                const fr = range(w);
-                const px = fr.x ? sx / fr.x : 0, py = fr.y ? sy / fr.y : 0;
-                for (const g of frames) {
-                    if (g === f) continue;
-                    try {
-                        const gw = g.contentWindow;
-                        const gr = range(gw);
-                        const tx = Math.round(px * gr.x), ty = Math.round(py * gr.y);
-                        if (Math.abs(gw.scrollX - tx) >= 1 || Math.abs(gw.scrollY - ty) >= 1) gw.scrollTo({ left: tx, top: ty, behavior: 'instant' });
-                        // Record g's ACTUAL position, not the target. A shorter device
-                        // clamps to its own bottom; recording the (larger) target made
-                        // the next tick see g as "moved" and mirror it BACK to the
-                        // frame you were scrolling - yanking it upward and stopping it
-                        // short of the end. Recording the clamped value stops that.
-                        g.__rvSX = gw.scrollX; g.__rvSY = gw.scrollY;
-                    } catch (e) { }
-                }
-                f.__rvSX = sx; f.__rvSY = sy;
-                break;                                // one mover per tick
-            }
-        }
-        requestAnimationFrame(tick);
+        setTimeout(tick, 200);
     };
-    requestAnimationFrame(tick);
+    tick();
 }
 
 // ==================== Image Text Extractor (OCR) ====================
