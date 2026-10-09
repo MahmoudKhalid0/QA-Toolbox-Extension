@@ -1,8 +1,8 @@
 // Spelling & language check - the page side (Settings → General → "Spelling & language check").
 // While it is on, every page is checked by itself by the AI (spellcheck-bg.js), and re-checked
 // when its content changes (an SPA tab, a popup, a table that loads later):
-//   red    - a certain mistake: spelling, hamza, grammar, or text in the WRONG language
-//            (English left untranslated on an Arabic page, or the reverse)
+//   red    - a certain mistake: spelling, hamza or grammar (Arabic and English). Text in the
+//            other language is NOT flagged for its language - the user sees that by eye.
 //   yellow - probably wrong but could be right in some reading (عمله vs عملة)
 // Hover a marked word for what is wrong and the fix. Only text the AI hasn't seen before is
 // sent - results are cached per text.
@@ -17,10 +17,12 @@
     const ERR = 'qa-spell-err', WARN = 'qa-spell-warn';
     const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'CODE', 'PRE', 'KBD', 'SAMP', 'TITLE', 'OPTION']);
     const OUR_UI = '#qa-rv, #qa-result-panel, #qa-cap-eye, #qa-spell-tip, [id^="ff-"], [class*="qa-li-toast"]';
-    const LABEL = { spelling: 'Spelling', hamza: 'Hamza', grammar: 'Grammar', wrong_language: 'Wrong language' };
+    const LABEL = { spelling: 'Spelling', hamza: 'Hamza', grammar: 'Grammar' };
 
     let on = false, observer = null, timer = null, busy = false, again = false;
     const known = new Map();         // text -> issues[] (this page's answers; [] = no mistakes)
+    const tries = new Map();         // text -> failed attempts (retried, not taken as correct)
+    let retryAt = 0;
     let marks = new Map();           // text node -> [{ s, e, issue }]
     let pageLang = 'en';
 
@@ -51,8 +53,13 @@
                 return NodeFilter.FILTER_ACCEPT;
             }
         });
+        // Visible only - judged by the TEXT's own boxes, not its parent's: an element with
+        // display:contents (OutSystems tab titles: <div class="display-contents">) has no box
+        // of its own, so asking the parent skipped every tab label.
+        const r = document.createRange();
         for (let n = walker.nextNode(); n && nodes.length < 5000; n = walker.nextNode()) {
-            if (n.parentElement.getClientRects().length) nodes.push(n);   // visible only
+            r.selectNodeContents(n);
+            if (r.getClientRects().length) nodes.push(n);
         }
         return nodes;
     }
@@ -71,6 +78,7 @@
             for (const n of nodes) {
                 const t = norm(n.nodeValue).slice(0, 1500);
                 if (!t || known.has(t) || ask.includes(t)) continue;
+                if (tries.get(t) && Date.now() < retryAt) continue;   // failed recently - wait for the retry
                 // This text had mistakes and has changed: if the change is exactly the suggested
                 // fix(es), it is settled here - nothing is sent (see wasFixed).
                 const prev = nodeMem.get(n) || (n.parentElement && nodeMem.get(n.parentElement));
@@ -88,10 +96,25 @@
             if (ask.length) {
                 busyMark(true);
                 const r = await send({ action: 'spellCheckAi', texts: ask, lang: pageLang }).finally(() => busyMark(false));
-                if (!r || !r.ok) {
-                    console.warn('[QA spell] AI check failed:', r && r.error);
-                    ask.forEach((t) => known.set(t, []));   // don't retry the same texts in a loop
-                } else ask.forEach((t) => known.set(t, r.issues[t] || []));
+                // A text whose request FAILED is not "no mistakes": it was dropped like that before,
+                // so a timed-out first request left the whole page unmarked until F5. Retry it
+                // after 20s, up to 3 times, then give up (and say so in the Console).
+                const failed = !r ? ask : !r.ok ? ask : (r.failed || []);
+                if (r && r.ok) {
+                    ask.forEach((t) => { if (!failed.includes(t)) known.set(t, r.issues[t] || []); });
+                    // one line per AI request - shows which language the page was judged as
+                    console.info(`[QA spell] page language: ${pageLang} - sent ${ask.length} texts, ${Object.keys(r.issues).length} with mistakes${failed.length ? `, ${failed.length} failed` : ''}`);
+                }
+                if (failed.length) {
+                    console.warn(`[QA spell] AI check failed for ${failed.length} texts:`, (r && r.error) || 'no response', '- retrying in 20s');
+                    for (const t of failed) {
+                        const n = (tries.get(t) || 0) + 1;
+                        tries.set(t, n);
+                        if (n >= 3) known.set(t, []);          // gave up on this one
+                    }
+                    retryAt = Date.now() + 20000;
+                    setTimeout(schedule, 20500);
+                }
             }
             if (on) paint(nodes);
         } finally {
@@ -166,7 +189,15 @@
     }
 
     // AI calls cost money - wait for the page to settle before asking again
-    function schedule() { clearTimeout(timer); timer = setTimeout(scan, 1500); }
+    // …but never longer than 4s: a page that keeps changing (an animation, a slider) would
+    // otherwise push the check back forever.
+    let firstAsk = 0;
+    function schedule() {
+        clearTimeout(timer);
+        if (!firstAsk) firstAsk = Date.now();
+        const wait = Math.max(0, Math.min(1500, 4000 - (Date.now() - firstAsk)));
+        timer = setTimeout(() => { firstAsk = 0; scan(); }, wait);
+    }
 
     // ── hover: what is wrong + the fix ──
     let tip = null, tipId = '';
@@ -231,8 +262,15 @@
             if (muts.every((m) => m.target && m.target.closest && m.target.closest('#qa-spell-tip'))) return;
             schedule();
         });
-        if (document.body) observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        // Also watch for content being SHOWN, not only added: OutSystems tabs keep every tab's
+        // content in the page and only flip a class / style / hidden on click - with just
+        // childList+characterData the second tab was never checked.
+        if (document.body) observer.observe(document.body, {
+            childList: true, subtree: true, characterData: true,
+            attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'open', 'aria-expanded', 'aria-selected']
+        });
         document.addEventListener('mousemove', onMove, { passive: true, capture: true });
+        document.addEventListener('click', schedule, { passive: true, capture: true });
         scan();
     }
     function stop() {
@@ -241,6 +279,7 @@
         clearTimeout(timer);
         if (observer) { observer.disconnect(); observer = null; }
         document.removeEventListener('mousemove', onMove, { capture: true });
+        document.removeEventListener('click', schedule, { capture: true });
         CSS.highlights.delete(ERR); CSS.highlights.delete(WARN);
         marks = new Map();
         hideTip();
