@@ -47,6 +47,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse && sendResponse({ ok: true });
         return;
     }
+    // the outcome of a "log in again" started from the ⚡ menu (that page was replaced)
+    if (request.action === 'swapNotice') {
+        showFabAiStatus(request.ok ? 'success' : 'error', request.text || '');
+        if (request.ok) initFloatingButton();
+        sendResponse && sendResponse({ ok: true });
+        return;
+    }
     if (request.action === 'storageCookiesChanged') {
         stQueueCookieRefresh();
         sendResponse && sendResponse({ ok: true });
@@ -6617,7 +6624,7 @@ function createFloatingButton() {
             border-radius: 20px;
             max-width: none;
         }
-        .ff-swap-update {
+        .ff-swap-update, .ff-swap-relogin {
             margin-left: auto;
             flex-shrink: 0;
             width: 24px;
@@ -6631,9 +6638,10 @@ function createFloatingButton() {
             max-width: none;
             transition: all 0.2s;
         }
-        .ff-swap-badge + .ff-swap-update { margin-left: 4px; }
-        .ff-swap-update:hover { background: rgba(16, 185, 129, 0.25); color: #10b981; }
-        .ff-swap-update i { font-size: 12px; color: inherit; }
+        .ff-swap-badge + .ff-swap-relogin, .ff-swap-badge + .ff-swap-update, .ff-swap-relogin + .ff-swap-update { margin-left: 4px; }
+        .ff-swap-update:hover, .ff-swap-relogin:hover { background: rgba(16, 185, 129, 0.25); color: #10b981; }
+        .ff-swap-update i, .ff-swap-relogin i { font-size: 12px; color: inherit; }
+        .ff-swap-relogin.off { opacity: .45; }
         /* Per-section scroll: a long login/profile list scrolls on its own so it
            never pushes the other sections out of reach. */
         .ff-swap-list, .ff-menu-list {
@@ -6701,6 +6709,20 @@ function createFloatingButton() {
                         showFabAiStatus('success', `Saved "${name}"`);
                         initFloatingButton();   // refresh the list in the menu
                     }
+                });
+                return;
+            }
+            // ⇥ Log in again with the saved username/password, then the fresh session is
+            // re-saved into this slot. Checked before the row (works on the CURRENT row too).
+            const reBtn = e.target.closest('.ff-swap-relogin');
+            if (reBtn) {
+                e.stopPropagation();
+                menu.style.display = 'none';
+                if (!reBtn.dataset.creds) { showFabAiStatus('error', `Add the username/password for "${reBtn.dataset.name}" first: Sessions tab → 🔑`); return; }
+                showFabAiStatus('loading', `Logging in again as "${reBtn.dataset.name}"…`);
+                chrome.runtime.sendMessage({ action: 'swapRelogin', id: reBtn.dataset.swapId, name: reBtn.dataset.name }, (resp) => {
+                    if (chrome.runtime.lastError || !resp || !resp.ok) showFabAiStatus('error', 'Login failed: ' + ((resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'no response'));
+                    else { showFabAiStatus('success', `Logged in again as "${reBtn.dataset.name}" - session refreshed`); initFloatingButton(); }
                 });
                 return;
             }
@@ -6829,7 +6851,10 @@ function createFloatingButton() {
         matchingLogins.forEach((s) => {
             // ↻ re-saves the session you're logged in as right now into this slot
             // (server sessions expire - refresh instead of delete + re-add).
-            const refreshBtn = `<span class="ff-swap-update" data-swap-id="${escHtml(s.id)}" data-active="${s.active ? 'true' : 'false'}" title="Update this saved login with the session you're logged in as now"><i class="fas fa-rotate"></i></span>`;
+            // ⇥ logs in again with the saved username/password (🔑 in the Sessions tab) and
+            // re-saves the fresh session - for when it expired while you were on the page.
+            const reloginBtn = `<span class="ff-swap-relogin${s.hasCreds ? '' : ' off'}" data-swap-id="${escHtml(s.id)}" data-name="${escHtml(s.name)}" data-creds="${s.hasCreds ? '1' : ''}" title="${s.hasCreds ? 'Log in again as this user and refresh the saved session' : 'Log in again - add the username/password first (🔑 in the Sessions tab)'}"><i class="fas fa-right-to-bracket"></i></span>`;
+            const refreshBtn = reloginBtn + `<span class="ff-swap-update" data-swap-id="${escHtml(s.id)}" data-active="${s.active ? 'true' : 'false'}" title="Update this saved login with the session you're logged in as now"><i class="fas fa-rotate"></i></span>`;
             if (s.active) {
                 // The login currently in use - shown as CURRENT and not clickable
                 // (so you don't re-switch to yourself by accident).
@@ -6837,7 +6862,7 @@ function createFloatingButton() {
                     <div class="ff-menu-item ff-swap-item ff-active no-click" title="${s.activeConfidence === 'assumed' ? 'Cookie-only login; identity could not be verified' : 'You are using this login now'}" style="cursor:default;">
                         <i class="fas fa-circle-check" style="color:#10b981;"></i>
                         <span style="font-weight:600;">${escHtml(truncateName(s.name))}</span>
-                        <span class="ff-swap-badge">${s.activeConfidence === 'assumed' ? 'LIKELY CURRENT' : 'CURRENT'}</span>
+                        <span class="ff-swap-badge">CURRENT</span>
                         ${refreshBtn}
                     </div>`;
             } else {

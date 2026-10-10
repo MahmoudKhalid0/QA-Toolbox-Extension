@@ -76,11 +76,13 @@
                     <input class="qa-dialog-input" data-f="password" type="password" placeholder="${info && info.hasPassword ? '•••••• (saved - leave empty to keep)' : 'Password'}" autocomplete="new-password" style="margin-bottom:8px;">
                     <input class="qa-dialog-input" data-f="loginUrl" placeholder="Login page address" autocomplete="off" style="margin-bottom:4px;">
                     <div style="font-size:10.5px;color:#64748b;margin:0 2px 14px;">Tip: open the login page first &mdash; its address is filled in for you.</div>
-                    <div class="qa-dialog-actions">
-                        ${info ? '<button class="qa-dialog-btn qa-dialog-cancel" data-a="remove" style="margin-right:auto;color:#f87171;">Remove</button>' : ''}
-                        <button class="qa-dialog-btn qa-dialog-cancel" data-a="cancel">Cancel</button>
-                        <button class="qa-dialog-btn qa-dialog-cancel" data-a="save">Save</button>
-                        <button class="qa-dialog-btn qa-dialog-ok" data-a="login">Save &amp; log in</button>
+                    <!-- Four buttons don't fit one row in the side panel (they wrapped and
+                         squeezed): the main action gets its own full-width row, the rest below. -->
+                    <div class="qa-dialog-actions" style="flex-wrap:wrap;">
+                        <button class="qa-dialog-btn qa-dialog-ok" data-a="login" style="flex:1 1 100%;white-space:nowrap;"><i class="fas fa-right-to-bracket" style="margin-right:6px;"></i>Save &amp; log in</button>
+                        ${info ? '<button class="qa-dialog-btn qa-dialog-cancel" data-a="remove" style="margin-right:auto;color:#f87171;white-space:nowrap;">Remove</button>' : ''}
+                        <button class="qa-dialog-btn qa-dialog-cancel" data-a="cancel" style="white-space:nowrap;${info ? '' : 'margin-left:auto;'}">Cancel</button>
+                        <button class="qa-dialog-btn qa-dialog-cancel" data-a="save" style="white-space:nowrap;">Save</button>
                     </div>
                 </div>`;
             document.body.appendChild(root);
@@ -148,7 +150,7 @@
             const card = document.createElement('div');
             card.className = 'sw-card';
             if (s.active) card.classList.add('sw-current');
-            const activeLabel = s.activeConfidence === 'assumed' ? 'Likely current' : 'Current';
+            const activeLabel = 'Current';
             const rightBtn = s.active
                 ? `<span class="sw-badge" title="${s.activeConfidence === 'assumed' ? 'Cookie-only login; identity could not be verified' : 'Verified from the page login identity'}">${activeLabel}</span>`
                 : `<button class="sw-go">Switch</button>`;

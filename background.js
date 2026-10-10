@@ -2730,10 +2730,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             SW.setCreds(request.id, null).then(sendResponse)
                 .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
             return true;
-        case 'swapRelogin':
-            SW.relogin(request.tab || (sender && sender.tab), request.id).then(sendResponse)
-                .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
+        case 'swapRelogin': {
+            // From the ⚡ menu the login navigates the very page that asked, so its reply is
+            // lost - the outcome is told to the NEW page instead (request.name = what to say).
+            const fromPage = !request.tab && sender && sender.tab;
+            const tell = (r) => {
+                if (!fromPage) return;
+                const text = r && r.ok ? `Logged in again as "${request.name || 'this user'}" - session refreshed` : 'Login failed: ' + ((r && r.error) || 'no response');
+                chrome.tabs.sendMessage(sender.tab.id, { action: 'swapNotice', ok: !!(r && r.ok), text }, () => void chrome.runtime.lastError);
+            };
+            SW.relogin(request.tab || (sender && sender.tab), request.id).then((r) => { tell(r); sendResponse(r); })
+                .catch((e) => { const r = { ok: false, error: e.message || String(e) }; tell(r); sendResponse(r); });
             return true;
+        }
     }
     return false;
 });
