@@ -4145,7 +4145,7 @@ const RV_ICON = {
 };
 
 function rvDefaultState() {
-    const s = { tabs: [], active: 1, nextTab: 1, nextScreen: 1, custom: [], zoom: 0.5, ua: 'desktop', mockup: false, layout: 'row', sync: true, touch: true, outline: false, grid: false, ruler: false, hideScroll: true };
+    const s = { tabs: [], active: 1, nextTab: 1, nextScreen: 1, custom: [], zoom: 0.5, mockup: false, layout: 'row', sync: true, touch: true, outline: false, grid: false, ruler: false, hideScroll: true };
     const mk = (name) => { const d = RV_BUILTIN.find(x => x.name === name); return { id: s.nextScreen++, name: d.name, w: d.w, h: d.h, rotated: false }; };
     s.tabs = [
         { id: s.nextTab++, name: 'Mobile', screens: [mk('iPhone 14 Pro'), mk('Pixel 7')] },
@@ -4185,7 +4185,7 @@ function openResponsiveOverlay() {
 
 let rvPrevOverflow = '';
 function rvBuildOverlay() {
-    chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true, ua: rvState.ua }).catch(() => { });
+    chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true }).catch(() => { });
     rvPrevOverflow = document.documentElement.style.overflow; // hide the page's own scrollbar behind the overlay
     document.documentElement.style.overflow = 'hidden';
     const o = document.createElement('div');
@@ -4322,7 +4322,6 @@ function rvBuildOverlay() {
             <span class="rv-zoomwrap" title="Zoom %"><input type="number" id="rv-zoom" min="10" max="200" step="5"><b>%</b></span>
             <button class="rv-btn" id="rv-fit" title="Auto-zoom so every device fits in view">Fit</button>
             <span class="rv-sep"></span>
-            <select class="rv-sel" id="rv-ua" title="User-Agent"><option value="desktop">UA: Desktop</option><option value="iphone">UA: iPhone</option><option value="android">UA: Android</option></select>
             <span class="rv-sep"></span>
             <button class="rv-btn" id="rv-mockup" title="Device frame">Mockup</button>
             <button class="rv-btn" id="rv-sync" title="Sync scroll, clicks & typing across devices">${RV_ICON.link} Sync</button>
@@ -4339,14 +4338,12 @@ function rvBuildOverlay() {
 
     o.querySelector('#rv-url').value = rvState.url;
     o.querySelector('#rv-zoom').value = Math.round(rvState.zoom * 100);
-    o.querySelector('#rv-ua').value = rvState.ua;
     o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup);
     o.querySelector('#rv-sync').classList.toggle('on', rvState.sync);
     o.querySelector('#rv-scrollbar').classList.toggle('on', !rvState.hideScroll);
     rvFillAddMenu();
     rvLoadBreakpoints();
     rvRender();
-    rvUaHint();
 
     const reloadAll = () => o.querySelectorAll('.rv-screen iframe').forEach(f => { f.src = f.src; });
     o.querySelector('#rv-go').addEventListener('click', () => {
@@ -4362,7 +4359,6 @@ function rvBuildOverlay() {
         pct = Math.max(10, Math.min(200, pct)); e.target.value = pct;
         rvState.zoom = pct / 100; rvSave(); rvApplyGeometry();
     });
-    o.querySelector('#rv-ua').addEventListener('change', (e) => { rvState.ua = e.target.value; rvSave(); rvUaHint(); chrome.runtime.sendMessage({ action: 'responsiveDnr', enable: true, ua: rvState.ua }, () => setTimeout(reloadAll, 150)); });
     o.querySelector('#rv-mockup').addEventListener('click', () => { rvState.mockup = !rvState.mockup; o.querySelector('#rv-mockup').classList.toggle('on', rvState.mockup); rvSave(); rvApplyGeometry(); });
     o.querySelector('#rv-sync').addEventListener('click', () => { rvState.sync = !rvState.sync; o.querySelector('#rv-sync').classList.toggle('on', rvState.sync); rvSave(); });
     o.querySelector('#rv-scrollbar').addEventListener('click', () => { rvState.hideScroll = !rvState.hideScroll; o.querySelector('#rv-scrollbar').classList.toggle('on', !rvState.hideScroll); rvSave(); rvWireFrames(); });
@@ -5092,15 +5088,6 @@ function rvLooksDangerous(el) {
     return [act.getAttribute('href'), act.id, act.getAttribute('aria-label'), act.getAttribute('title'), text].some((b) => b && RV_DANGER.test(b));
 }
 
-// Some sites decide mobile/desktop from the User-Agent on the SERVER - if the
-// devices are phone-sized while the UA is still Desktop, nudge the user.
-function rvUaHint() {
-    const sel = document.querySelector('#qa-rv #rv-ua'); if (!sel) return;
-    const phoneish = rvActiveTab().screens.some(s => Math.min(s.w, s.h) <= 500);
-    const warn = phoneish && rvState.ua === 'desktop';
-    sel.style.borderColor = warn ? '#f59e0b' : '';
-    sel.title = warn ? 'Tip: some sites serve different HTML per device - switch the UA to iPhone/Android for true mobile rendering' : 'User-Agent';
-}
 
 // A touch device has no hover, so moving the desktop mouse over a phone/tablet frame must
 // not fire :hover states (link colours, underlines, hover-only menus) - they misrepresent

@@ -1433,13 +1433,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     // Responsive Viewer: toggle the session rule that lets the page be framed
-    // (strip X-Frame-Options / CSP frame-ancestors) and optionally spoof the UA.
+    // (strip X-Frame-Options / CSP frame-ancestors). The UA switch was removed: a DNR rule
+    // can't tell one device frame from another in the same tab, and sites that size by
+    // CSS width (most of them) never read the UA anyway.
     if (request.action === 'responsiveDnr') {
         const RV_DNR_ID = 4801;
-        const RV_UA = {
-            iphone: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
-            android: 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
-        };
         if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateSessionRules) { sendResponse({ success: false }); return true; }
         if (!request.enable) {
             chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [RV_DNR_ID] }).then(() => sendResponse({ success: true })).catch(() => sendResponse({ success: false }));
@@ -1454,16 +1452,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 { header: 'content-security-policy-report-only', operation: 'remove' }
             ]
         };
-        if (RV_UA[request.ua]) {
-            // Modern sites decide mobile-vs-desktop from Client Hints, not just the
-            // UA string. Without these a "mobile" UA still gets the desktop layout.
-            const plat = request.ua === 'iphone' ? '"iOS"' : '"Android"';
-            action.requestHeaders = [
-                { header: 'user-agent', operation: 'set', value: RV_UA[request.ua] },
-                { header: 'sec-ch-ua-mobile', operation: 'set', value: '?1' },
-                { header: 'sec-ch-ua-platform', operation: 'set', value: plat },
-            ];
-        }
         chrome.declarativeNetRequest.updateSessionRules({
             removeRuleIds: [RV_DNR_ID],
             addRules: [{ id: RV_DNR_ID, priority: 1, action, condition: { resourceTypes: ['sub_frame'] } }]
