@@ -1194,6 +1194,53 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         const hay = [r.url, r.method, r.reqBody, r.resBody, JSON.stringify(r.reqHeaders || {}), JSON.stringify(r.resHeaders || {})];
         return hay.some((x) => x && String(x).toLowerCase().includes(q));
     }
+    // WHERE in a request the search text is - shown on its row, so you know where to look
+    function netMatchWhere(r, q) {
+        q = q.toLowerCase();
+        const has = (x) => x != null && String(x).toLowerCase().includes(q);
+        return [has(r.resBody) && 'Response', has(r.reqBody) && 'Request body', has(r.url) && 'URL',
+            (has(JSON.stringify(r.reqHeaders || {})) || has(JSON.stringify(r.resHeaders || {}))) && 'Headers'].filter(Boolean);
+    }
+
+    // Opened while searching: every hit inside the request is marked, the section with the
+    // first one opens, and ↑ ↓ walk through them (opening their section as they go).
+    function netMarkHits(detail, q) {
+        if (!q) return;
+        const ql = q.toLowerCase();
+        const roots = [...detail.querySelectorAll('.nd-url, .nd-fold')].filter((el) => !(el.matches('.nd-fold') && /^Response Preview/.test(el.querySelector('summary').textContent.trim())));
+        roots.forEach((root) => {
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.parentElement.closest('summary') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+            const nodes = []; let n; while ((n = walker.nextNode())) nodes.push(n);
+            nodes.forEach((node) => {
+                const t = node.nodeValue, tl = t.toLowerCase();
+                let i = tl.indexOf(ql); if (i < 0) return;
+                const frag = document.createDocumentFragment(); let last = 0;
+                while (i >= 0) {
+                    frag.appendChild(document.createTextNode(t.slice(last, i)));
+                    const m = document.createElement('mark'); m.className = 'nd-hit'; m.textContent = t.slice(i, i + q.length);
+                    frag.appendChild(m);
+                    last = i + q.length; i = tl.indexOf(ql, last);
+                }
+                frag.appendChild(document.createTextNode(t.slice(last)));
+                node.parentNode.replaceChild(frag, node);
+            });
+        });
+        const hits = [...detail.querySelectorAll('mark.nd-hit')];
+        if (!hits.length) return;
+        detail.insertAdjacentHTML('afterbegin', `<div class="nd-hitbar"><i class="fas fa-magnifying-glass"></i> <span class="nd-hitpos"></span>
+            <button class="nd-hitnav" data-d="-1" title="Previous match"><i class="fas fa-chevron-up"></i></button><button class="nd-hitnav" data-d="1" title="Next match"><i class="fas fa-chevron-down"></i></button></div>`);
+        let k = 0;
+        const go = (to) => {
+            k = (to + hits.length) % hits.length;
+            hits.forEach((h) => h.classList.remove('cur'));
+            const h = hits[k]; h.classList.add('cur');
+            const fold = h.closest('details'); if (fold && !fold.open) fold.open = true;   // exclusive: the others close
+            h.scrollIntoView({ block: 'center' });
+            detail.querySelector('.nd-hitpos').textContent = `${k + 1} of ${hits.length}`;
+        };
+        detail.querySelector('.nd-hitbar').addEventListener('click', (e) => { const b = e.target.closest('.nd-hitnav'); if (b) { e.stopPropagation(); go(k + +b.dataset.d); } });
+        go(0);
+    }
 
     // ── Saved requests (chrome.storage.local.qaSavedRequests) ──
     // A request kept under a name, to open and send again later without pasting it.
@@ -1319,6 +1366,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
                 <span class="net-method">${dEsc(r.method || 'GET')}</span>
                 <span class="net-status ${statusClass(r)}">${dEsc(statusLabel)}</span>${softBadge}${typeBadge}
                 <span class="net-url" title="${dEsc(netName(r.url))}" data-url="${dEsc(r.url || '')}">${dEsc(netName(r.url))}</span>
+                ${netQuery ? `<span class="net-where">${netMatchWhere(r, netQuery).map(dEsc).join(' · ')}</span>` : ''}
                 <span class="net-dur">${dEsc(dur)}</span>
                 ${isResource(r) ? '' : `<button class="net-copy net-resend" data-i="${i}" title="Edit & Resend"><i class="fas fa-paper-plane"></i></button>`}
                 <button class="net-copy" data-i="${i}" title="Copy"><i class="fas fa-copy"></i></button>
@@ -1327,6 +1375,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         }).join('');
     }
 
+    const looksJson = (t) => typeof t === 'string' && /^\s*[\[{]/.test(t);
     function prettyJson(str) {
         if (!str || typeof str !== 'string') return '';
         const t = str.trim();
@@ -1371,7 +1420,9 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         const headersH = (h) => h && Object.keys(h).length
             ? `<div class="nd-headers">` + Object.entries(h).map(([k, v]) =>
                 `<span class="nd-key">${dEsc(k)}</span><span class="nd-val">${dEsc(v)}</span>`).join('') + `</div>` : '';
-        const bodyH = (b) => { const p = prettyJson(b); return p ? highlightJson(p) : dEsc(b || ''); };
+        // A body cut short (over the capture limit) is no longer valid JSON, but it is still
+        // JSON text - colour it as it is instead of showing it plain.
+        const bodyH = (b) => { const p = prettyJson(b); return p ? highlightJson(p) : looksJson(b) ? highlightJson(b) : dEsc(b || ''); };
         const statusH = r.status === 0
             ? `<span class="net-status serr">Failed</span>${r.error ? ' — <span class="nd-err">' + dEsc(r.error) + '</span>' : ''}`
             : `<span class="net-status ${statusClass(r)}">${r.status}</span> ${dEsc(r.statusText || '')}`;
@@ -1467,10 +1518,16 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         const detail = netList().querySelector(`[data-detail="${i}"]`);
         if (!detail) return;
         if (detail.classList.contains('hidden')) {
+            // one request open at a time: opening this one closes the one before
+            netList().querySelectorAll('.net-detail:not(.hidden)').forEach((d) => { d.classList.add('hidden'); d.innerHTML = ''; });
+            netList().querySelectorAll('.net-row.open').forEach((r) => r.classList.remove('open'));
             detail.innerHTML = netDetailHtml(netFilteredCache[i]);
             detail.classList.remove('hidden');
+            row.classList.add('open');       // highlighted while open - you see where you are
+            netMarkHits(detail, netQuery);
         } else {
             detail.classList.add('hidden');
+            row.classList.remove('open');
         }
     });
 
@@ -1623,7 +1680,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         const p = prettyJson(out.text);
         return `<div class="rs-res"><div class="rs-res-head"><span class="net-status ${statusClass({ status: out.status })}">${out.status}</span> ${dEsc(out.statusText || '')} · ${ms}ms
             <button class="net-copy" id="rsCopyRes" title="Copy response" style="margin-left:auto;"><i class="fas fa-copy"></i></button></div>
-            <pre>${p ? highlightJson(p) : dEsc(out.text || '(empty)')}</pre></div>`;
+            <pre>${p ? highlightJson(p) : looksJson(out.text) ? highlightJson(out.text) : dEsc(out.text || '(empty)')}</pre></div>`;
     }
 
     // ── Paste a request ──
