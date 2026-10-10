@@ -1482,6 +1482,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // API Data Export: replay one request from the background (host permissions
     // let it read cross-origin responses that the page's own fetch could too,
     // but without a CORS wall). Used by the paginated CSV exporter.
+    // Network → Edit & Resend: the edited request is sent from INSIDE the page (MAIN world),
+    // so it carries the page's cookies/session and passes the same CORS as the app itself -
+    // exactly like pasting "Copy as fetch" into the console.
+    if (request.action === 'netResend') {
+        chrome.scripting.executeScript({
+            target: { tabId: request.tabId },
+            world: 'MAIN',
+            func: async (url, method, headers, body) => {
+                try {
+                    const o = { method, headers: headers || {}, credentials: 'include', redirect: 'follow' };
+                    if (body != null && !/^(GET|HEAD)$/i.test(method)) o.body = body;
+                    const r = await fetch(url, o);
+                    const text = await r.text();
+                    return { status: r.status, statusText: r.statusText, text: text.length > 300000 ? text.slice(0, 300000) + '\n… (truncated)' : text };
+                } catch (e) { return { status: 0, error: String((e && e.message) || e) }; }
+            },
+            args: [request.url, request.method || 'GET', request.headers || {}, request.body != null ? request.body : null]
+        }).then(([out]) => sendResponse(out && out.result))
+            .catch((e) => sendResponse({ status: 0, error: String((e && e.message) || e) }));
+        return true;
+    }
+
     if (request.action === 'apiFetch') {
         (async () => {
             // The endpoint is usually cross-origin to the page the tool runs on (the app calls

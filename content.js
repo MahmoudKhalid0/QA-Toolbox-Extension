@@ -2838,9 +2838,15 @@ function qaOpenPanel(titleHtml, tool) {
             #qa-result-panel .pf-bar { height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6); border-radius: 5px; }
             #qa-result-panel .pf-bar-v { width: 52px; text-align: right; color: #94a3b8; flex-shrink: 0; font-family: Consolas, monospace; }
             #qa-result-panel .pf-wf-cap { font-size: 10.5px; color: #64748b; margin: -2px 0 8px; }
-            #qa-result-panel .pf-wf { position: relative; padding-top: 22px; }
+            /* The chart scrolls sideways: it keeps a readable width (and room on the right for the
+               last bar's duration label) instead of squeezing into the panel; the row names stay
+               pinned on the left while it scrolls. */
+            #qa-result-panel .pf-wf-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
+            #qa-result-panel .pf-wf-scroll::-webkit-scrollbar { height: 8px; }
+            #qa-result-panel .pf-wf-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 4px; }
+            #qa-result-panel .pf-wf { position: relative; padding-top: 22px; min-width: 830px; padding-right: 64px; }
             #qa-result-panel .pf-wf-row { display: flex; align-items: center; min-height: 24px; }
-            #qa-result-panel .pf-wf-l { width: 112px; box-sizing: border-box; flex-shrink: 0; font-size: 11px; font-weight: 600; color: #cbd5e1; line-height: 1.2; padding-right: 6px; }
+            #qa-result-panel .pf-wf-l { width: 180px; box-sizing: border-box; flex-shrink: 0; font-size: 11px; font-weight: 600; color: #cbd5e1; line-height: 1.2; padding-right: 6px; position: sticky; left: 0; z-index: 3; background: #171d36; align-self: stretch; display: flex; flex-direction: column; justify-content: center; }
             #qa-result-panel .pf-wf-l small { display: block; font-size: 9.5px; font-weight: 400; color: #64748b; }
             #qa-result-panel .pf-wf-row.sub .pf-wf-l { font-weight: 400; color: #94a3b8; padding-left: 10px; border-left: 2px dotted #475569; }
             #qa-result-panel .pf-wf-track { position: relative; flex: 1; height: 24px; background: rgba(255,255,255,0.025); border-radius: 3px; }
@@ -2852,7 +2858,8 @@ function qaOpenPanel(titleHtml, tool) {
             #qa-result-panel .pf-wf-track > em { position: absolute; top: 5px; font-style: normal; font-size: 10px; color: #94a3b8; font-family: Consolas, monospace; white-space: nowrap; }
             #qa-result-panel .pf-wf-row.axis .pf-wf-track { background: none; height: 16px; }
             #qa-result-panel .pf-wf-row.axis span { position: absolute; top: 2px; transform: translateX(-50%); font-size: 9.5px; color: #64748b; white-space: nowrap; }
-            #qa-result-panel .pf-wf-ov { position: absolute; left: 112px; right: 0; top: 14px; bottom: 16px; pointer-events: none; z-index: 2; }
+            #qa-result-panel .pf-wf-row.axis span:first-child { transform: none; }   /* "0ms" not half under the pinned names */
+            #qa-result-panel .pf-wf-ov { position: absolute; left: 180px; right: 64px; top: 14px; bottom: 16px; pointer-events: none; z-index: 2; }
             #qa-result-panel .pf-wf-total { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #94a3b8; }
             #qa-result-panel .pf-wf-total::before { content: ''; position: absolute; top: -4px; left: -5px; width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
             #qa-result-panel .pf-wf-total span { position: absolute; top: -18px; right: 6px; font-size: 10.5px; color: #cbd5e1; white-space: nowrap; }
@@ -3322,11 +3329,11 @@ function perfWaterfall(t, capturedAt) {
     const when = new Date(capturedAt || Date.now());
     return `<div class="qa-grp">Navigation timings</div>
         <div class="pf-wf-cap">Captured ${when.toLocaleTimeString()} · ${when.toLocaleDateString()}</div>
-        <div class="pf-wf">
+        <div class="pf-wf-scroll"><div class="pf-wf">
             <div class="pf-wf-ov"><div class="pf-wf-total" style="left:${pct(end)}"><span>Page Load Time: <b>${perfMs(end)}</b></span></div></div>
             ${rows.map(bar).join('')}
             <div class="pf-wf-row axis"><div class="pf-wf-l"></div><div class="pf-wf-track">${ticks}</div></div>
-        </div>`;
+        </div></div>`;
 }
 
 function perfRender(body, m) {

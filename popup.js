@@ -869,7 +869,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
 
     let mode = 'console';            // 'console' | 'network'
     let netCache = [];
-    let netFilter = 'all';           // 'all' | 'failed' | 'xhr' | 'other'
+    let netFilter = 'xhr';           // 'all' | 'failed' | 'xhr' | 'other'
     let netFilteredCache = [];
     let netViewingFindings = false;
     let lastConsoleSig = '';
@@ -1155,6 +1155,16 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         updateTabBadge();
     }
 
+    // A request's NAME, like DevTools' Name column: the last part of the path
+    // (DataActionGetMyRequests), not the whole URL - the full URL is on hover.
+    function netName(url) {
+        try {
+            const u = new URL(url);
+            const last = u.pathname.split('/').filter(Boolean).pop();
+            return last ? decodeURIComponent(last) : u.host;
+        } catch (e) { return url || ''; }
+    }
+
     function netRender() {
         netViewingFindings = false;
         lastNetSig = sigOf(netCache);
@@ -1187,8 +1197,9 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
             return `<div class="net-row ${isFailed(r) ? 'failed' : ''}" data-i="${i}">
                 <span class="net-method">${dEsc(r.method || 'GET')}</span>
                 <span class="net-status ${statusClass(r)}">${dEsc(statusLabel)}</span>${typeBadge}
-                <span class="net-url" title="${dEsc(r.url || '')}">${dEsc(r.url || '')}</span>
+                <span class="net-url" title="${dEsc(r.url || '')}">${dEsc(netName(r.url))}</span>
                 <span class="net-dur">${dEsc(dur)}</span>
+                ${isResource(r) ? '' : `<button class="net-copy net-resend" data-i="${i}" title="Edit & Resend"><i class="fas fa-paper-plane"></i></button>`}
                 <button class="net-copy" data-i="${i}" title="Copy"><i class="fas fa-copy"></i></button>
             </div>
             <div class="net-detail hidden" data-detail="${i}"></div>`;
@@ -1204,20 +1215,38 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
 
     // Syntax-highlight a JSON string (input is raw text; returns safe HTML)
     function highlightJson(json) {
-        const esc = dEsc(json);
-        return esc.replace(/("(?:\\.|[^"\\])*"(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g, (m) => {
+        // Tokens are found in the RAW text and each piece escaped on its own - escaping first
+        // turned every " into &quot;, so keys and strings were never matched (never coloured).
+        const re = /("(?:\\.|[^"\\])*"(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+        const src = String(json == null ? '' : json);
+        let out = '', last = 0, m;
+        while ((m = re.exec(src))) {
+            const t = m[0];
             let cls = 'j-num';
-            if (m[0] === '"') cls = /:\s*$/.test(m) ? 'j-key' : 'j-str';
-            else if (m === 'true' || m === 'false') cls = 'j-bool';
-            else if (m === 'null') cls = 'j-null';
-            return `<span class="${cls}">${m}</span>`;
-        });
+            if (t[0] === '"') cls = /:\s*$/.test(t) ? 'j-key' : 'j-str';
+            else if (t === 'true' || t === 'false') cls = 'j-bool';
+            else if (t === 'null') cls = 'j-null';
+            // a key's ":" stays plain, like an editor shows it
+            const word = cls === 'j-key' ? t.slice(0, t.length - m[2].length) : t;
+            out += dEsc(src.slice(last, m.index)) + `<span class="${cls}">${dEsc(word)}</span>` + (cls === 'j-key' ? dEsc(m[2]) : '');
+            last = m.index + t.length;
+        }
+        return out + dEsc(src.slice(last));
     }
 
+    let netDetailSeq = 0;
     function netDetailHtml(r) {
-        const secH = (label, html) => html ? `<div class="nd-sec">${label}</div><pre>${html}</pre>` : '';
+        // Every section after the URL is a fold whose title says what is inside (status
+        // code, header count, body size). Only ONE is open at a time - opening another
+        // closes it (same details "name" = an exclusive accordion) - and the Response Body
+        // starts open, since that is what you came for.
+        const group = 'nd-' + (++netDetailSeq);
+        const fold = (label, inner, open) => `<details class="nd-fold" name="${group}"${open ? ' open' : ''}><summary class="nd-sum">${label}</summary>${inner}</details>`;
+        const size = (b) => b ? ` <span class="nd-hint">${b.length >= 1024 ? (b.length / 1024).toFixed(1) + ' KB' : b.length + ' chars'}</span>` : '';
+        const count = (h) => h && Object.keys(h).length ? ` <span class="nd-hint">${Object.keys(h).length}</span>` : '';
+        const secH = (label, html, open) => html ? fold(label, `<pre>${html}</pre>`, open) : '';
         // A section whose body is already block-level markup (a grid), not preformatted text.
-        const secBlock = (label, html) => html ? `<div class="nd-sec">${label}</div>${html}` : '';
+        const secBlock = (label, html) => html ? fold(label, html) : '';
         const headersH = (h) => h && Object.keys(h).length
             ? `<div class="nd-headers">` + Object.entries(h).map(([k, v]) =>
                 `<span class="nd-key">${dEsc(k)}</span><span class="nd-val">${dEsc(v)}</span>`).join('') + `</div>` : '';
@@ -1226,27 +1255,57 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
             ? `<span class="net-status serr">Failed</span>${r.error ? ' — <span class="nd-err">' + dEsc(r.error) + '</span>' : ''}`
             : `<span class="net-status ${statusClass(r)}">${r.status}</span> ${dEsc(r.statusText || '')}`;
         const preview = prettyJson(r.resBody);
+        const code = r.status === 0 ? '<span class="net-status serr">Failed</span>' : `<span class="net-status ${statusClass(r)}">${r.status}</span>`;
         return `<div class="nd-sec">URL</div><pre class="nd-url">${dEsc(r.url || '')}</pre>`
-            + secH('Status', statusH)
-            + secBlock('Request Headers', headersH(r.reqHeaders))
-            + secH('Request Body', bodyH(r.reqBody))
-            + secBlock('Response Headers', headersH(r.resHeaders))
-            + (preview ? secH('Preview', highlightJson(preview)) : '')
-            + secH('Response Body', bodyH(r.resBody))
-            + (r.initiator ? secBlock('Initiator', `<div class="nd-init">${dEsc(r.initiator)}</div>`) : '');
+            + secH(`Status ${code}`, statusH)
+            + secBlock('Request Headers' + count(r.reqHeaders), headersH(r.reqHeaders))
+            + secH('Request Body' + size(r.reqBody), bodyH(r.reqBody))
+            + secBlock('Response Headers' + count(r.resHeaders), headersH(r.resHeaders))
+            + (preview ? secH('Response Preview (JSON)', highlightJson(preview)) : '')
+            + secH('Response Body' + size(r.resBody), bodyH(r.resBody), true)
+            + (r.initiator ? secBlock('Initiator (what sent it)', `<div class="nd-init">${dEsc(r.initiator)}</div>`) : '');
+    }
+
+    // A request as a "Copy as fetch" snippet - the same text DevTools gives, so it can be
+    // pasted back into Network → Paste (or into the console).
+    function netAsFetch(r) {
+        const opts = { headers: r.reqHeaders || {}, method: (r.method || 'GET').toUpperCase() };
+        if (r.reqBody != null && !/^(GET|HEAD)$/.test(opts.method)) opts.body = String(r.reqBody);
+        opts.mode = 'cors'; opts.credentials = 'include';
+        return `fetch(${JSON.stringify(r.url || '')}, ${JSON.stringify(opts, null, 2)});`;
+    }
+    // 📋 opens a small menu: copy the request (to paste it back later) or the response.
+    function netCopyMenu(btn, r) {
+        document.querySelectorAll('.net-copy-menu').forEach((m) => m.remove());
+        const m = document.createElement('div');
+        m.className = 'net-copy-menu';
+        m.innerHTML = `<button data-c="fetch"><i class="fas fa-code"></i> Copy as fetch</button>
+            <button data-c="res"><i class="fas fa-reply"></i> Copy response</button>`;
+        document.body.appendChild(m);
+        const b = btn.getBoundingClientRect();
+        m.style.top = Math.min(b.bottom + 4, window.innerHeight - m.offsetHeight - 6) + 'px';
+        m.style.left = Math.max(6, b.right - m.offsetWidth) + 'px';
+        const close = () => { m.remove(); document.removeEventListener('click', close, true); };
+        setTimeout(() => document.addEventListener('click', close, true), 0);
+        m.addEventListener('click', (ev) => {
+            const c = ev.target.closest('[data-c]'); if (!c) return;
+            const txt = c.dataset.c === 'fetch' ? netAsFetch(r)
+                : `${r.method} ${r.url}\nStatus: ${r.status === 0 ? 'Failed ' + (r.error || '') : r.status + ' ' + (r.statusText || '')}\n\nResponse:\n${r.resBody || ''}`;
+            navigator.clipboard.writeText(txt).then(() => {
+                const o = btn.innerHTML; btn.innerHTML = '<i class="fas fa-check"></i>';
+                setTimeout(() => { btn.innerHTML = o; }, 1200);
+            }).catch(() => { });
+        });
     }
 
     netList().addEventListener('click', (e) => {
+        const resend = e.target.closest('.net-resend');
+        if (resend) { e.stopPropagation(); const r = netFilteredCache[+resend.dataset.i]; if (r) rsOpen(r); return; }
         const copy = e.target.closest('.net-copy');
         if (copy) {
             e.stopPropagation();
             const r = netFilteredCache[+copy.dataset.i];
-            if (!r) return;
-            const txt = `${r.method} ${r.url}\nStatus: ${r.status === 0 ? 'Failed ' + (r.error || '') : r.status + ' ' + (r.statusText || '')}\n\nResponse:\n${r.resBody || ''}`;
-            navigator.clipboard.writeText(txt).then(() => {
-                const o = copy.innerHTML; copy.innerHTML = '<i class="fas fa-check"></i>';
-                setTimeout(() => { copy.innerHTML = o; }, 1200);
-            }).catch(() => { });
+            if (r) netCopyMenu(copy, r);
             return;
         }
         const row = e.target.closest('.net-row');
@@ -1260,6 +1319,328 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         } else {
             detail.classList.add('hidden');
         }
+    });
+
+    // ── Edit & Resend ──
+    // A captured request opens as plain fields: every URL parameter and every value of a
+    // JSON / form body is its own box, so changing a value needs no JSON editing. It is
+    // sent from INSIDE the page (its cookies, session and CORS apply - like pasting
+    // "Copy as fetch" into the console) and the answer shows right below.
+    const rsModal = () => document.getElementById('rsModal');
+    let rs = null;   // { r, kind: 'json'|'form'|'text'|'none', json, fields }
+
+    // JSON body -> its leaf values [{ path: ['a', 0, 'b'], value, type }]
+    // OutSystems sends its whole screen state - hundreds of values - so the limit is high
+    const RS_MAX_FIELDS = 3000;
+    function rsFlatten(v, path, out) {
+        if (out.length > RS_MAX_FIELDS) return out;
+        if (v && typeof v === 'object' && Object.keys(v).length) {
+            Object.keys(v).forEach((k) => rsFlatten(v[k], path.concat(Array.isArray(v) ? +k : k), out));
+        } else out.push({ path, value: v, type: v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v });
+        return out;
+    }
+    const rsPathLabel = (p) => p.map((k, i) => typeof k === 'number' ? `[${k}]` : (i ? '.' : '') + k).join('') || '(value)';
+    const rsShow = (v, type) => type === 'null' ? 'null' : (type === 'object' || type === 'array') ? JSON.stringify(v) : String(v);
+    // The edited text goes back as the ORIGINAL type: 5 stays a number, true a boolean.
+    function rsParse(text, type) {
+        if (type === 'number') return text.trim() !== '' && !isNaN(+text) ? +text : text;
+        if (type === 'boolean') return text === 'true' ? true : text === 'false' ? false : text;
+        if (type === 'null') return text === 'null' ? null : text;
+        if (type === 'object' || type === 'array') { try { return JSON.parse(text); } catch (e) { return text; } }
+        return text;
+    }
+
+    function rsRow(key, val, opts = {}) {
+        const keyH = opts.editKey
+            ? `<input class="rs-in rs-k" value="${dEsc(key)}" placeholder="name">`
+            : `<span class="rs-key${opts.indent ? ' rs-indent' : ''}" title="${dEsc(opts.title || key)}">${dEsc(key)}</span>`;
+        return `${keyH}<input class="rs-in rs-v" value="${dEsc(val)}" ${opts.isNew ? '' : `data-orig="${dEsc(val)}"`} ${opts.attrs || ''}>`
+            + `<button class="rs-x" title="Remove"><i class="fas fa-xmark"></i></button>`;
+    }
+
+    // Long paths are grouped: the shared part (screenData › variables) is one small
+    // heading, each box shows only its last name; the full path is on hover.
+    function rsJsonGrid(fields) {
+        let group = null;
+        return `<div class="rs-grid" id="rsBodyGrid">` + fields.map((f, i) => {
+            const parent = f.path.slice(0, -1);
+            const g = parent.map((k) => typeof k === 'number' ? `[${k}]` : k).join(' › ');
+            const head = g !== group ? (group = g, g ? `<div class="rs-group" title="${dEsc(rsPathLabel(parent))}">${dEsc(g)}</div>` : '') : '';
+            const last = f.path[f.path.length - 1];
+            const name = !f.path.length ? '(value)' : typeof last === 'number' ? `[${last}]` : last;
+            return head + rsRow(name, rsShow(f.value, f.type), { attrs: `data-f="${i}"`, title: rsPathLabel(f.path), indent: !!g });
+        }).join('') + `</div>`;
+    }
+
+    function rsOpen(r) {
+        let u = null; try { u = new URL(r.url); } catch (e) { }
+        const body = r.reqBody == null ? '' : String(r.reqBody);
+        const truncated = /… \(truncated\)$/.test(body) || /^\[(Blob|body|unserializable)/.test(body);
+        const ct = Object.entries(r.reqHeaders || {}).find(([k]) => k.toLowerCase() === 'content-type');
+        rs = { r, kind: body ? 'text' : 'none', json: null, fields: [] };
+        if (body && !truncated) {
+            try { const j = JSON.parse(body); if (j && typeof j === 'object') { rs.kind = 'json'; rs.json = j; } } catch (e) { }
+            if (rs.kind === 'text' && ((ct && /x-www-form-urlencoded/i.test(ct[1])) || /^[^=&\s{}\[\]]+=[^&]*(&[^=&\s]+=[^&]*)*$/.test(body))) rs.kind = 'form';
+        }
+        if (rs.kind === 'json') {
+            rs.fields = rsFlatten(rs.json, [], []);
+            if (rs.fields.length > RS_MAX_FIELDS) rs.kind = 'text';   // too many values for boxes
+        }
+        let bodyH = '';
+        if (rs.kind === 'json') bodyH = rsJsonGrid(rs.fields);
+        else if (rs.kind === 'form') bodyH = `<div class="rs-grid" id="rsBodyGrid">` + [...new URLSearchParams(body).entries()].map(([k, v]) => rsRow(k, v, { editKey: true })).join('') + `</div>`;
+        else if (rs.kind === 'text') bodyH = rsCodeArea('rsBodyText', body);
+        // a text body that IS JSON can always go to the fields (and back)
+        let jsonText = false;
+        if (rs.kind === 'text') { try { const j = JSON.parse(body); jsonText = !!j && typeof j === 'object'; } catch (e) { } }
+        const bodyBtn = rs.kind === 'json' ? '<button id="rsAsText">Edit as text</button>' : jsonText ? '<button id="rsAsFields">Edit as fields</button>' : rs.kind === 'form' ? '<button class="rs-add" data-add="rsBodyGrid">+ Add</button>' : '';
+        const bodySec = rs.kind === 'none' ? '' : `<div class="rs-sec"><span>Body</span>${bodyBtn}</div>${bodyH}`
+            + (truncated ? '<div class="rs-note"><i class="fas fa-triangle-exclamation"></i> This body was not captured in full - check it before sending.</div>' : '');
+        const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+        const m = (r.method || 'GET').toUpperCase();
+        if (!methods.includes(m)) methods.push(m);
+        const params = u ? [...u.searchParams.entries()] : [];
+        const hdrs = Object.entries(r.reqHeaders || {});
+        document.getElementById('rsBody').innerHTML = `
+            <div class="rs-line">
+                <select id="rsMethod">${methods.map((x) => `<option${x === m ? ' selected' : ''}>${x}</option>`).join('')}</select>
+                <input class="rs-in rs-url" id="rsUrl" value="${dEsc(u ? u.origin + u.pathname : r.url || '')}">
+            </div>
+            <div class="rs-sec"><span>URL parameters</span><button class="rs-add" data-add="rsParams">+ Add</button></div>
+            <div class="rs-grid" id="rsParams">${params.map(([k, v]) => rsRow(k, v, { editKey: true })).join('')}</div>
+            ${params.length ? '' : '<div class="rs-empty">None</div>'}
+            ${bodySec}
+            <details class="rs-hdrs"><summary>Headers (${hdrs.length})</summary>
+                <div class="rs-grid" id="rsHeaders">${hdrs.map(([k, v]) => rsRow(k, v, { editKey: true })).join('')}</div>
+                <div style="text-align:right;margin-top:4px;"><button class="rs-add" data-add="rsHeaders">+ Add header</button></div>
+            </details>
+            <div class="rs-actions">
+                <button class="rs-send" id="rsSend" title="Send it from here and show the answer below"><i class="fas fa-paper-plane"></i> Send</button>
+                <button class="dbg-btn" id="rsReset" title="Back to the original values"><i class="fas fa-rotate-left"></i> Reset</button>
+            </div>
+            <div id="rsResult"></div>`;
+        rsModal().classList.remove('hidden');
+    }
+
+    // [key, value] pairs of a box grid (rows with an empty name are skipped)
+    const rsPairs = (id) => [...document.querySelectorAll(`#${id} .rs-v`)].map((v) => {
+        const k = v.previousElementSibling;
+        return [k.tagName === 'INPUT' ? k.value.trim() : k.textContent, v.value];
+    }).filter(([k]) => k);
+
+    function rsBuild() {
+        const method = document.getElementById('rsMethod').value;
+        let url = document.getElementById('rsUrl').value.trim();
+        try { const u = new URL(url); u.search = ''; rsPairs('rsParams').forEach(([k, v]) => u.searchParams.append(k, v)); url = u.href; } catch (e) { throw new Error('The URL is not valid'); }
+        const headers = {};
+        rsPairs('rsHeaders').forEach(([k, v]) => { headers[k] = v; });
+        let body = null;
+        const textEl = document.getElementById('rsBodyText');
+        if (textEl) body = textEl.value;
+        else if (rs.kind === 'json') {
+            const out = JSON.parse(JSON.stringify(rs.json));
+            const kept = new Set();
+            let root;
+            document.querySelectorAll('#rsBodyGrid .rs-v').forEach((inp) => {
+                const i = +inp.dataset.f, f = rs.fields[i]; kept.add(i);
+                const val = rsParse(inp.value, f.type);
+                if (!f.path.length) { root = val; return; }
+                let o = out; f.path.slice(0, -1).forEach((k) => { o = o[k]; });
+                o[f.path[f.path.length - 1]] = val;
+            });
+            // a removed box removes that value from the body (array items last-to-first)
+            rs.fields.map((f, i) => [f, i]).filter(([, i]) => !kept.has(i)).reverse().forEach(([f]) => {
+                if (!f.path.length) return;
+                let o = out; f.path.slice(0, -1).forEach((k) => { o = o && o[k]; });
+                if (!o) return;
+                const last = f.path[f.path.length - 1];
+                if (Array.isArray(o)) o.splice(last, 1); else delete o[last];
+            });
+            body = JSON.stringify(root !== undefined ? root : out);
+        } else if (rs.kind === 'form') body = new URLSearchParams(rsPairs('rsBodyGrid')).toString();
+        if (/^(GET|HEAD)$/i.test(method)) body = null;
+        return { method, url, headers, body };
+    }
+
+    function rsResultHtml(out, ms) {
+        if (!out) return `<div class="rs-res"><span class="nd-err">Could not send the request from this page.</span></div>`;
+        if (out.status === 0) return `<div class="rs-res"><div class="rs-res-head"><span class="net-status serr">Failed</span> ${ms}ms</div><pre class="nd-err">${dEsc(out.error || 'Network error')}</pre></div>`;
+        const p = prettyJson(out.text);
+        return `<div class="rs-res"><div class="rs-res-head"><span class="net-status ${statusClass({ status: out.status })}">${out.status}</span> ${dEsc(out.statusText || '')} · ${ms}ms
+            <button class="net-copy" id="rsCopyRes" title="Copy response" style="margin-left:auto;"><i class="fas fa-copy"></i></button></div>
+            <pre>${p ? highlightJson(p) : dEsc(out.text || '(empty)')}</pre></div>`;
+    }
+
+    // ── Paste a request ──
+    // DevTools → Network → right-click → Copy → "Copy as fetch" or "Copy as cURL" (bash or
+    // cmd). It opens in the same Edit & Resend window, with every detail filled in.
+    // Headers the browser sets by itself (cookie, host, sec-*…) are dropped - a page fetch
+    // can't set them anyway, and the page's own cookies go along on their own.
+    const RS_SKIP = /^(host|connection|content-length|cookie|origin|referer|user-agent|accept-encoding|te|priority|dnt|upgrade-insecure-requests|sec-.*)$/i;
+
+    function rsParseFetch(text) {
+        const m = text.match(/fetch\(\s*(["'`])([\s\S]*?)\1\s*(,\s*([\s\S]*?))?\)\s*;?\s*$/);
+        if (!m) return null;
+        let opts = {};
+        if (m[4]) { try { opts = JSON.parse(m[4]); } catch (e) { throw new Error('Could not read the fetch options - paste the exact "Copy as fetch" text.'); } }
+        return { url: m[2], method: (opts.method || 'GET').toUpperCase(), headers: opts.headers || {}, body: opts.body != null ? String(opts.body) : null };
+    }
+
+    // shell words of a cURL command: '...', "...", $'...', \-newline (bash) and ^ (cmd)
+    function rsShellWords(text) {
+        const cmd = /\^\s*\r?\n/.test(text) || /\^"/.test(text);
+        text = cmd ? text.replace(/\^\s*\r?\n/g, ' ').replace(/\^(.)/g, '$1') : text.replace(/\\\r?\n/g, ' ');
+        const out = []; let i = 0;
+        while (i < text.length) {
+            while (i < text.length && /\s/.test(text[i])) i++;
+            if (i >= text.length) break;
+            let w = '';
+            while (i < text.length && !/\s/.test(text[i])) {
+                const c = text[i];
+                if (c === "'" ) { const j = text.indexOf("'", i + 1); w += text.slice(i + 1, j < 0 ? text.length : j); i = j < 0 ? text.length : j + 1; }
+                else if (c === '$' && text[i + 1] === "'") {
+                    i += 2;
+                    while (i < text.length && text[i] !== "'") {
+                        if (text[i] === '\\' && i + 1 < text.length) {
+                            const n = text[i + 1]; const map = { n: '\n', t: '\t', r: '\r', "'": "'", '\\': '\\', '"': '"' };
+                            if (n === 'u' || n === 'x') { const len = n === 'u' ? 4 : 2; w += String.fromCharCode(parseInt(text.substr(i + 2, len), 16)); i += 2 + len; }
+                            else { w += map[n] != null ? map[n] : n; i += 2; }
+                        } else w += text[i++];
+                    }
+                    i++;
+                }
+                else if (c === '"') {
+                    i++;
+                    while (i < text.length && text[i] !== '"') { if (text[i] === '\\' && (cmd ? text[i + 1] === '"' : /["\\$`]/.test(text[i + 1]))) i++; w += text[i++]; }
+                    i++;
+                }
+                else { w += c; i++; }
+            }
+            out.push(w);
+        }
+        return out;
+    }
+
+    function rsParseCurl(text) {
+        if (!/^\s*curl(\.exe)?\s/i.test(text)) return null;
+        const w = rsShellWords(text.trim());
+        let url = '', method = '', body = null; const headers = {};
+        for (let i = 1; i < w.length; i++) {
+            const a = w[i];
+            if (a === '-H' || a === '--header') { const h = w[++i] || ''; const k = h.indexOf(':'); if (k > 0) headers[h.slice(0, k).trim()] = h.slice(k + 1).trim(); }
+            else if (a === '-X' || a === '--request') method = (w[++i] || '').toUpperCase();
+            else if (/^(--data|--data-raw|--data-binary|--data-ascii|--data-urlencode|-d)$/.test(a)) { const d = w[++i] || ''; body = body == null ? d : body + '&' + d; }
+            else if (a === '-b' || a === '--cookie' || a === '-A' || a === '--user-agent' || a === '-e' || a === '--referer' || a === '-u' || a === '--user') i++;
+            else if (a === '--url') url = w[++i] || '';
+            else if (!a.startsWith('-') && !url) url = a;
+        }
+        if (!url) throw new Error('No URL found in the cURL command.');
+        return { url, method: method || (body != null ? 'POST' : 'GET'), headers, body };
+    }
+
+    function rsParsePasted(text) {
+        text = (text || '').trim();
+        if (!text) throw new Error('Paste a request first.');
+        const p = rsParseFetch(text) || rsParseCurl(text)
+            || (/^https?:\/\/\S+$/i.test(text) ? { url: text, method: 'GET', headers: {}, body: null } : null);
+        if (!p) throw new Error('Not recognized. In DevTools → Network, right-click the request → Copy → "Copy as fetch" or "Copy as cURL".');
+        try { new URL(p.url); } catch (e) { throw new Error('The URL in it is not a full address (https://…).'); }
+        const reqHeaders = {};
+        Object.entries(p.headers || {}).forEach(([k, v]) => { if (!RS_SKIP.test(k)) reqHeaders[k] = String(v); });
+        return { method: p.method, url: p.url, reqHeaders, reqBody: p.body, pasted: true };
+    }
+
+    // A text box with JSON colours: the coloured copy sits right behind a transparent
+    // textarea (same font, padding and wrapping), redrawn on every keystroke.
+    function rsCodeArea(id, value, attrs = '') {
+        return `<div class="rs-code"><pre class="rs-hl" aria-hidden="true">${highlightJson(value || '')}\n</pre>`
+            + `<textarea class="rs-text rs-code-in" id="${id}" spellcheck="false" ${attrs}>${dEsc(value || '')}</textarea></div>`;
+    }
+    const rsHlSync = (ta) => { const pre = ta.previousElementSibling; pre.innerHTML = highlightJson(ta.value) + '\n'; pre.scrollTop = ta.scrollTop; };
+
+    function rsPasteView() {
+        document.getElementById('rsBody').innerHTML = `
+            <div class="rs-sec" style="margin-top:0;"><span>Paste the request</span></div>
+            ${rsCodeArea('rsPasteIn', '', `style="min-height:170px;" placeholder='DevTools → Network → right-click the request → Copy → "Copy as fetch" (or "Copy as cURL") - then paste it here'`)}
+            <div class="rs-actions"><button class="rs-send" id="rsPasteGo"><i class="fas fa-arrow-right"></i> Open</button></div>
+            <div id="rsPasteErr"></div>`;
+        rsModal().classList.remove('hidden');
+        setTimeout(() => { const t = document.getElementById('rsPasteIn'); if (t) t.focus(); }, 0);
+    }
+    document.getElementById('netPasteBtn').addEventListener('click', rsPasteView);
+
+    rsModal().addEventListener('click', async (e) => {
+        if (e.target.closest('#rsPasteGo')) {
+            try { rsOpen(rsParsePasted(document.getElementById('rsPasteIn').value)); }
+            catch (err) { document.getElementById('rsPasteErr').innerHTML = `<div class="rs-res"><span class="nd-err">${dEsc(err.message)}</span></div>`; }
+            return;
+        }
+        if (e.target.id === 'rsModal' || e.target.closest('#rsClose')) { rsModal().classList.add('hidden'); return; }
+        const x = e.target.closest('.rs-x');
+        if (x) { const v = x.previousElementSibling, k = v.previousElementSibling; [k, v, x].forEach((n) => n.remove()); return; }
+        const add = e.target.closest('.rs-add');
+        if (add) {
+            const g = document.getElementById(add.dataset.add);
+            g.insertAdjacentHTML('beforeend', rsRow('', '', { editKey: true, isNew: true }));
+            g.querySelectorAll('.rs-k')[g.querySelectorAll('.rs-k').length - 1].focus();
+            return;
+        }
+        if (e.target.closest('#rsReset')) return rsOpen(rs.r);
+        if (e.target.closest('#rsAsText')) {
+            let txt;
+            try { txt = JSON.stringify(JSON.parse(rsBuild().body || JSON.stringify(rs.json)), null, 2); } catch (err) { txt = JSON.stringify(rs.json, null, 2); }
+            rs.kind = 'text';
+            document.getElementById('rsBodyGrid').outerHTML = rsCodeArea('rsBodyText', txt);
+            e.target.closest('#rsAsText').outerHTML = '<button id="rsAsFields">Edit as fields</button>';
+            return;
+        }
+        // back from text to the boxes - the text (with its edits) becomes the new body
+        if (e.target.closest('#rsAsFields')) {
+            const ta = document.getElementById('rsBodyText');
+            let j;
+            try { j = JSON.parse(ta.value); } catch (err) { j = null; }
+            const note = document.getElementById('rsJsonErr');
+            if (!j || typeof j !== 'object') {
+                if (!note) ta.closest('.rs-code').insertAdjacentHTML('afterend', '<div class="rs-note" id="rsJsonErr"><i class="fas fa-triangle-exclamation"></i> The text is not valid JSON - fix it to go back to the fields.</div>');
+                return;
+            }
+            if (note) note.remove();
+            const fields = rsFlatten(j, [], []);
+            if (fields.length > RS_MAX_FIELDS) {
+                if (!note) ta.closest('.rs-code').insertAdjacentHTML('afterend', `<div class="rs-note" id="rsJsonErr"><i class="fas fa-triangle-exclamation"></i> Too many values to show as fields (over ${RS_MAX_FIELDS}) - edit it as text.</div>`);
+                return;
+            }
+            rs.kind = 'json'; rs.json = j; rs.fields = fields;
+            ta.closest('.rs-code').outerHTML = rsJsonGrid(rs.fields);
+            e.target.closest('#rsAsFields').outerHTML = '<button id="rsAsText">Edit as text</button>';
+            return;
+        }
+        if (e.target.closest('#rsCopyRes')) {
+            const pre = document.querySelector('#rsResult pre');
+            navigator.clipboard.writeText(pre ? pre.textContent : '').catch(() => { });
+            return;
+        }
+        if (e.target.closest('#rsSend')) {
+            const btn = document.getElementById('rsSend'), res = document.getElementById('rsResult');
+            let req;
+            try { req = rsBuild(); } catch (err) { res.innerHTML = `<div class="rs-res"><span class="nd-err">${dEsc(err.message)}</span></div>`; return; }
+            const id = await activeTabId(); if (id == null) return;
+            btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…';
+            const t0 = Date.now();
+            chrome.runtime.sendMessage({ action: 'netResend', tabId: id, ...req }, (out) => {
+                void chrome.runtime.lastError;
+                btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send';
+                res.innerHTML = rsResultHtml(out, Date.now() - t0);
+            });
+        }
+    });
+    // keep a coloured box's colours in step with its text and its scrolling
+    rsModal().addEventListener('scroll', (e) => { if (e.target.classList && e.target.classList.contains('rs-code-in')) e.target.previousElementSibling.scrollTop = e.target.scrollTop; }, true);
+    // a changed value is outlined, so it's clear what differs from the original request
+    rsModal().addEventListener('input', (e) => {
+        if (e.target.classList.contains('rs-code-in')) { rsHlSync(e.target); return; }
+        const v = e.target.closest('.rs-v');
+        if (v && v.dataset.orig != null) v.classList.toggle('changed', v.value !== v.dataset.orig);
     });
 
     document.querySelectorAll('.net-filter').forEach(b => b.addEventListener('click', () => {

@@ -383,6 +383,59 @@
             font-size: 10px; font-weight: 600; color: #c4b5fd;
         }
 
+        /* 📋 menu on a Network row */
+        .net-copy-menu { position: fixed; z-index: 200; background: #17151f; border: 1px solid #2a2738; border-radius: 10px; padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.55); display: flex; flex-direction: column; min-width: 150px; }
+        .net-copy-menu button { background: none; border: none; color: #e2e8f0; text-align: left; padding: 7px 10px; border-radius: 7px; cursor: pointer; font-size: 12px; font-family: inherit; display: flex; gap: 8px; align-items: center; }
+        .net-copy-menu button:hover { background: rgba(99,102,241,0.2); color: #fff; }
+        .net-copy-menu i { width: 13px; color: #a5b4fc; }
+
+        /* Edit & Resend (Debug → Network) */
+        #rsBody { font-size: 12px; color: #e2e8f0; }
+        .rs-line { display: flex; gap: 6px; }
+        .rs-line select, .rs-in, .rs-text { background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); color: #e2e8f0; border-radius: 7px; padding: 6px 8px; font: 12px Consolas, monospace; min-width: 0; }
+        .rs-line select { flex: 0 0 auto; color: #a5b4fc; font-weight: 700; }
+        /* the open list is drawn by the OS - without these its items were light text on white */
+        .rs-line select { color-scheme: dark; }
+        .rs-line select option { background: #14142b; color: #e2e8f0; }
+        .rs-in:focus, .rs-text:focus, .rs-line select:focus { outline: none; border-color: #6366f1; }
+        .rs-in.changed { border-color: #f59e0b; background: rgba(245,158,11,0.08); }
+        .rs-url { flex: 1; }
+        .rs-sec { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 6px; color: #7c8aa0; text-transform: uppercase; font-size: 9.5px; font-weight: 700; letter-spacing: .7px; }
+        .rs-sec button, .rs-add { background: none; border: none; color: #a5b4fc; cursor: pointer; font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; font-family: inherit; }
+        .rs-grid { display: grid; grid-template-columns: minmax(80px, 38%) 1fr 22px; gap: 4px 6px; align-items: center; }
+        .rs-key { color: #7dd3fc; font: 11.5px Consolas, monospace; word-break: break-all; }
+        .rs-grid .rs-in.rs-k { color: #7dd3fc; }
+        .rs-group { grid-column: 1 / -1; color: #a5b4fc; font-size: 11px; font-weight: 600; margin-top: 6px; padding-bottom: 2px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .rs-group:first-child { margin-top: 0; }
+        .rs-key.rs-indent { padding-left: 12px; }
+        .rs-x { background: none; border: none; color: #64748b; cursor: pointer; padding: 0; }
+        .rs-x:hover { color: #f87171; }
+        .rs-text { width: 100%; min-height: 110px; resize: vertical; }
+        .rs-note { color: #fcd34d; font-size: 11px; margin-top: 4px; }
+        .rs-empty { color: #64748b; font-size: 11px; }
+        .rs-actions { display: flex; gap: 8px; margin-top: 14px; }
+        .rs-send { flex: 1; border: none; border-radius: 9px; padding: 9px; font-size: 13px; font-weight: 600; font-family: inherit; color: #fff; cursor: pointer; background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+        .rs-send:disabled { opacity: .6; cursor: default; }
+        .rs-res { margin-top: 14px; background: rgba(0,0,0,0.28); border-radius: 10px; padding: 10px 12px; }
+        .rs-res-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 11px; color: #94a3b8; }
+        .rs-res-head .net-status { font-size: 13px; }
+        .rs-res pre { white-space: pre-wrap; word-break: break-word; color: #cbd5e1; line-height: 1.5; margin: 0; max-height: 260px; overflow: auto; font: 11px Consolas, monospace; }
+        .rs-res .nd-err { color: #fca5a5; }
+        .rs-res .j-key, .rs-hl .j-key { color: #f87171; } .rs-res .j-str, .rs-hl .j-str { color: #86efac; } .rs-res .j-num, .rs-hl .j-num { color: #fcd34d; } .rs-res .j-bool, .rs-hl .j-bool { color: #c084fc; } .rs-res .j-null, .rs-hl .j-null { color: #94a3b8; }
+        /* coloured text box: the highlighted <pre> sits exactly behind a transparent textarea */
+        .rs-code { position: relative; }
+        .rs-code .rs-text, .rs-code .rs-hl { font: 12px/1.5 Consolas, monospace; padding: 6px 8px; border: 1px solid transparent; border-radius: 7px; box-sizing: border-box;
+            white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; tab-size: 4; letter-spacing: 0; overflow-y: scroll; }
+        .rs-code .rs-text { position: relative; z-index: 1; display: block; color: transparent; background: transparent; caret-color: #e2e8f0; border-color: rgba(255,255,255,0.12); }
+        .rs-code .rs-text::selection { background: rgba(99,102,241,0.45); color: transparent; }
+        .rs-code .rs-text::placeholder { color: #64748b; }
+        .rs-code .rs-hl { position: absolute; inset: 0; margin: 0; color: #e2e8f0; background: rgba(0,0,0,0.3); pointer-events: none; }
+        /* same 8px scrollbar on both, the pre's invisible - so both wrap at the same width */
+        .rs-code .rs-hl::-webkit-scrollbar { width: 8px; } .rs-code .rs-hl::-webkit-scrollbar-thumb { background: transparent; }
+        .rs-code .rs-text::-webkit-scrollbar { width: 8px; }
+        .rs-code .rs-text::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 4px; }
+        details.rs-hdrs summary { cursor: pointer; color: #7c8aa0; text-transform: uppercase; font-size: 9.5px; font-weight: 700; letter-spacing: .7px; margin: 14px 0 6px; }
+
         /* Results modal (Security / Link Health) */
         .res-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); z-index: 100; display: flex; align-items: flex-end; }
         .res-modal.hidden { display: none; }
@@ -684,7 +737,7 @@
         .net-type-media { background: rgba(251,146,60,0.20); color: #fdba74; }
         .net-type-fetch { background: rgba(129,140,248,0.22); color: #a5b4fc; }
         .net-type-xhr { background: rgba(45,212,191,0.20); color: #5eead4; }
-        .net-url { flex: 1; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+        .net-url { flex: 1; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
         .net-dur { color: #64748b; font-size: 10.5px; white-space: nowrap; }
         .net-copy { background: rgba(255,255,255,0.08); border: none; color: rgba(255,255,255,0.6); cursor: pointer; border-radius: 5px; width: 22px; height: 20px; flex-shrink: 0; font-size: 10px; }
         .net-copy:hover { background: rgba(255,255,255,0.2); color: #fff; }
@@ -694,6 +747,16 @@
         .net-detail .nd-sec { color: #7c8aa0; text-transform: uppercase; font-size: 9.5px; font-weight: 700; letter-spacing: .7px;
             margin: 12px 0 5px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,0.07); }
         .net-detail .nd-sec:first-child { margin-top: 4px; padding-top: 0; border-top: 0; }
+        /* Collapsed sections: a clear, clickable title bar with a chevron */
+        .net-detail .nd-fold { margin-top: 6px; border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; background: rgba(255,255,255,0.02); }
+        .net-detail .nd-fold > :not(summary) { margin: 0 10px 10px; }
+        .net-detail .nd-sum { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+            color: #c7d2fe; font: 600 12px -apple-system, "Segoe UI", sans-serif; user-select: none; }
+        .net-detail .nd-sum::-webkit-details-marker { display: none; }
+        .net-detail .nd-sum::before { content: '▸'; color: #818cf8; font-size: 11px; transition: transform .15s; }
+        .net-detail .nd-fold[open] > .nd-sum::before { transform: rotate(90deg); }
+        .net-detail .nd-sum:hover { color: #fff; background: rgba(99,102,241,0.12); border-radius: 8px; }
+        .net-detail .nd-hint { margin-left: auto; color: #7c8aa0; font-weight: 500; font-size: 11px; }
         .net-detail pre { white-space: pre-wrap; word-break: break-word; color: #cbd5e1; line-height: 1.55; margin: 0; max-height: 200px; overflow: auto; }
         /* Headers as an aligned key/value grid, not a wall of text */
         .net-detail .nd-headers { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 2px 12px; align-items: baseline; }
@@ -710,11 +773,11 @@
         .net-detail pre::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 4px; }
         .net-detail pre::-webkit-scrollbar-track { background: transparent; }
         /* JSON syntax highlight */
-        .net-detail .j-key { color: #7dd3fc; }
+        .net-detail .j-key { color: #f87171; }
         .net-detail .j-str { color: #86efac; }
         .net-detail .j-num { color: #fcd34d; }
         .net-detail .j-bool { color: #c084fc; }
-        .net-detail .j-null { color: #fca5a5; }
+        .net-detail .j-null { color: #94a3b8; }
 
         .tools-coming {
             border: 1px dashed rgba(255, 255, 255, 0.15);
@@ -2004,18 +2067,30 @@
                 <div id="dbg-network-panel" class="hidden">
                     <div class="dbg-toolbar">
                         <div class="dbg-filters">
-                            <button class="net-filter active" data-nf="all">All <span id="net-c-all">0</span></button>
+                            <button class="net-filter" data-nf="all">All <span id="net-c-all">0</span></button>
                             <button class="net-filter" data-nf="failed">Failed <span id="net-c-failed">0</span></button>
-                            <button class="net-filter" data-nf="xhr">XHR/Fetch <span id="net-c-xhr">0</span></button>
+                            <button class="net-filter active" data-nf="xhr">XHR/Fetch <span id="net-c-xhr">0</span></button>
                             <button class="net-filter" data-nf="other">Other <span id="net-c-other">0</span></button>
                         </div>
                         <div class="dbg-actions">
                             <button class="dbg-btn dbg-explain" id="netExplainBtn"><i class="fas fa-wand-magic-sparkles"></i> Explain &amp; Fix</button>
+                            <button class="dbg-btn" id="netPasteBtn" title="Paste a request (Copy as fetch / Copy as cURL) to edit and send it"><i class="fas fa-paste"></i> Paste</button>
                             <button class="dbg-btn" id="netClearBtn" title="Clear"><i class="fas fa-trash"></i></button>
                         </div>
                     </div>
                     <div class="dbg-status" id="netStatus"></div>
                     <div class="dbg-list" id="netList"></div>
+                </div>
+
+                <!-- Edit & Resend: replay a captured request with changed values -->
+                <div class="res-modal hidden" id="rsModal">
+                    <div class="res-modal-box">
+                        <div class="res-modal-head">
+                            <h3><i class="fas fa-paper-plane"></i> Edit &amp; Resend</h3>
+                            <button class="dbg-btn" id="rsClose" title="Close"><i class="fas fa-xmark"></i></button>
+                        </div>
+                        <div class="res-modal-body" id="rsBody"></div>
+                    </div>
                 </div>
             </div>
 

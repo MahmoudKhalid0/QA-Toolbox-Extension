@@ -13,7 +13,7 @@
     const origSetHeader = XHR.setRequestHeader;
 
     const MAX_BODY = 4000;       // cap stored response body
-    const MAX_REQ_BODY = 2000;   // cap stored request body
+    const MAX_REQ_BODY = 100000; // cap stored request body (kept whole, so Edit & Resend can send it)
     const MAX_READ = 200 * 1024; // never read a response body bigger than this
     const FLUSH_MS = 400;
     const MAX_QUEUE = 200;
