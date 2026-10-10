@@ -869,7 +869,13 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
 
     let mode = 'console';            // 'console' | 'network'
     let netCache = [];
-    let netFilter = 'xhr';           // 'all' | 'failed' | 'xhr' | 'other'
+    let netFilter = 'xhr';           // 'all' | 'failed' | 'xhr' | 'other' | 'saved'
+    let netQuery = '';               // the search box
+    let netSaved = [];               // saved requests (chrome.storage.local.qaSavedRequests)
+    let netCompareA = null;          // first request picked for Compare
+    // the list is re-read from the worker as new objects, so a request is known by its key
+    const netKey = (r) => r ? `${r.ts}|${r.method}|${r.url}` : '';
+    const isCompareA = (r) => !!netCompareA && netKey(netCompareA) === netKey(r);
     let netFilteredCache = [];
     let netViewingFindings = false;
     let lastConsoleSig = '';
@@ -878,6 +884,19 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
     // and opaque - that is UNKNOWN, not a failure. Only fetch/XHR treat status 0 as an error.
     const isResource = (r) => r.kind === 'resource';
     const isFailed = (r) => isResource(r) ? r.status >= 400 : (r.status === 0 || r.status >= 400);
+    // A request that "worked" (HTTP 200) but whose ANSWER says it failed: IsSuccess: false,
+    // success: false, or a non-empty error / errors / exception / errorMessage. Read from the
+    // raw text, so a body that was cut short still counts. Returns the reason, or ''.
+    function softFailReason(r) {
+        if (isResource(r) || isFailed(r) || !r.resBody) return '';
+        const t = String(r.resBody);
+        let m = t.match(/"((?:is)?success|succeeded)"\s*:\s*false/i);
+        if (m) return `${m[1]}: false`;
+        m = t.match(/"(error|errors|exception|errormessage|errordescription)"\s*:\s*(?!null\b|""|\[\s*\]|\{\s*\}|false\b|0\b)("(?:\\.|[^"\\]){0,60}|[\[{\dt])/i);
+        if (m) return m[1] + (m[2][0] === '"' ? ': ' + m[2].slice(1) : '');
+        return '';
+    }
+    const isAnyFail = (r) => isFailed(r) || !!softFailReason(r);
     const sigOf = (arr) => { const l = arr[arr.length - 1]; return arr.length + ':' + (l ? (l.ts || '') + ':' + (l.count || '') : ''); };
 
     const dEsc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
@@ -1146,7 +1165,9 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         const failed = netCache.filter(isFailed).length;
         const other = netCache.filter(isResource).length;
         document.getElementById('net-c-all').textContent = netCache.length;
-        document.getElementById('net-c-failed').textContent = failed;
+        document.getElementById('net-c-failed').textContent = netCache.filter(isAnyFail).length;   // incl. "200 but failed"
+        const sc = document.getElementById('net-c-saved');
+        if (sc) sc.textContent = netSaved.length;
         document.getElementById('net-c-xhr').textContent = netCache.length - other;
         const oc = document.getElementById('net-c-other');
         if (oc) oc.textContent = other;
@@ -1165,15 +1186,112 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         } catch (e) { return url || ''; }
     }
 
+    // ── Search: a request matches when the text is in its URL, headers, request body or
+    // answer (any case) - so a RequestId or a transaction number finds every call that
+    // carried it.
+    function netMatches(r, q) {
+        q = q.toLowerCase();
+        const hay = [r.url, r.method, r.reqBody, r.resBody, JSON.stringify(r.reqHeaders || {}), JSON.stringify(r.resHeaders || {})];
+        return hay.some((x) => x && String(x).toLowerCase().includes(q));
+    }
+
+    // ── Saved requests (chrome.storage.local.qaSavedRequests) ──
+    // A request kept under a name, to open and send again later without pasting it.
+    const NET_SAVED_KEY = 'qaSavedRequests';
+    function netLoadSaved() {
+        chrome.storage.local.get([NET_SAVED_KEY], (r) => {
+            netSaved = (r && r[NET_SAVED_KEY]) || [];
+            netUpdateCounts();
+            if (netFilter === 'saved' && !netViewingFindings) netRender();
+        });
+    }
+    const netStoreSaved = () => new Promise((res) => chrome.storage.local.set({ [NET_SAVED_KEY]: netSaved }, res));
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch[NET_SAVED_KEY]) netLoadSaved(); });
+    netLoadSaved();
+
+    function netRenderSaved() {
+        netFilteredCache = [];
+        let list = netSaved.slice().reverse();   // newest first
+        if (netQuery) list = list.filter((r) => (r.name || '').toLowerCase().includes(netQuery.toLowerCase()) || netMatches(r, netQuery));
+        if (!list.length) {
+            netList().innerHTML = `<div class="dbg-empty">${netQuery ? `No saved request contains “${dEsc(netQuery)}”.` : 'No saved requests yet.<br>Open a request with ✈️ (or Paste one) and press <b>Save</b>.'}</div>`;
+            return;
+        }
+        netList().innerHTML = list.map((r) => {
+            let host = ''; try { host = new URL(r.url).host; } catch (e) { }
+            return `<div class="net-row net-saved-row" data-sid="${dEsc(r.id)}">
+                <span class="net-method">${dEsc(r.method || 'GET')}</span>
+                <span class="net-url" title="${dEsc(r.name || netName(r.url))}" data-url="${dEsc(r.url || '')}"><b class="net-saved-name">${dEsc(r.name || netName(r.url))}</b> <span class="net-saved-host">${dEsc(netName(r.url))} · ${dEsc(host)}</span></span>
+                <button class="net-copy net-saved-open" data-sid="${dEsc(r.id)}" title="Open, edit and send"><i class="fas fa-paper-plane"></i></button>
+                <button class="net-copy net-saved-del" data-sid="${dEsc(r.id)}" title="Delete"><i class="fas fa-trash"></i></button>
+            </div>`;
+        }).join('');
+    }
+
+    async function netSaveRequest(req, current) {
+        const name = await qaPrompt({ title: current && current.savedId ? 'Update saved request' : 'Save request', message: 'A name to find it again (e.g. "Approve - wrong ID")', value: (current && current.savedName) || netName(req.url), placeholder: 'Name' });
+        if (!name) return null;
+        const item = { id: (current && current.savedId) || ('sr' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)), name, method: req.method, url: req.url, reqHeaders: req.headers, reqBody: req.body, savedAt: Date.now() };
+        const i = netSaved.findIndex((x) => x.id === item.id);
+        if (i >= 0) netSaved[i] = item; else netSaved.push(item);
+        await netStoreSaved();
+        netUpdateCounts();
+        return item;
+    }
+
+    // ── Compare two answers ──
+    // JSON answers are compared value by value (path → A / B), only the differences listed;
+    // anything else line by line.
+    function netDiffHtml(a, b) {
+        const head = (r, tag) => `<div class="cmp-head"><span class="cmp-tag cmp-${tag}">${tag.toUpperCase()}</span>
+            <span class="net-method">${dEsc(r.method || 'GET')}</span><span class="net-status ${statusClass(r)}">${r.status === 0 ? 'ERR' : r.status}</span>
+            <span class="cmp-name" title="${dEsc(netName(r.url))}">${dEsc(netName(r.url))}</span><span class="net-dur">${r.duration != null ? Math.round(r.duration) + 'ms' : ''}</span></div>`;
+        let ja, jb; try { ja = JSON.parse(a.resBody); } catch (e) { } try { jb = JSON.parse(b.resBody); } catch (e) { }
+        let body = '';
+        if (ja !== undefined && jb !== undefined && typeof ja === 'object' && typeof jb === 'object') {
+            const flat = (v) => { const m = new Map(); rsFlatten(v, [], []).forEach((f) => m.set(rsPathLabel(f.path), rsShow(f.value, f.type))); return m; };
+            const fa = flat(ja), fb = flat(jb);
+            const keys = [...new Set([...fa.keys(), ...fb.keys()])];
+            const diffs = keys.filter((k) => fa.get(k) !== fb.get(k));
+            const same = keys.length - diffs.length;
+            body = diffs.length ? `<div class="cmp-grid"><span class="cmp-h">Value</span><span class="cmp-h">A</span><span class="cmp-h">B</span>` + diffs.map((k) => {
+                const kind = !fa.has(k) ? 'add' : !fb.has(k) ? 'del' : 'chg';
+                return `<span class="cmp-k cmp-${kind}" title="${dEsc(k)}">${dEsc(k)}</span><span class="cmp-v">${fa.has(k) ? dEsc(fa.get(k)) : '<i>—</i>'}</span><span class="cmp-v">${fb.has(k) ? dEsc(fb.get(k)) : '<i>—</i>'}</span>`;
+            }).join('') + `</div>` : '';
+            body = `<div class="cmp-sum">${diffs.length ? `<b>${diffs.length}</b> different value${diffs.length === 1 ? '' : 's'}` : '<b>The two answers are identical</b>'}${same ? ` · ${same} the same (hidden)` : ''}</div>` + body;
+        } else {
+            const la = String(a.resBody || '').split('\n'), lb = String(b.resBody || '').split('\n');
+            const n = Math.max(la.length, lb.length), rows = [];
+            for (let i = 0; i < n && rows.length < 400; i++) if (la[i] !== lb[i]) rows.push(`<span class="cmp-k">line ${i + 1}</span><span class="cmp-v">${la[i] != null ? dEsc(la[i]) : '<i>—</i>'}</span><span class="cmp-v">${lb[i] != null ? dEsc(lb[i]) : '<i>—</i>'}</span>`);
+            body = `<div class="cmp-sum">${rows.length ? `<b>${rows.length}</b> different line${rows.length === 1 ? '' : 's'}` : '<b>The two answers are identical</b>'}</div>`
+                + (rows.length ? `<div class="cmp-grid"><span class="cmp-h">Line</span><span class="cmp-h">A</span><span class="cmp-h">B</span>${rows.join('')}</div>` : '');
+        }
+        const cut = [a, b].some((r) => /… \(truncated\)$/.test(String(r.resBody || '')));
+        return head(a, 'a') + head(b, 'b') + body
+            + (cut ? '<div class="rs-note"><i class="fas fa-triangle-exclamation"></i> One answer was too big to keep in full - only its first part is compared.</div>' : '');
+    }
+    function netCompare(b) {
+        const a = netCompareA;
+        netCompareA = null;
+        netStatus().textContent = '';
+        document.getElementById('rsTitle').innerHTML = '<i class="fas fa-code-compare"></i> Compare answers';
+        document.getElementById('rsBody').innerHTML = netDiffHtml(a, b);
+        rsModal().classList.remove('hidden');
+        netRender();
+    }
+
     function netRender() {
         netViewingFindings = false;
         lastNetSig = sigOf(netCache);
+        if (netFilter === 'saved') return netRenderSaved();
         let filtered = netCache;
-        if (netFilter === 'failed') filtered = netCache.filter(isFailed);
-        else if (netFilter === 'xhr') filtered = netCache.filter(r => !isResource(r));
-        else if (netFilter === 'other') filtered = netCache.filter(isResource);
+        if (netQuery) filtered = filtered.filter((r) => netMatches(r, netQuery));
+        if (netFilter === 'failed') filtered = filtered.filter(isAnyFail);
+        else if (netFilter === 'xhr') filtered = filtered.filter(r => !isResource(r));
+        else if (netFilter === 'other') filtered = filtered.filter(isResource);
         netFilteredCache = filtered.slice().reverse(); // newest first
         if (!netFilteredCache.length) {
+            if (netQuery) { netList().innerHTML = `<div class="dbg-empty">No request contains “${dEsc(netQuery)}”.</div>`; return; }
             const msg = netFilter === 'other'
                 ? 'No document/script/style/image requests captured yet.'
                 : 'No fetch/XHR requests captured yet.';
@@ -1194,10 +1312,13 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
             // type (js/css/img…), API calls show FETCH or XHR.
             const badgeType = isResource(r) ? (r.resType || 'other') : (r.kind === 'xhr' ? 'xhr' : 'fetch');
             const typeBadge = `<span class="net-type net-type-${dEsc(badgeType)}">${dEsc(badgeType)}</span>`;
-            return `<div class="net-row ${isFailed(r) ? 'failed' : ''}" data-i="${i}">
+            const soft = softFailReason(r);
+            const softBadge = soft ? `<span class="net-soft" title="HTTP ${r.status}, but the answer says it failed - ${dEsc(soft)}"><i class="fas fa-triangle-exclamation"></i></span>` : '';
+            const picked = isCompareA(r) ? ' compare-a' : '';
+            return `<div class="net-row ${isFailed(r) ? 'failed' : soft ? 'soft-failed' : ''}${picked}" data-i="${i}">
                 <span class="net-method">${dEsc(r.method || 'GET')}</span>
-                <span class="net-status ${statusClass(r)}">${dEsc(statusLabel)}</span>${typeBadge}
-                <span class="net-url" title="${dEsc(r.url || '')}">${dEsc(netName(r.url))}</span>
+                <span class="net-status ${statusClass(r)}">${dEsc(statusLabel)}</span>${softBadge}${typeBadge}
+                <span class="net-url" title="${dEsc(netName(r.url))}" data-url="${dEsc(r.url || '')}">${dEsc(netName(r.url))}</span>
                 <span class="net-dur">${dEsc(dur)}</span>
                 ${isResource(r) ? '' : `<button class="net-copy net-resend" data-i="${i}" title="Edit & Resend"><i class="fas fa-paper-plane"></i></button>`}
                 <button class="net-copy" data-i="${i}" title="Copy"><i class="fas fa-copy"></i></button>
@@ -1279,8 +1400,11 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         document.querySelectorAll('.net-copy-menu').forEach((m) => m.remove());
         const m = document.createElement('div');
         m.className = 'net-copy-menu';
+        const cmp = netCompareA && !isCompareA(r)
+            ? `<button data-c="cmp"><i class="fas fa-code-compare"></i> Compare with A</button>`
+            : isCompareA(r) ? '' : `<button data-c="cmp"><i class="fas fa-code-compare"></i> Compare…</button>`;
         m.innerHTML = `<button data-c="fetch"><i class="fas fa-code"></i> Copy as fetch</button>
-            <button data-c="res"><i class="fas fa-reply"></i> Copy response</button>`;
+            <button data-c="res"><i class="fas fa-reply"></i> Copy response</button>${cmp}`;
         document.body.appendChild(m);
         const b = btn.getBoundingClientRect();
         m.style.top = Math.min(b.bottom + 4, window.innerHeight - m.offsetHeight - 6) + 'px';
@@ -1289,6 +1413,15 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         setTimeout(() => document.addEventListener('click', close, true), 0);
         m.addEventListener('click', (ev) => {
             const c = ev.target.closest('[data-c]'); if (!c) return;
+            if (c.dataset.c === 'cmp') {
+                if (netCompareA && !isCompareA(r)) { netCompare(r); return; }
+                // first pick: mark it "A" and ask for the second one
+                netCompareA = r;
+                netStatus().style.color = '#a5b4fc';
+                netStatus().innerHTML = `<i class="fas fa-code-compare"></i> <b>A</b> = ${dEsc(netName(r.url))}. Now press 📋 on another request → <b>Compare with A</b>. <button class="rs-add" id="netCmpCancel">Cancel</button>`;
+                netRender();
+                return;
+            }
             const txt = c.dataset.c === 'fetch' ? netAsFetch(r)
                 : `${r.method} ${r.url}\nStatus: ${r.status === 0 ? 'Failed ' + (r.error || '') : r.status + ' ' + (r.statusText || '')}\n\nResponse:\n${r.resBody || ''}`;
             navigator.clipboard.writeText(txt).then(() => {
@@ -1298,7 +1431,27 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         });
     }
 
-    netList().addEventListener('click', (e) => {
+    netStatus().addEventListener('click', (e) => {
+        if (e.target.closest('#netCmpCancel')) { netCompareA = null; netStatus().textContent = ''; netRender(); }
+    });
+
+    netList().addEventListener('click', async (e) => {
+        // saved requests: open / delete
+        const sdel = e.target.closest('.net-saved-del');
+        if (sdel) {
+            e.stopPropagation();
+            const it = netSaved.find((x) => x.id === sdel.dataset.sid); if (!it) return;
+            if (!(await qaConfirm({ title: 'Delete saved request?', message: `"${it.name}" will be removed.`, okText: 'Delete', danger: true }))) return;
+            netSaved = netSaved.filter((x) => x.id !== it.id);
+            await netStoreSaved(); netUpdateCounts(); netRender();
+            return;
+        }
+        const srow = e.target.closest('.net-saved-row');
+        if (srow) {
+            const it = netSaved.find((x) => x.id === srow.dataset.sid);
+            if (it) rsOpen({ method: it.method, url: it.url, reqHeaders: it.reqHeaders, reqBody: it.reqBody, savedId: it.id, savedName: it.name });
+            return;
+        }
         const resend = e.target.closest('.net-resend');
         if (resend) { e.stopPropagation(); const r = netFilteredCache[+resend.dataset.i]; if (r) rsOpen(r); return; }
         const copy = e.target.closest('.net-copy');
@@ -1401,6 +1554,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         if (!methods.includes(m)) methods.push(m);
         const params = u ? [...u.searchParams.entries()] : [];
         const hdrs = Object.entries(r.reqHeaders || {});
+        document.getElementById('rsTitle').innerHTML = '<i class="fas fa-paper-plane"></i> Edit &amp; Resend';
         document.getElementById('rsBody').innerHTML = `
             <div class="rs-line">
                 <select id="rsMethod">${methods.map((x) => `<option${x === m ? ' selected' : ''}>${x}</option>`).join('')}</select>
@@ -1416,6 +1570,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
             </details>
             <div class="rs-actions">
                 <button class="rs-send" id="rsSend" title="Send it from here and show the answer below"><i class="fas fa-paper-plane"></i> Send</button>
+                <button class="dbg-btn" id="rsSave" title="Keep this request (with your edits) under a name - Network → Saved"><i class="fas fa-bookmark"></i> ${r.savedId ? 'Update' : 'Save'}</button>
                 <button class="dbg-btn" id="rsReset" title="Back to the original values"><i class="fas fa-rotate-left"></i> Reset</button>
             </div>
             <div id="rsResult"></div>`;
@@ -1559,6 +1714,7 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
     const rsHlSync = (ta) => { const pre = ta.previousElementSibling; pre.innerHTML = highlightJson(ta.value) + '\n'; pre.scrollTop = ta.scrollTop; };
 
     function rsPasteView() {
+        document.getElementById('rsTitle').innerHTML = '<i class="fas fa-paste"></i> Paste a request';
         document.getElementById('rsBody').innerHTML = `
             <div class="rs-sec" style="margin-top:0;"><span>Paste the request</span></div>
             ${rsCodeArea('rsPasteIn', '', `style="min-height:170px;" placeholder='DevTools → Network → right-click the request → Copy → "Copy as fetch" (or "Copy as cURL") - then paste it here'`)}
@@ -1586,6 +1742,17 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
             return;
         }
         if (e.target.closest('#rsReset')) return rsOpen(rs.r);
+        if (e.target.closest('#rsSave')) {
+            let req;
+            try { req = rsBuild(); } catch (err) { document.getElementById('rsResult').innerHTML = `<div class="rs-res"><span class="nd-err">${dEsc(err.message)}</span></div>`; return; }
+            const it = await netSaveRequest(req, rs.r);
+            if (!it) return;
+            rs.r = { ...rs.r, savedId: it.id, savedName: it.name };
+            const b = document.getElementById('rsSave');
+            b.innerHTML = '<i class="fas fa-check"></i> Saved';
+            setTimeout(() => { if (b.isConnected) b.innerHTML = '<i class="fas fa-bookmark"></i> Update'; }, 1400);
+            return;
+        }
         if (e.target.closest('#rsAsText')) {
             let txt;
             try { txt = JSON.stringify(JSON.parse(rsBuild().body || JSON.stringify(rs.json)), null, 2); } catch (err) { txt = JSON.stringify(rs.json, null, 2); }
@@ -1641,6 +1808,12 @@ document.getElementById('measureBtn').addEventListener('click', async () => {
         if (e.target.classList.contains('rs-code-in')) { rsHlSync(e.target); return; }
         const v = e.target.closest('.rs-v');
         if (v && v.dataset.orig != null) v.classList.toggle('changed', v.value !== v.dataset.orig);
+    });
+
+    let netSearchTimer = null;
+    document.getElementById('netSearch').addEventListener('input', (e) => {
+        clearTimeout(netSearchTimer);
+        netSearchTimer = setTimeout(() => { netQuery = e.target.value.trim(); if (!netViewingFindings) netRender(); }, 150);
     });
 
     document.querySelectorAll('.net-filter').forEach(b => b.addEventListener('click', () => {

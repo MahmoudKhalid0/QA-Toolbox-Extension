@@ -3840,8 +3840,27 @@ function openStoragePanel() {
             #qa-storage .st-detail .st-chk input { accent-color: #7c3aed; }
             #qa-storage .st-detail .st-apply { margin-top: 9px; width: 100%; background: #7c3aed; border: none; color: #fff; font-weight: 600; border-radius: 7px; padding: 7px; cursor: pointer; font-family: inherit; }
             #qa-storage .st-detail .st-apply:hover { background: #6d28d9; }
+            #qa-storage .st-sess { margin: 10px 12px 0; background: #1d1a28; border: 1px solid #2a2738; border-radius: 10px; padding: 9px 10px; font-size: 12px; }
+            #qa-storage .st-sess:empty { display: none; }
+            #qa-storage .st-sess-top { display: flex; align-items: center; gap: 8px; }
+            #qa-storage .st-sess-h { flex: 1; min-width: 0; color: #e5e7eb; line-height: 1.4; }
+            #qa-storage .st-sess-h b { font: 700 14px Consolas, monospace; color: #6ee7b7; }
+            #qa-storage .st-sess-h b.st-sess-soon { color: #fbbf24; }
+            #qa-storage .st-sess-at { display: block; color: #8b8898; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            #qa-storage .st-sess-none { color: #a9a6b8; }
+            #qa-storage .st-sess-btn { flex-shrink: 0; background: #7c3aed; border: none; color: #fff; font-weight: 600; border-radius: 7px; padding: 7px 10px; cursor: pointer; font-family: inherit; font-size: 11.5px; white-space: nowrap; }
+            #qa-storage .st-sess-btn:hover { background: #6d28d9; }
+            #qa-storage .st-sess-btn.st-sess-cancel { background: #b45309; }
+            #qa-storage .st-sess-btn.st-sess-cancel:hover { background: #92400e; }
+            #qa-storage .st-sess details summary { cursor: pointer; color: #a78bfa; font-size: 11px; margin-top: 7px; }
+            #qa-storage .st-sess-row { display: flex; align-items: center; gap: 7px; padding: 4px 2px; color: #cbd5e1; font-size: 11.5px; cursor: pointer; }
+            #qa-storage .st-sess-row input { accent-color: #7c3aed; margin: 0; }
+            #qa-storage .st-sess-k { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; }
+            #qa-storage .st-sess-w { color: #8b8898; font-size: 10px; text-transform: uppercase; }
+            #qa-storage .st-sess-e { color: #a9a6b8; font: 11px Consolas, monospace; min-width: 56px; text-align: right; }
         </style>
         <div class="st-head"><span class="st-title">Cookies &amp; Storage</span><button class="st-close" id="st-close" title="Close">&#10005;</button></div>
+        <div class="st-sess" id="st-sess"></div>
         <div class="st-tabs">
             <button class="st-tab" data-sec="cookies">Cookies <b id="st-n-cookies"></b></button>
             <button class="st-tab" data-sec="local">Local <b id="st-n-local"></b></button>
@@ -3862,11 +3881,28 @@ function openStoragePanel() {
     document.body.appendChild(panel);
 
     panel.querySelector('#st-close').addEventListener('click', () => panel.remove());
+    // session box: tick / untick an item, start or cancel the 30s countdown
+    const sess = panel.querySelector('#st-sess');
+    sess.addEventListener('change', (e) => { const cb = e.target.closest('input[data-si]'); if (cb && stSessItems[+cb.dataset.si]) stSessItems[+cb.dataset.si].off = !cb.checked; });
+    sess.addEventListener('click', (e) => {
+        if (e.target.closest('#st-sess-go')) {
+            const items = stSessItems.filter((x) => !x.off).map((x) => ({ where: x.where, key: x.key, cookie: x.cookie }));
+            if (!items.length) { stToast('Tick at least one login item'); return; }
+            try { sessionStorage.setItem(ST_EXPIRE_KEY, JSON.stringify({ at: Date.now() + 30000, items })); } catch (err) { }
+            stSessArm(); stSessPaint();
+        } else if (e.target.closest('#st-sess-cancel')) {
+            try { sessionStorage.removeItem(ST_EXPIRE_KEY); } catch (err) { }
+            clearTimeout(stExpireTimer); stSessPaint();
+        }
+    });
+    clearInterval(stSessTick);
+    stSessTick = setInterval(() => { if (!document.getElementById('st-sess')) { clearInterval(stSessTick); return; } stSessTickPaint(); }, 1000);
+    stSessRefresh();
     qaAddMinimize(panel, panel.querySelector('.st-head'), panel.querySelector('#st-close'));
     panel.querySelectorAll('.st-tab').forEach(b => b.addEventListener('click', () => { stSection = b.dataset.sec; stRefresh(); }));
     panel.querySelector('#st-add').addEventListener('click', stAdd);
     panel.querySelector('#st-search').addEventListener('input', (e) => { stFilter = e.target.value.toLowerCase(); stRefresh(false); });
-    panel.querySelector('#st-refresh').addEventListener('click', () => stRefresh());
+    panel.querySelector('#st-refresh').addEventListener('click', () => { stRefresh(); stSessRefresh(); });
     panel.querySelector('#st-export').addEventListener('click', stExport);
     panel.querySelector('#st-import').addEventListener('click', () => panel.querySelector('#st-file').click());
     panel.querySelector('#st-file').addEventListener('change', stImport);
@@ -3947,6 +3983,150 @@ function stRenderRows(rows) {
         <button data-st="del" class="st-del" title="Delete">${ST_IC.x}</button>
     </div>`).join('');
 }
+
+// ---- Session box: when does the login end, and "End session in 30s" ----
+// The real session lives on the server, so the tool can't shorten it. What it CAN do,
+// on any technology, is find the login items the browser holds (auth cookies, JWT /
+// OIDC tokens in storage) and delete them when the countdown ends: the next request
+// goes out without a session and the app shows its real timeout / sign-in behaviour.
+const ST_AUTH_NAME = /(sess|auth|token|jwt|bearer|login|identity|oidc|saml|sso|aspnet|\.aspx|jsessionid|phpsessid|connect\.sid|^sid$|^nr\d|access|refresh|id_token|credential)/i;
+const ST_EXPIRE_KEY = 'qa-st-expire';   // sessionStorage: a countdown survives a reload
+let stSessItems = [];                    // detected login items (last scan)
+let stSessTick = null;                   // 1s ticker while the panel is open
+let stExpireTimer = null;
+
+function stJwtExp(v) {
+    v = String(v || '').trim().replace(/^Bearer\s+/i, '');
+    if (!/^[\w-]{8,}\.[\w-]{8,}\.[\w-]*$/.test(v)) return null;
+    try {
+        const part = v.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        const j = JSON.parse(decodeURIComponent(escape(atob(part))));
+        return typeof j.exp === 'number' ? j.exp * 1000 : 0;   // 0 = a token with no exp
+    } catch (e) { return null; }
+}
+// expiry hidden in a JSON value (OIDC libraries store {access_token, expires_at, …})
+function stJsonExp(v) {
+    let j; try { j = JSON.parse(v); } catch (e) { return null; }
+    if (!j || typeof j !== 'object') return null;
+    let found = null;
+    const walk = (o, d) => {
+        if (!o || typeof o !== 'object' || d > 4 || found != null) return;
+        for (const [k, x] of Object.entries(o)) {
+            if (found != null) return;
+            if (typeof x === 'string') { const e = stJwtExp(x); if (e) { found = e; return; } }
+            if (/^(expires_at|expiresAt|exp|expiry|expiration)$/i.test(k) && typeof x === 'number') { found = x < 1e12 ? x * 1000 : x; return; }
+            if (typeof x === 'object') walk(x, d + 1);
+        }
+    };
+    walk(j, 0);
+    return found;
+}
+
+// -> [{ where: 'cookie'|'local'|'session', key, cookie?, exp: ms|0 (none)|null (browser session), how }]
+function stScanSession() {
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: 'getCookies', url: location.href }, (resp) => {
+            void chrome.runtime.lastError;
+            const out = [];
+            ((resp && resp.cookies) || []).forEach((c) => {
+                const jwt = stJwtExp(c.value);
+                if (jwt == null && !ST_AUTH_NAME.test(c.name)) return;
+                out.push({ where: 'cookie', key: c.name, cookie: c, exp: jwt || (c.session ? null : (c.expirationDate ? c.expirationDate * 1000 : 0)), how: jwt ? 'token expiry' : c.session ? 'until the browser closes' : 'cookie expiry' });
+            });
+            [['local', localStorage], ['session', sessionStorage]].forEach(([where, store]) => {
+                try {
+                    for (let i = 0; i < store.length; i++) {
+                        const k = store.key(i); if (k === ST_EXPIRE_KEY || /^qa-/.test(k)) continue;
+                        const v = store.getItem(k) || '';
+                        const exp = stJwtExp(v) ?? stJsonExp(v);
+                        if (exp == null && !(ST_AUTH_NAME.test(k) && v.length >= 16)) continue;
+                        out.push({ where, key: k, exp: exp || 0, how: exp ? 'token expiry' : 'no expiry inside' });
+                    }
+                } catch (e) { }
+            });
+            resolve(out);
+        });
+    });
+}
+
+const stLeft = (ms) => {
+    if (ms <= 0) return 'expired';
+    const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    return d ? `${d}d ${h}h` : h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}:${String(s % 60).padStart(2, '0')}`;
+};
+
+function stSessPending() { try { return JSON.parse(sessionStorage.getItem(ST_EXPIRE_KEY) || 'null'); } catch (e) { return null; } }
+
+function stSessPaint() {
+    const box = document.getElementById('st-sess'); if (!box) return;
+    const now = Date.now();
+    const pend = stSessPending();
+    const timed = stSessItems.filter((x) => x.exp > 0).sort((a, b) => a.exp - b.exp);
+    const first = timed[0];
+    const headline = !stSessItems.length
+        ? '<span class="st-sess-none">No login cookies or tokens found on this site.</span>'
+        : first
+            ? `Session ends in <b class="${first.exp - now < 5 * 60000 ? 'st-sess-soon' : ''}">${stLeft(first.exp - now)}</b> <span class="st-sess-at">at ${new Date(first.exp).toLocaleTimeString()} · ${qaEsc(first.key)}</span>`
+            : '<span class="st-sess-none">No expiry is stored in the browser - the server decides (idle timeout).</span>';
+    const act = pend
+        ? `<button class="st-sess-btn st-sess-cancel" id="st-sess-cancel">Ending in ${Math.max(0, Math.ceil((pend.at - now) / 1000))}s · Cancel</button>`
+        : stSessItems.length ? '<button class="st-sess-btn" id="st-sess-go" title="After 30 seconds the ticked items are deleted - then use the page to see what the app does">End session in 30s</button>' : '';
+    const list = stSessItems.map((x, i) => `<label class="st-sess-row">
+            <input type="checkbox" data-si="${i}" ${x.off ? '' : 'checked'} ${pend ? 'disabled' : ''}>
+            <span class="st-sess-k" title="${qaEsc(x.key)}">${qaEsc(x.key)}</span>
+            <span class="st-sess-w">${x.where}</span>
+            <span class="st-sess-e">${x.exp > 0 ? stLeft(x.exp - now) : x.exp === null ? 'browser session' : '—'}</span>
+        </label>`).join('');
+    stSessShape = (pend ? 'p' : 'n') + stSessItems.length;
+    // keep the list's open/closed state across repaints
+    const open = box.querySelector('details') ? box.querySelector('details').open : false;
+    box.innerHTML = `<div class="st-sess-top"><span class="st-sess-ic">🔐</span><span class="st-sess-h">${headline}</span>${act}</div>`
+        + (stSessItems.length ? `<details${open ? ' open' : ''}><summary>${stSessItems.length} login item${stSessItems.length === 1 ? '' : 's'} found</summary>${list}</details>` : '');
+}
+
+// Every second only the numbers change - rebuilding the rows would eat a click on a
+// checkbox. The whole box is redrawn only when its shape changes (countdown on/off).
+let stSessShape = '';
+function stSessTickPaint() {
+    const box = document.getElementById('st-sess'); if (!box) return;
+    const pend = stSessPending();
+    const shape = (pend ? 'p' : 'n') + stSessItems.length;
+    if (shape !== stSessShape) { stSessShape = shape; stSessPaint(); return; }
+    const now = Date.now();
+    const first = stSessItems.filter((x) => x.exp > 0).sort((a, b) => a.exp - b.exp)[0];
+    const b = box.querySelector('.st-sess-h b');
+    if (b && first) { b.textContent = stLeft(first.exp - now); b.classList.toggle('st-sess-soon', first.exp - now < 5 * 60000); }
+    box.querySelectorAll('.st-sess-row').forEach((row, i) => { const x = stSessItems[i]; const e = row.querySelector('.st-sess-e'); if (x && e && x.exp > 0) e.textContent = stLeft(x.exp - now); });
+    const c = box.querySelector('#st-sess-cancel');
+    if (c && pend) c.textContent = `Ending in ${Math.max(0, Math.ceil((pend.at - now) / 1000))}s · Cancel`;
+}
+
+async function stSessRefresh() {
+    const old = new Map(stSessItems.map((x) => [x.where + '|' + x.key, x.off]));
+    stSessItems = await stScanSession();
+    stSessItems.forEach((x) => { if (old.get(x.where + '|' + x.key)) x.off = true; });
+    stSessPaint();
+}
+
+// the countdown ends: delete what was ticked, then say what to do next
+function stSessFire() {
+    const pend = stSessPending(); if (!pend) return;
+    try { sessionStorage.removeItem(ST_EXPIRE_KEY); } catch (e) { }
+    const jobs = (pend.items || []).map((x) => new Promise((res) => {
+        if (x.where === 'cookie') chrome.runtime.sendMessage({ action: 'removeCookie', cookie: x.cookie }, () => { void chrome.runtime.lastError; res(); });
+        else { try { (x.where === 'session' ? sessionStorage : localStorage).removeItem(x.key); } catch (e) { } res(); }
+    }));
+    Promise.all(jobs).then(() => {
+        showFabAiStatus('success', `Session ended (${jobs.length} login item${jobs.length === 1 ? '' : 's'} removed). Now click something or refresh to see what the app does.`);
+        if (document.getElementById('st-sess')) { stSessRefresh(); stRefresh(); }
+    });
+}
+function stSessArm() {
+    const pend = stSessPending();
+    clearTimeout(stExpireTimer);
+    if (pend) stExpireTimer = setTimeout(stSessFire, Math.max(0, pend.at - Date.now()));
+}
+stSessArm();   // a countdown started before a reload/navigation on this tab carries on
 
 // value preview: pretty JSON, or a decoded JWT payload
 function stValuePreview(v) {
