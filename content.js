@@ -908,7 +908,14 @@ async function ddClose(el) {
         if (backdrop && !(pop && backdrop.contains(pop))) backdrop.click();
         // a control that closes on its own invisible full-screen layer (OutSystems)
         const own = el && el.querySelector && el.querySelector('.dropdown-background-window');
-        if (own) { ddMouse(own); await new Promise((r) => setTimeout(r, 120)); if (!ddIsOpen(el)) return true; }
+        if (own) { ddMouse(own); if (await ddWaitFor(() => !ddIsOpen(el), 120, 30)) return true; }
+        // the control itself says it is open (a multi-select stays open after a pick):
+        // pressing its own toggle again closes it - the quickest, and nothing else is touched
+        if (i === 0 && el && el.getAttribute && el.getAttribute('aria-expanded') === 'true') {
+            const t = el.querySelector('.vscomp-toggle-button, .select2-selection, .ng-arrow-wrapper') || el;
+            ddMouse(t);
+            if (await ddWaitFor(() => !ddIsOpen(el), 120, 30)) return true;
+        }
         const toggle = el && el.querySelector('[aria-expanded="true"]');
         if (toggle) ddMouse(toggle);
         if (pop) {
@@ -918,11 +925,9 @@ async function ddClose(el) {
             if (el) el.dispatchEvent(esc(true));
             document.dispatchEvent(esc(true));
         }
-        await new Promise((r) => setTimeout(r, 120));
-
-        if (!ddIsOpen(el)) return true;
+        if (await ddWaitFor(() => !ddIsOpen(el), 120, 30)) return true;
         ddMouse(pop || document.body);
-        await new Promise((r) => setTimeout(r, 120));
+        if (await ddWaitFor(() => !ddIsOpen(el), 120, 30)) return true;
     }
     return !ddIsOpen(el);
 }
@@ -972,9 +977,13 @@ async function ddOpen(el) {
 
     if (!target) {
         // No toggle to aim at: we have to find the deepest node under the control's
-        // centre, and that only works if the control is actually on screen.
-        try { el.scrollIntoView({ block: 'center' }); } catch (e) { }
-        await new Promise((r) => setTimeout(r, 40));
+        // centre, and that only works if the control is actually on screen (scrolled
+        // to only when it isn't - the wait cost every dropdown 40ms).
+        const vr = el.getBoundingClientRect();
+        if (vr.top < 0 || vr.left < 0 || vr.bottom > innerHeight || vr.right > innerWidth) {
+            try { el.scrollIntoView({ block: 'center' }); } catch (e) { }
+            await new Promise((r) => setTimeout(r, 40));
+        }
         target = el;
         try {
             const r = el.getBoundingClientRect();
@@ -1000,10 +1009,25 @@ async function ddOpen(el) {
     return await ddAwaitOptions(el, 300);
 }
 
-async function ddPick(option) {
+async function ddPick(option, el) {
     try { option.scrollIntoView({ block: 'nearest' }); } catch (e) { }
     ddMouse(option);
-    await new Promise((r) => setTimeout(r, 200));
+    // Wait only as long as needed (was a flat 200ms): done as soon as the list closed or
+    // the option shows as chosen (a multi-select stays open, but marks it selected).
+    const chosen = () => !option.isConnected || !isElementVisible(option) || (el && !ddIsOpen(el))
+        || option.getAttribute('aria-selected') === 'true' || /(^|[\s-])(selected|checked|active)\b/i.test(String(option.className || ''));
+    await ddWaitFor(chosen, 200);
+}
+
+// Poll a condition instead of sleeping a fixed time: returns as soon as it is true
+// (or after `ms`). Most dropdowns react in a frame or two.
+async function ddWaitFor(cond, ms, step = 25) {
+    const end = Date.now() + ms;
+    for (;;) {
+        try { if (cond()) return true; } catch (e) { }
+        if (Date.now() >= end) return false;
+        await new Promise((r) => setTimeout(r, step));
+    }
 }
 
 
@@ -7364,7 +7388,7 @@ async function fillFormFields(fieldsData) {
                 return false;
             }
 
-            await ddPick(target);
+            await ddPick(target, el);
             clearSearch();
             // Picking normally closes the list; a multi-select one stays open and would
             // then be read as the NEXT field's list, so make sure it is gone.
