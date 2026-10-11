@@ -14,7 +14,7 @@ async function ensureContentScript(tabId) {
         return true;
     } catch (e) {
         try {
-            await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+            await chrome.scripting.executeScript({ target: { tabId }, files: ['modules/smart-vars.js', 'content.js'] });
             await new Promise(resolve => setTimeout(resolve, 150));
             return true;
         } catch (err) {
@@ -234,7 +234,7 @@ document.getElementById('recordBtn').addEventListener('click', async () => {
         } catch (e) {
             await chrome.scripting.executeScript({
                 target: { tabId: tab.id },
-                files: ['content.js']
+                files: ['modules/smart-vars.js', 'content.js']
             });
             setTimeout(async () => {
                 appendToId = null;
@@ -2350,7 +2350,7 @@ function attachProfileListeners(container) {
                 } catch (e) {
                     console.log('Content script not loaded, injecting...', e);
                     // Content script might not be loaded, inject it first
-                    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+                    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['modules/smart-vars.js', 'content.js'] });
                     setTimeout(async () => {
                         console.log('Retrying startRecording after injection');
                         await chrome.tabs.sendMessage(tab.id, {
@@ -2382,7 +2382,7 @@ function attachProfileListeners(container) {
                     renderProfiles();
                     showToastMessage('Recording started', 'success');
                 } catch (e2) {
-                    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+                    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['modules/smart-vars.js', 'content.js'] });
                     setTimeout(async () => {
                         await chrome.tabs.sendMessage(tab.id, {
                             action: 'startRecording',

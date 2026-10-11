@@ -307,6 +307,7 @@ async function initFloatingButton() {
                     matchingLogins = next;
                     if (changed) createFloatingButton();
                     renderLoginBadge();     // "Logged in as <name>" on the page
+                    qaLoginBar();           // the saved logins under a login form's button
                 });
             });
         });
@@ -351,6 +352,86 @@ if (window.top === window) {
         chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.qaFloatOpacity) qaApplyFloatOpacity(ch.qaFloatOpacity.newValue); });
     } catch (e) { }
 }
+
+// ---- Saved logins under a login form ----
+// On a page with a login form, this site's saved logins appear as chips right under its
+// Login button - one click logs in as that user, like ⇥ in the ⚡ menu. Lives in a shadow root (no
+// site CSS gets in, and its buttons can never submit the site's form). Re-attached when
+// an SPA re-renders the form.
+const QA_LB_ID = 'qa-login-bar';
+function qaLoginFormButton() {
+    const vis = (el) => { if (!el) return false; const r = el.getBoundingClientRect(), cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'; };
+    const pw = [...document.querySelectorAll('input[type=password]')].find(vis);
+    if (!pw) return null;
+    // the form's own submit, or the nearest "Log in / Sign in" button around the password box
+    let scope = pw.form || pw.closest('[class*=login i], [class*=signin i], [id*=login i], section, main') || document.body;
+    for (let i = 0; i < 6 && scope; i++) {
+        const btns = [...scope.querySelectorAll('button, input[type=submit], [role=button], a.btn')].filter(vis);
+        const b = btns.find((x) => x.type === 'submit') || btns.find((x) => /log ?in|sign ?in|دخول/i.test(x.innerText || x.value || ''));
+        if (b) return b;
+        scope = scope.parentElement;
+    }
+    return null;
+}
+function qaLoginBar() {
+    const old = document.getElementById(QA_LB_ID);
+    const btn = matchingLogins.length ? qaLoginFormButton() : null;
+    if (!btn) { if (old) old.remove(); return; }
+    let host = old;
+    if (!host) {
+        host = document.createElement('div');
+        host.id = QA_LB_ID;
+        host.attachShadow({ mode: 'open' });
+        host.shadowRoot.addEventListener('click', (e) => {
+            // same as ⇥ in the ⚡ menu: log in with this user's saved username/password
+            const chip = e.target.closest('button[data-id]');
+            if (!chip) return;
+            e.preventDefault(); e.stopPropagation();
+            const name = chip.dataset.name;
+            if (!chip.dataset.creds) { showFabAiStatus('error', `Add the username/password for "${name}" first: Sessions tab → 🔑`); return; }
+            showFabAiStatus('loading', `Logging in as "${name}"…`);
+            chrome.runtime.sendMessage({ action: 'swapRelogin', id: chip.dataset.id, name }, (resp) => {
+                // the page usually navigates away - the worker tells the new page how it went
+                if (chrome.runtime.lastError || !resp) return;
+                if (!resp.ok) showFabAiStatus('error', 'Login failed: ' + (resp.error || 'no response'));
+                else { showFabAiStatus('success', `Logged in as "${name}"`); initFloatingButton(); }
+            });
+        });
+    }
+    if (host.previousElementSibling !== btn) btn.insertAdjacentElement('afterend', host);
+    host.style.cssText = 'display:block;width:100%;margin-top:10px;';
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    host.shadowRoot.innerHTML = `<style>
+        :host { all: initial; display: block; }
+        .bar { direction: ltr; font: 12px -apple-system, "Segoe UI", Arial, sans-serif; color: #475569; }
+        .lbl { display: block; margin: 0 0 6px; font-size: 11px; color: #64748b; }
+        .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        button { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 16px;
+            background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; font: 600 12px -apple-system, "Segoe UI", Arial, sans-serif; max-width: 180px; }
+        button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        button:hover { background: #e0e7ff; border-color: #818cf8; }
+        button.cur { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+        button.nocreds { opacity: .55; }
+        svg { width: 13px; height: 13px; flex-shrink: 0; }
+    </style><div class="bar"><span class="lbl">QA Toolbox · saved logins</span><div class="chips">${matchingLogins.map((s) =>
+        `<button type="button" class="${s.active ? 'cur' : ''}${s.hasCreds ? '' : ' nocreds'}" data-id="${esc(s.id)}" data-name="${esc(s.name)}" data-creds="${s.hasCreds ? '1' : ''}" title="${s.hasCreds ? 'Log in as ' + esc(s.name) + (s.active ? ' (current - logs in again)' : '') : 'Add the username/password first (🔑 in the Sessions tab)'}">${s.active
+            ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>'
+            : '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0z"/></svg>'}<span>${esc(s.name)}</span></button>`).join('')}</div></div>`;
+}
+// SPAs draw the login form late, or redraw it - keep the bar attached
+(function () {
+    let t = null;
+    new MutationObserver(() => {
+        if (t) return;
+        t = setTimeout(() => {
+            t = null;
+            const has = document.getElementById(QA_LB_ID);
+            if (!matchingLogins.length) { if (has) has.remove(); return; }
+            const btn = qaLoginFormButton();
+            if (!btn ? has : (!has || has.previousElementSibling !== btn)) qaLoginBar();
+        }, 700);
+    }).observe(document.documentElement, { childList: true, subtree: true });
+})();
 
 function cleanupFloatingButton() {
     const btn = document.getElementById('ff-floating-btn');
@@ -638,7 +719,9 @@ function captureField(element) {
 // open it, read it, close it - never assume the options are sitting in the DOM.
 
 // Always a form control.
-const DD_STRONG = '[role="combobox"], [aria-haspopup="listbox"]';
+// [data-dropdown] = the OutSystems Reactive Dropdown (div.dropdown-container): no role, no
+// aria - it was never seen as a field, so Status / Priority style dropdowns stayed empty.
+const DD_STRONG = '[role="combobox"], [aria-haspopup="listbox"], [data-dropdown]';
 // Only a form control when it sits inside a form FIELD. On its own a menu button is
 // site chrome - a navbar or a kebab menu - and must never be "filled".
 const DD_WEAK = '[aria-haspopup="true"], [aria-haspopup="menu"], button.dropdown-toggle, a.dropdown-toggle';
@@ -647,6 +730,9 @@ const DD_FIELD_WRAP = 'fieldset, .form-group, .form-field, .form-item, mat-form-
 function isCustomDropdown(el) {
     if (!el || el.tagName === 'SELECT') return false;
     try {
+        // A date picker box is not a dropdown even when it says role="combobox" (the
+        // OutSystems flatpickr input does) - opening it shows a calendar, not options.
+        if (el.tagName === 'INPUT' && qaFlatpickrOf(el)) return false;
         if (el.matches(DD_STRONG)) return true;
         // A hand-rolled component with no ARIA at all. The one thing that gives it away
         // is that it IS a form control (Angular's formControlName) and it owns a toggle.
@@ -682,7 +768,7 @@ function ddReadOptions(el) {
 }
 
 function ddOptionsIn(panel) {
-    let opts = Array.from(panel.querySelectorAll('[role="option"], [role="menuitem"], li, .dropdown-item, [class*="option"], [class*="item"]'));
+    let opts = Array.from(panel.querySelectorAll('[role="option"], [role="menuitem"], li, .dropdown-item, .dropdown-popup-row, [class*="option"], [class*="item"]'));
     if (!opts.length) {
         // Nothing to go on: the panel's own rows ARE the options. Walk down through any
         // single-child wrappers until we reach the row list.
@@ -729,8 +815,23 @@ function ddFreshPanel(el) {
 // Choosing it would put nonsense in the field.
 const DD_EMPTY_ROW = /^\s*(لا\s*(يوجد|توجد)|لا\s*بيانات|غير\s*متاح|no\s+(data|results?|options?|items?|matches)|not\s+found|nothing|empty)/i;
 
+// The site's own navigation is never a dropdown's option list. OutSystems (and many
+// themes) mark the top menu links role="menuitem" inside role="menubar" - the "any
+// menuitem on the page" fallback read them as options and AI Fill CLICKED one
+// ("Approval Center Mockup"), which navigated away mid-fill.
+const DD_SITE_CHROME = 'header, nav, footer, aside, [role=banner], [role=navigation], [role=menubar], [role=contentinfo]';
+
 function ddUsableOption(o) {
     if (!isElementVisible(o) || !(o.innerText || '').trim()) return false;
+    if (o.closest(DD_SITE_CHROME)) return false;
+    // ...and an option is never a real link to another page (clicking it would leave)
+    const link = o.closest('a[href]');
+    if (link) {
+        const h = (link.getAttribute('href') || '').trim();
+        if (h && !/^(#|javascript:)/i.test(h)) {
+            try { const u = new URL(link.href, location.href); if (u.pathname !== location.pathname || u.origin !== location.origin) return false; } catch (e) { return false; }
+        }
+    }
     if (o.getAttribute('aria-disabled') === 'true' || o.hasAttribute('disabled')) return false;
     const cls = String(o.className && o.className.baseVal !== undefined ? o.className.baseVal : (o.className || ''));
     if (/disabled|no-?data|empty|placeholder/i.test(cls)) return false;
@@ -743,14 +844,22 @@ const DD_PANEL_SEL = [
     '.ng-dropdown-panel', '.p-dropdown-panel', '.p-multiselect-panel', '.p-autocomplete-panel',
     '.mat-select-panel', '.mat-mdc-select-panel', '.ant-select-dropdown', '.el-select-dropdown',
     '.select2-dropdown', '.chosen-drop', '.choices__list--dropdown',
+    // Virtual Select (OutSystems UI dropdowns) renders its list in a box of its own
+    '.vscomp-dropbox',
 ].join(', ');
 
 function ddPanels(el) {
     const out = [];
+    // a list the control keeps INSIDE itself (OutSystems: .dropdown-list)
+    const inner = el && el.querySelector && el.querySelector('.dropdown-list');
+    if (inner && isElementVisible(inner)) out.push(inner);
     const id = el && (el.getAttribute('aria-controls') || el.getAttribute('aria-owns'));
     const owned = id ? document.getElementById(id) : null;
     if (owned && isElementVisible(owned)) out.push(owned);
     for (const p of document.querySelectorAll(DD_PANEL_SEL)) {
+        // a menu in the site's header/nav is not this dropdown's list (it made every
+        // dropdown look "still open", and the close loop clicked the page again and again)
+        if (p.closest(DD_SITE_CHROME) && !(el && p.contains(el))) continue;
         if (isElementVisible(p) && !out.includes(p)) out.push(p);
     }
     return out;
@@ -766,6 +875,7 @@ function ddIsOpen(el) {
     if (el) {
         // The flag usually sits on the chevron BUTTON inside the component, not on the host.
         if (el.getAttribute('aria-expanded') === 'true') return true;
+        if (el.classList && el.classList.contains('dropdown-expanded')) return true;   // OutSystems
         try { if (el.querySelector('[aria-expanded="true"]')) return true; } catch (e) { }
     }
     if (ddPanels(el).length > 0) return true;
@@ -781,24 +891,37 @@ function ddIsOpen(el) {
 // list stayed open, and every field after it then read the WRONG list. Those overlays
 // listen for a backdrop click; everyone else listens for a click outside.
 async function ddClose(el) {
-    const esc = () => new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true });
+    // A dropdown INSIDE a popup: Escape on the page and a click on the page body both mean
+    // "close the popup" to the popup itself (OutSystems, Bootstrap, most dialogs) - that
+    // is what shut the popup in the middle of AI Fill. There, Escape goes only to the
+    // dropdown (not bubbling up), and "click away" lands on the popup, not the page.
+    const pop = el && el.closest && el.closest('dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true], .modal, .popup-dialog, .osui-popup, .ui-dialog, .MuiDialog-paper, .ant-modal, .el-dialog, mat-dialog-container, .p-dialog, .k-window, .swal2-popup, .offcanvas');
+    const esc = (bubbles) => new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles });
     for (let i = 0; i < 5; i++) {
         if (!ddIsOpen(el)) return true;
 
         // Prefer the component's OWN toggle and Escape. A click on the page body reads as
         // "the user clicked away", which is what makes a control mark itself touched -
         // exactly the thing we are trying not to do. Keep it as the last resort.
-        const backdrop = document.querySelector('.cdk-overlay-backdrop, .p-component-overlay, .modal-backdrop');
-        if (backdrop) backdrop.click();
+        // (.modal-backdrop is the POPUP's backdrop - clicking it closes the popup.)
+        const backdrop = document.querySelector(pop ? '.cdk-overlay-backdrop, .p-component-overlay' : '.cdk-overlay-backdrop, .p-component-overlay, .modal-backdrop');
+        if (backdrop && !(pop && backdrop.contains(pop))) backdrop.click();
+        // a control that closes on its own invisible full-screen layer (OutSystems)
+        const own = el && el.querySelector && el.querySelector('.dropdown-background-window');
+        if (own) { ddMouse(own); await new Promise((r) => setTimeout(r, 120)); if (!ddIsOpen(el)) return true; }
         const toggle = el && el.querySelector('[aria-expanded="true"]');
         if (toggle) ddMouse(toggle);
-        (document.activeElement || document.body).dispatchEvent(esc());
-        if (el) el.dispatchEvent(esc());
-        document.dispatchEvent(esc());
+        if (pop) {
+            [document.activeElement, el, toggle].forEach((t) => { if (t && pop.contains(t)) t.dispatchEvent(esc(false)); });
+        } else {
+            (document.activeElement || document.body).dispatchEvent(esc(true));
+            if (el) el.dispatchEvent(esc(true));
+            document.dispatchEvent(esc(true));
+        }
         await new Promise((r) => setTimeout(r, 120));
 
         if (!ddIsOpen(el)) return true;
-        ddMouse(document.body);
+        ddMouse(pop || document.body);
         await new Promise((r) => setTimeout(r, 120));
     }
     return !ddIsOpen(el);
@@ -921,6 +1044,65 @@ async function captureComboboxOptions(el) {
     }
 }
 
+// The element AI Fill should work in: the top-most open popup / dialog / drawer that
+// has fields, or the whole page when none is open. Any technology: dialog semantics
+// (dialog[open], role=dialog, aria-modal), the usual framework popups, and - for the
+// rest - whatever fixed-position layer is drawn on top of the middle of the screen.
+function qaFillScope() {
+    const vis = (el) => { const r = el.getBoundingClientRect(), cs = getComputedStyle(el); return r.width > 2 && r.height > 2 && cs.visibility !== 'hidden' && cs.display !== 'none' && +cs.opacity !== 0; };
+    const hasFields = (el) => [...el.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]), select, textarea, [role=combobox]')].some(vis);
+    const SEL = 'dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true], .modal.show, .modal.in, .modal.open, .popup-dialog, .osui-popup, .ui-dialog, '
+        + '.MuiDialog-paper, .MuiDrawer-paper, .ant-modal, .ant-drawer-content, .el-dialog, mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane, .p-dialog, .k-window, .swal2-popup, .offcanvas.show, .drawer.open';
+    const cands = new Set([...document.querySelectorAll(SEL)]);
+    // A fixed header / side bar with a search box is NOT a popup: the layer must sit over
+    // the middle of the screen and be either narrower than it or cover most of it.
+    const popupLike = (n) => {
+        const r = n.getBoundingClientRect(), cx = innerWidth / 2;
+        if (r.left > cx || r.right < cx) return false;
+        return r.width < innerWidth * 0.9 || r.width * r.height >= innerWidth * innerHeight * 0.6;
+    };
+    // generic (most custom popups): a field that sits inside a FIXED layer - that layer
+    // is drawn over the page. Found from the fields, so it costs only a short climb each.
+    try {
+        document.querySelectorAll('input:not([type=hidden]), select, textarea').forEach((f) => {
+            for (let n = f.parentElement; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+                if (getComputedStyle(n).position === 'fixed') { if (popupLike(n)) cands.add(n); break; }
+            }
+        });
+    } catch (e) { }
+    const ours = (el) => el.closest('#qa-rv, #qa-result-panel, #qa-storage, #qa-cap-eye, [id^="ff-"], #qa-login-bar');
+    const open = [...cands].filter((el) => !ours(el) && vis(el) && hasFields(el));
+    if (!open.length) return document;
+    // the one actually on top: what the browser draws at its own centre belongs to it
+    const onTop = open.filter((el) => {
+        const r = el.getBoundingClientRect();
+        const x = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1), y = Math.min(Math.max(r.top + Math.min(r.height / 2, 120), 0), innerHeight - 1);
+        const at = document.elementFromPoint(x, y);
+        return at && (el === at || el.contains(at));
+    });
+    const pool = onTop.length ? onTop : open;
+    // nested matches (backdrop > dialog): the innermost one that still holds the fields
+    return pool.find((el) => !pool.some((o) => o !== el && el.contains(o))) || pool[0];
+}
+
+// The flatpickr input behind a visible date box: the box itself (class flatpickr-input)
+// or the hidden original next to its read-only "alt" copy. null when it isn't one.
+function qaFlatpickrOf(el) {
+    if (!el || el.tagName !== 'INPUT') return null;
+    if (el.classList.contains('flatpickr-input')) return el;
+    const sib = el.parentElement && el.parentElement.querySelector(':scope > input.flatpickr-input');
+    return sib && sib !== el ? sib : null;
+}
+let qaFpSeq = 0;
+function qaSetFlatpickr(el, value) {
+    const src = qaFlatpickrOf(el); if (!src) return Promise.resolve(false);
+    const tag = 'fp' + (++qaFpSeq) + Date.now().toString(36);
+    src.setAttribute('data-qa-fp', tag);   // DOM attributes are shared with the page's world
+    return new Promise((res) => chrome.runtime.sendMessage({ action: 'qaSetFlatpickr', tag, value: String(value || '') }, (r) => {
+        void chrome.runtime.lastError; src.removeAttribute('data-qa-fp'); res(!!(r && r.ok));
+    }));
+}
+
 async function scanPageFormFields(captureCombo = true, known = []) {
     const skipTypes = ['hidden', 'submit', 'button', 'reset', 'image', 'file'];
     const fields = [];
@@ -973,7 +1155,11 @@ async function scanPageFormFields(captureCombo = true, known = []) {
     // [formcontrolname] is in the list for the hand-rolled components (<app-select>):
     // they carry no role at all, and their only marks are that they ARE a form control
     // and that they own a toggle.
-    let nodes = Array.from(document.querySelectorAll(
+    // An open popup/dialog with fields = that is the form being filled. Scanning the
+    // page behind it too filled the fields underneath, and typing into them closed
+    // the popup (a click/focus outside it) - so only the popup is scanned.
+    const scope = qaFillScope();
+    let nodes = Array.from(scope.querySelectorAll(
         `input, select, textarea, ${DD_STRONG}, ${DD_WEAK}, [formcontrolname]`));
     // The weak selectors also match site chrome (a navbar or kebab menu button), and
     // [formcontrolname] matches every Angular control. isCustomDropdown only accepts the
@@ -1001,7 +1187,8 @@ async function scanPageFormFields(captureCombo = true, known = []) {
         // format the parser rejects.
         const isDatePicker = tagName === 'input' && !isCombobox
             && (el.hasAttribute('ngbdatepicker') || el.hasAttribute('bsdatepicker')
-                || /datepicker|datetimepicker/i.test(String(el.className || '')));
+                || /datepicker|datetimepicker/i.test(String(el.className || ''))
+                || !!qaFlatpickrOf(el));
         if (isDatePicker) type = 'date';
 
         if (tagName === 'input' && skipTypes.includes(type)) continue;
@@ -7064,39 +7251,121 @@ async function fillFormFields(fieldsData) {
     // the list, then click the option whose text matches the value. With
     // sequentialSelect, the choice cycles through the options instead (random start,
     // then in order) so repeated fills don't keep picking the same one.
+    // Sequential choice, shared by custom dropdowns, <select> and radio groups.
+    // seqOnly = "Only these" (comma / new-line list): the pick is limited to those options
+    // (matched by text, exact first, then "contains"); empty = all of them.
+    // seqMode = 'order' (next one each fill, random start) or 'random' (any of them,
+    // never the same one twice in a row when there is a choice).
+    function seqPick(pool, field, textOf) {
+        const only = String(field.seqOnly || '').split(/[,\n،]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+        let list = pool;
+        if (only.length) {
+            const t = (o) => String(textOf(o) || '').trim().toLowerCase();
+            const picked = [];
+            only.forEach((w) => {
+                const m = pool.find((o) => t(o) === w) || pool.find((o) => t(o).includes(w));
+                if (m && !picked.includes(m)) picked.push(m);
+            });
+            if (picked.length) list = picked;
+            else console.warn('[QA fill] none of "Only these" matched an option - using all options:', field.selector);
+        }
+        if (!list.length) return null;
+        const key = `${profileId}_${field.selector}`;
+        const last = allIndices[key];
+        let i;
+        if (field.seqMode === 'random') {
+            i = Math.floor(Math.random() * list.length);
+            if (list.length > 1 && i === last) i = (i + 1 + Math.floor(Math.random() * (list.length - 1))) % list.length;
+        } else {
+            // First fill starts at a RANDOM option; subsequent fills cycle in order
+            i = last === undefined ? Math.floor(Math.random() * list.length) : (last + 1) % list.length;
+        }
+        allIndices[key] = i;
+        updatedAny = true;
+        return list[i];
+    }
+
     async function fillComboboxField(el, value, field) {
         try {
-            const options = await ddOpen(el);
+            let options = await ddOpen(el);
+            if (options.length === 0) {
+                // empty may only mean "still filtered by an old search" - clear it once
+                const roots = ddPanels(el).concat(ddFreshPanel(el) || []);
+                const old = roots.map((r) => r.querySelector('input.vscomp-search-input, input[type="search"]')).find((i) => i && i.value);
+                if (old) {
+                    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(old, '');
+                    old.dispatchEvent(new Event('input', { bubbles: true }));
+                    options = await ddAwaitOptions(el, 800);
+                }
+            }
             if (options.length === 0) { await ddClose(el); return false; }
 
+            const norm = (o) => o.innerText.trim().toLowerCase();
+            // exact text first, then an option that CONTAINS the wanted text. Never the other
+            // way round: "400test@sap.com" contains "0test@sap.com" - a different user.
+            const match = (list, w) => w && (list.find((o) => norm(o) === w) || list.find((o) => norm(o).includes(w)));
+            // A big list (Virtual Select: 451 users) only DRAWS the rows on screen - the one
+            // wanted is usually not among them. Type it into the list's own search box and
+            // wait for it to be drawn, as a user would.
+            let typedBox = null;
+            // whatever we typed into the list's search box is cleared again - the list keeps
+            // it, and the next open would show an empty (filtered) list
+            const clearSearch = () => {
+                if (!typedBox) return;
+                try { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(typedBox, ''); typedBox.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) { }
+                typedBox = null;
+            };
+            const findBySearch = async (w) => {
+                let target = match(options, w);
+                if (target) return target;
+                const roots = ddPanels(el).concat(ddFreshPanel(el) || []);
+                const box = (document.activeElement && document.activeElement.tagName === 'INPUT' && roots.some((r) => r.contains(document.activeElement)) && document.activeElement)
+                    || roots.map((r) => r.querySelector('input.vscomp-search-input, input[type="search"], input[type="text"]:not([readonly])')).find((i) => i && isElementVisible(i));
+                if (!box) return null;
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                typedBox = box;
+                setter.call(box, String(value).trim());
+                box.dispatchEvent(new Event('input', { bubbles: true }));
+                box.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'a' }));
+                const deadline = Date.now() + 2000;
+                while (Date.now() < deadline) {
+                    await new Promise((r) => setTimeout(r, 150));
+                    target = match(ddReadOptions(el), w);
+                    if (target) return target;
+                }
+                return null;
+            };
+
             let target;
-            if (field && field.sequentialSelect) {
+            const onlyList = field && field.sequentialSelect ? String(field.seqOnly || '').split(/[,\n،]/).map((x) => x.trim()).filter(Boolean) : [];
+            if (onlyList.length) {
+                // "Only these" names the options - choose one of the NAMES, then find it
+                // (searching for it when the list does not draw it)
+                value = seqPick(onlyList, field, (x) => x);
+                target = await findBySearch(String(value).toLowerCase());
+            } else if (field && field.sequentialSelect) {
                 // Sequential mode: cycle through the options (skip placeholder-looking ones)
                 let pool = options.filter(o => {
                     const t = o.innerText.trim().toLowerCase();
                     return !(t.includes('select') || t.includes('choose') || t.includes('اختر') || t.includes('حدد') || t.includes('---'));
                 });
                 if (pool.length === 0) pool = options;
-
-                const key = `${profileId}_${field.selector}`;
-                const storedIndex = allIndices[key];
-                // First fill starts at a RANDOM option; subsequent fills cycle in order
-                const nextIndex = storedIndex === undefined
-                    ? Math.floor(Math.random() * pool.length)
-                    : (storedIndex + 1) % pool.length;
-                target = pool[nextIndex];
-                allIndices[key] = nextIndex;
-                updatedAny = true;
+                target = seqPick(pool, field, (o) => o.innerText);
             } else {
                 const wanted = String(value || '').trim().toLowerCase();
-                target =
-                    options.find(o => o.innerText.trim().toLowerCase() === wanted) ||
-                    (wanted && options.find(o => o.innerText.trim().toLowerCase().includes(wanted))) ||
-                    (wanted && options.find(o => wanted.includes(o.innerText.trim().toLowerCase()))) ||
-                    options[0];
+                // no value given = any option is fine; a GIVEN value must be that value -
+                // picking the first option instead put the wrong user in, silently
+                target = wanted ? await findBySearch(wanted) : options[0];
+            }
+            if (!target) {
+                console.warn('[QA fill] option not found in the list:', value, field && field.selector);
+                clearSearch();
+                await ddClose(el);
+                return false;
             }
 
             await ddPick(target);
+            clearSearch();
             // Picking normally closes the list; a multi-select one stays open and would
             // then be read as the NEXT field's list, so make sure it is gone.
             await ddClose(el);
@@ -7110,6 +7379,9 @@ async function fillFormFields(fieldsData) {
 
     function resolveSmartVariables(val) {
         if (typeof val !== 'string') return val;
+        // the big English + Arabic data set (modules/smart-vars.js, loaded before this file);
+        // the small list below is only the fallback if that file did not load
+        if (self.QASmartVars) return self.QASmartVars.resolve(val);
         let processedValue = val;
         const now = new Date();
         const smartVars = {
@@ -7240,7 +7512,20 @@ async function fillFormFields(fieldsData) {
 
         let result = format;
         result = result.replace('DD', dd).replace('MM', mm).replace('YYYY', yyyy);
-        return result.split('/').join(separator);
+        result = result.split('/').join(separator);
+
+        // Optional time after the date: "09/28/2026 11:00 AM", "11/10/2026 - 10:47 PM",
+        // "2026-09-28 23:15". Minutes on a 5-minute step - what time pickers offer.
+        const time = field.dateTime || 'none';
+        if (time !== 'none') {
+            const h = Math.floor(Math.random() * 24), m = Math.floor(Math.random() * 12) * 5;
+            const mmTxt = String(m).padStart(2, '0');
+            const t = time.startsWith('12')
+                ? `${String(h % 12 || 12).padStart(2, '0')}:${mmTxt} ${h < 12 ? 'AM' : 'PM'}`
+                : `${String(h).padStart(2, '0')}:${mmTxt}`;
+            result += (time.endsWith('dash') ? ' - ' : ' ') + t;
+        }
+        return result;
     }
 
     const storageKey = 'ff_sequential_indices';
@@ -7271,7 +7556,11 @@ async function fillFormFields(fieldsData) {
             continue;
         }
 
-        const elements = getElementsBySelector(field.selector);
+        // a flatpickr's real input is hidden behind its visible copy - work on the copy
+        const elements = getElementsBySelector(field.selector).map((el) => {
+            if (isElementVisible(el) || !el.classList || !el.classList.contains('flatpickr-input') || !el.parentElement) return el;
+            return [...el.parentElement.querySelectorAll(':scope > input')].find((i) => i !== el && isElementVisible(i)) || el;
+        }).filter((el, i, all) => all.indexOf(el) === i);   // both the box and its hidden twin matched = one field
 
         // Check if field failed (no elements found or all hidden)
         if (elements.length === 0 || elements.every(el => !isElementVisible(el))) {
@@ -7331,17 +7620,13 @@ async function fillFormFields(fieldsData) {
                     // The group is handled once - only act on the first element
                     if (el !== elements[0]) continue;
                     const radios = elements.filter(r => r.type === 'radio' && !r.disabled);
-                    if (radios.length > 0) {
-                        const key = `${profileId}_${field.selector}`;
-                        const storedIndex = allIndices[key];
-                        // First fill starts at a RANDOM radio; subsequent fills cycle in order
-                        const nextIndex = storedIndex === undefined
-                            ? Math.floor(Math.random() * radios.length)
-                            : (storedIndex + 1) % radios.length;
-                        if (!radios[nextIndex].checked) radios[nextIndex].click();
-                        allIndices[key] = nextIndex;
-                        updatedAny = true;
-                    }
+                    // a radio is named by its label (or its value when it has none)
+                    const radioText = (r) => {
+                        const l = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
+                        return (l && l.innerText.trim()) || r.value;
+                    };
+                    const pickR = radios.length ? seqPick(radios, field, radioText) : null;
+                    if (pickR && !pickR.checked) pickR.click();
                     continue;
                 }
 
@@ -7383,15 +7668,7 @@ async function fillFormFields(fieldsData) {
                 });
 
                 if (options.length > 0) {
-                    const key = `${profileId}_${field.selector}`;
-                    const storedIndex = allIndices[key];
-                    // First fill starts at a RANDOM option; subsequent fills cycle in order
-                    const nextIndex = storedIndex === undefined
-                        ? Math.floor(Math.random() * options.length)
-                        : (storedIndex + 1) % options.length;
-                    el.value = options[nextIndex].value;
-                    allIndices[key] = nextIndex;
-                    updatedAny = true;
+                    el.value = seqPick(options, field, (o) => o.text).value;
                     el.dispatchEvent(new Event('input', { bubbles: true }));
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                     continue;
@@ -7414,7 +7691,10 @@ async function fillFormFields(fieldsData) {
                     // overflows the width. BigInt keeps it exact for large digit counts.
                     const digits = Math.min(Math.max(1, field.digits || 5), 50);
                     const n = nextUnique(field.selector, 'number');
-                    value = String(10n ** BigInt(digits - 1) + BigInt(n - 1));
+                    const prefix = String(field.numberPrefix || '').replace(/\D/g, '');
+                    // "Starts with" 05 + 10 digits = 05 then 8 more (the total stays 10)
+                    if (prefix) value = prefix + String(n).padStart(Math.max(1, digits - prefix.length), '0');
+                    else value = String(10n ** BigInt(digits - 1) + BigInt(n - 1));
                 }
                 else if (field.numberRange) {
                     // random integer between min and max (inclusive); tolerate swapped/blank bounds
@@ -7463,6 +7743,13 @@ async function fillFormFields(fieldsData) {
                     }
                 }
                 continue;
+            }
+
+            // flatpickr (OutSystems date/time pickers and many others): the box you see is
+            // read-only and the value lives in the library - typing does nothing, so the
+            // library itself is told the date (in the page's world, where it lives).
+            if (el.tagName === 'INPUT' && qaFlatpickrOf(el)) {
+                if (await qaSetFlatpickr(el, value)) continue;
             }
 
             el.value = value;

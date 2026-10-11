@@ -1504,6 +1504,42 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // AI Fill → a flatpickr date box: set the date through the library, in the page's own
+    // world (its instance lives there). The content script marks the input with data-qa-fp.
+    if (request.action === 'qaSetFlatpickr') {
+        if (!sender.tab) { sendResponse({ ok: false }); return true; }
+        chrome.scripting.executeScript({
+            target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+            world: 'MAIN',
+            func: (tag, value) => {
+                const el = document.querySelector(`[data-qa-fp="${tag}"]`);
+                const fp = el && el._flatpickr;
+                if (!fp) return false;
+                // the AI answers YYYY-MM-DD (maybe with a time); a plain date keeps the
+                // time of day the picker would use, a full one is taken as given
+                const v = String(value).trim();
+                const m = v.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2}))?/);
+                let d = m ? new Date(+m[1], +m[2] - 1, +m[3], m[4] ? +m[4] : 10, m[5] ? +m[5] : 0) : null;
+                // otherwise: the picker's own display / value format (what a profile's Smart
+                // Date was set up to type for this field)
+                for (const f of [fp.config.altFormat, fp.config.dateFormat]) {
+                    if (d || !f) continue;
+                    try { const p = fp.parseDate(v, f); if (p && !isNaN(p)) d = p; } catch (e) { }
+                }
+                if (!d) d = new Date(v);
+                if (isNaN(d)) return false;
+                // keep it inside the picker's limits (a due date before today is rejected)
+                const min = fp.config.minDate, max = fp.config.maxDate;
+                if (min && d < min) d = new Date(min.getTime() + 24 * 3600e3);
+                if (max && d > max) d = new Date(max.getTime());
+                fp.setDate(d, true);
+                return !!fp.selectedDates.length;
+            },
+            args: [request.tag, request.value]
+        }).then(([r]) => sendResponse({ ok: !!(r && r.result) })).catch(() => sendResponse({ ok: false }));
+        return true;
+    }
+
     if (request.action === 'apiFetch') {
         (async () => {
             // The endpoint is usually cross-origin to the page the tool runs on (the app calls

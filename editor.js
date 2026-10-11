@@ -165,6 +165,8 @@ document.getElementById('backBtn').addEventListener('click', () => {
 
 // Add field
 document.getElementById('addFieldBtn').addEventListener('click', () => {
+    // keep what was typed in the other fields - the list is redrawn from currentFields
+    syncFieldInputs();
     currentFields.push({
         selector: '',
         value: '',
@@ -175,7 +177,8 @@ document.getElementById('addFieldBtn').addEventListener('click', () => {
         isSmartDate: false,
         dateDirection: 'future',
         dateFormat: 'DD/MM/YYYY',
-        dateSeparator: '/'
+        dateSeparator: '/',
+        dateTime: 'none'
     });
     renderFields();
 });
@@ -415,7 +418,13 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
                 dateDirection: dateDirection || 'future',
                 dateFormat: dateFormat || 'DD/MM/YYYY',
                 dateSeparator: dateSeparator || '/',
-                digits: parseInt(digitsInput?.value) || 5,
+                dateTime: item.querySelector('.date-time')?.value || currentFields[index]?.dateTime || 'none',
+                seqMode: item.querySelector('.seq-mode')?.value || currentFields[index]?.seqMode || 'order',
+                seqOnly: (item.querySelector('.seq-only')?.value ?? currentFields[index]?.seqOnly ?? '').trim(),
+                // the field's own value: each field renders TWO digits boxes (text + number),
+                // so the first one in the DOM was not always the one that was edited
+                digits: currentFields[index]?.digits || parseInt(digitsInput?.value) || 5,
+                numberPrefix: (currentFields[index]?.numberPrefix || '').replace(/\D/g, ''),
                 rangeMin: rangeMinInput && rangeMinInput.value !== '' ? parseInt(rangeMinInput.value) : (currentFields[index]?.rangeMin ?? 1),
                 rangeMax: rangeMaxInput && rangeMaxInput.value !== '' ? parseInt(rangeMaxInput.value) : (currentFields[index]?.rangeMax ?? 100)
             });
@@ -699,6 +708,14 @@ function syncFieldInputs() {
             const separator = item.querySelector('.date-separator');
             if (separator) currentFields[idx].dateSeparator = separator.value;
 
+            const time = item.querySelector('.date-time');
+            if (time) currentFields[idx].dateTime = time.value;
+
+            const seqMode = item.querySelector('.seq-mode');
+            if (seqMode) currentFields[idx].seqMode = seqMode.value;
+            const seqOnly = item.querySelector('.seq-only');
+            if (seqOnly) currentFields[idx].seqOnly = seqOnly.value;
+
             // Number range bounds (preserve typed-but-not-blurred values across re-render)
             const rMin = item.querySelector('.range-min');
             if (rMin && rMin.value !== '') currentFields[idx].rangeMin = parseInt(rMin.value);
@@ -721,6 +738,9 @@ function renderFields() {
 
         return `
         <div class="field-item" data-index="${index}">
+            <div class="field-head">
+            <span class="field-drag" title="Drag to move this field" draggable="true"><i class="fas fa-grip-vertical"></i></span>
+            <span class="field-num">${index + 1}</span>
             <div class="action-type-selector">
                 <div class="action-type-btn ${actionType === 'fill' ? 'active' : ''}" data-type="fill" title="Fill a form field">
                     <i class="fas fa-edit"></i> Fill
@@ -732,16 +752,24 @@ function renderFields() {
                     <i class="fas fa-hourglass-start"></i> Wait
                 </div>
             </div>
+            <span class="field-move">
+                <button type="button" class="btn-move" data-dir="-1" title="Move up" ${index === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
+                <button type="button" class="btn-move" data-dir="1" title="Move down" ${index === currentFields.length - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>
+            </span>
+            </div>
 
             <div class="field-row">
                 <input type="text" class="field-input selector" value="${escapeHtml(field.selector)}" placeholder="${actionType === 'wait' ? 'N/A' : 'CSS Selector or XPath'}" ${actionType === 'wait' ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''}>
-                <input type="${actionType === 'wait' ? 'number' : 'text'}" 
-                    class="${valueClass}" 
+                <div class="value-wrap">
+                <input type="${actionType === 'wait' ? 'number' : 'text'}"
+                    class="${valueClass}"
                     value="${escapeHtml(field.value)}" 
                     placeholder="${valuePlaceholder}" 
                     ${actionType === 'wait' ? 'min="0" step="0.1"' : ''}
                     ${isValueDisabled ? 'disabled style="opacity:0.5; background:rgba(255,255,255,0.02); cursor:not-allowed;"' : ''} 
                     title="${isValueDisabled ? (actionType === 'click' ? 'No value needed for click' : 'Value is managed automatically') : 'Enter value'}">
+                ${actionType === 'fill' && !isValueDisabled ? '<button type="button" class="btn-var" title="Insert a smart variable (random name, city, date…)">{x}</button>' : ''}
+                </div>
                 <button class="btn-remove" data-index="${index}"><i class="fas fa-times"></i></button>
             </div>
             
@@ -755,7 +783,8 @@ function renderFields() {
                 <label class="field-option ${field.uniqueNumber ? 'active' : ''}">
                     <input type="checkbox" class="unique-number-cb" ${field.uniqueNumber ? 'checked' : ''}>
                     <i class="fas fa-hashtag"></i> Unique number
-                    <input type="number" class="digits-input" value="${field.digits || 5}" min="1" max="50" title="Number of digits (1-50)" ${!field.uniqueNumber ? 'disabled style="opacity:0.3; pointer-events:none;"' : ''}>
+                    <input type="number" class="digits-input" value="${field.digits || 5}" min="1" max="50" title="Total number of digits (1-50), including the starting digits" ${!field.uniqueNumber ? 'disabled style="opacity:0.3; pointer-events:none;"' : ''}>
+                    <input type="text" class="prefix-input" inputmode="numeric" maxlength="20" value="${escapeHtml(field.numberPrefix || '')}" placeholder="Starts with" title="Digits the number always starts with (e.g. 05) - the rest is filled in" ${!field.uniqueNumber ? 'disabled style="opacity:0.3; pointer-events:none;"' : ''}>
                 </label>
                 <label class="field-option ${field.numberRange ? 'active' : ''}">
                     <input type="checkbox" class="number-range-cb" ${field.numberRange ? 'checked' : ''}>
@@ -775,14 +804,30 @@ function renderFields() {
             </div>
             ` : ''}
 
+            ${field.sequentialSelect && actionType === 'fill' ? `
+            <div class="date-settings-panel seq-settings-panel">
+                <div class="date-group">
+                    <label>Order</label>
+                    <select class="date-select seq-mode">
+                        <option value="order" ${field.seqMode !== 'random' ? 'selected' : ''}>In order (next one each fill)</option>
+                        <option value="random" ${field.seqMode === 'random' ? 'selected' : ''}>Random</option>
+                    </select>
+                </div>
+                <div class="date-group seq-only-group">
+                    <label>Only these <span style="text-transform:none;opacity:.7;">(optional)</span></label>
+                    <input type="text" class="date-select seq-only" value="${escapeHtml(field.seqOnly || '')}" placeholder="e.g. Pending, Approved - empty = all options" title="Pick only from these options (comma-separated, as written in the list). Empty = every option.">
+                </div>
+            </div>
+            ` : ''}
+
             ${field.isSmartDate && actionType === 'fill' ? `
             <div class="date-settings-panel">
                 <div class="date-group">
                     <label>Direction</label>
                     <select class="date-select date-direction">
-                        <option value="future" ${field.dateDirection === 'future' ? 'selected' : ''}>Future (Next 1 month)</option>
-                        <option value="past" ${field.dateDirection === 'past' ? 'selected' : ''}>Past (Last 1 month)</option>
-                        <option value="random" ${field.dateDirection === 'random' ? 'selected' : ''}>Random (Past/Future 1 month)</option>
+                        <option value="future" ${field.dateDirection === 'future' ? 'selected' : ''}>Future · 1 month</option>
+                        <option value="past" ${field.dateDirection === 'past' ? 'selected' : ''}>Past · 1 month</option>
+                        <option value="random" ${field.dateDirection === 'random' ? 'selected' : ''}>Random · ±1 month</option>
                     </select>
                 </div>
                 <div class="date-group">
@@ -800,6 +845,16 @@ function renderFields() {
                         <option value="/" ${field.dateSeparator === '/' ? 'selected' : ''}>Slash ( / )</option>
                         <option value="-" ${field.dateSeparator === '-' ? 'selected' : ''}>Dash ( - )</option>
                         <option value="." ${field.dateSeparator === '.' ? 'selected' : ''}>Dot ( . )</option>
+                    </select>
+                </div>
+                <div class="date-group">
+                    <label>Time</label>
+                    <select class="date-select date-time">
+                        <option value="none" ${!field.dateTime || field.dateTime === 'none' ? 'selected' : ''}>No time</option>
+                        <option value="12" ${field.dateTime === '12' ? 'selected' : ''}>11:00 AM</option>
+                        <option value="12dash" ${field.dateTime === '12dash' ? 'selected' : ''}>- 11:00 AM</option>
+                        <option value="24" ${field.dateTime === '24' ? 'selected' : ''}>23:00 (24h)</option>
+                        <option value="24dash" ${field.dateTime === '24dash' ? 'selected' : ''}>- 23:00 (24h)</option>
                     </select>
                 </div>
             </div>
@@ -830,16 +885,72 @@ function renderFields() {
     });
 
     // Remove button handlers
+    // ── Reorder: ↑ ↓, or drag by the grip ──
+    // The fill runs top to bottom, so the order is the order the page is filled in.
+    const moveField = (from, to) => {
+        if (from === to || to < 0 || to >= currentFields.length) return;
+        syncFieldInputs();                       // keep unsaved typing
+        const [f] = currentFields.splice(from, 1);
+        currentFields.splice(to, 0, f);
+        renderFields();
+        const moved = document.querySelectorAll('.field-item')[to];
+        if (moved) { moved.classList.add('just-moved'); setTimeout(() => moved.classList.remove('just-moved'), 700); }
+    };
+    container.querySelectorAll('.btn-move').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const i = parseInt(btn.closest('.field-item').dataset.index);
+            moveField(i, i + parseInt(btn.dataset.dir));
+        });
+    });
+    let dragFrom = -1;
+    container.querySelectorAll('.field-drag').forEach((grip) => {
+        grip.addEventListener('dragstart', (e) => {
+            const item = grip.closest('.field-item');
+            dragFrom = parseInt(item.dataset.index);
+            item.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', String(dragFrom)); e.dataTransfer.setDragImage(item, 20, 20); } catch (err) { }
+        });
+        grip.addEventListener('dragend', () => {
+            dragFrom = -1;
+            container.querySelectorAll('.dragging, .drop-before, .drop-after').forEach((x) => x.classList.remove('dragging', 'drop-before', 'drop-after'));
+        });
+    });
+    container.querySelectorAll('.field-item').forEach((item) => {
+        item.addEventListener('dragover', (e) => {
+            if (dragFrom < 0) return;
+            e.preventDefault();
+            const r = item.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+            container.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+            item.classList.add(after ? 'drop-after' : 'drop-before');
+        });
+        item.addEventListener('drop', (e) => {
+            if (dragFrom < 0) return;
+            e.preventDefault();
+            const over = parseInt(item.dataset.index);
+            const r = item.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+            let to = over + (after ? 1 : 0);
+            if (to > dragFrom) to--;            // the dragged one leaves its old place first
+            const from = dragFrom; dragFrom = -1;
+            moveField(from, to);
+        });
+    });
+
     container.querySelectorAll('.btn-remove').forEach(btn => {
         btn.addEventListener('click', () => {
+            syncFieldInputs();     // keep the other fields' unsaved typing
             currentFields.splice(parseInt(btn.dataset.index), 1);
             renderFields();
         });
     });
 
     // Checkbox handlers - Mutually Exclusive and Mutually Disabling Input
-    container.querySelectorAll('.unique-text-cb').forEach((cb, idx) => {
+    container.querySelectorAll('.unique-text-cb').forEach((cb) => {
         cb.addEventListener('change', () => {
+            // the FIELD's index: Click / Wait fields have no checkboxes, so the position in
+            // this list is not the field's position (it ticked another field's box)
+            const idx = parseInt(cb.closest('.field-item').dataset.index);
+            if (!currentFields[idx]) return;
             syncFieldInputs();
             if (cb.checked) {
                 currentFields[idx].uniqueText = true;
@@ -856,8 +967,12 @@ function renderFields() {
         });
     });
 
-    container.querySelectorAll('.unique-number-cb').forEach((cb, idx) => {
+    container.querySelectorAll('.unique-number-cb').forEach((cb) => {
         cb.addEventListener('change', () => {
+            // the FIELD's index: Click / Wait fields have no checkboxes, so the position in
+            // this list is not the field's position (it ticked another field's box)
+            const idx = parseInt(cb.closest('.field-item').dataset.index);
+            if (!currentFields[idx]) return;
             syncFieldInputs();
             if (cb.checked) {
                 currentFields[idx].uniqueNumber = true;
@@ -873,8 +988,12 @@ function renderFields() {
     });
 
     // Number range checkbox handler
-    container.querySelectorAll('.number-range-cb').forEach((cb, idx) => {
+    container.querySelectorAll('.number-range-cb').forEach((cb) => {
         cb.addEventListener('change', () => {
+            // the FIELD's index: Click / Wait fields have no checkboxes, so the position in
+            // this list is not the field's position (it ticked another field's box)
+            const idx = parseInt(cb.closest('.field-item').dataset.index);
+            if (!currentFields[idx]) return;
             syncFieldInputs();
             if (cb.checked) {
                 currentFields[idx].numberRange = true;
@@ -908,8 +1027,12 @@ function renderFields() {
     });
 
     // Sequential checkbox handler
-    container.querySelectorAll('.sequential-cb').forEach((cb, idx) => {
+    container.querySelectorAll('.sequential-cb').forEach((cb) => {
         cb.addEventListener('change', () => {
+            // the FIELD's index: Click / Wait fields have no checkboxes, so the position in
+            // this list is not the field's position (it ticked another field's box)
+            const idx = parseInt(cb.closest('.field-item').dataset.index);
+            if (!currentFields[idx]) return;
             syncFieldInputs();
             if (cb.checked) {
                 currentFields[idx].sequentialSelect = true;
@@ -925,8 +1048,12 @@ function renderFields() {
     });
 
     // Smart Date checkbox handler
-    container.querySelectorAll('.smart-date-cb').forEach((cb, idx) => {
+    container.querySelectorAll('.smart-date-cb').forEach((cb) => {
         cb.addEventListener('change', () => {
+            // the FIELD's index: Click / Wait fields have no checkboxes, so the position in
+            // this list is not the field's position (it ticked another field's box)
+            const idx = parseInt(cb.closest('.field-item').dataset.index);
+            if (!currentFields[idx]) return;
             syncFieldInputs();
             if (cb.checked) {
                 currentFields[idx].isSmartDate = true;
@@ -960,6 +1087,18 @@ function renderFields() {
             e.preventDefault();
             e.stopPropagation();
         });
+    });
+
+    // "Starts with" for Unique number: digits only
+    container.querySelectorAll('.prefix-input').forEach((input) => {
+        input.addEventListener('input', () => {
+            const item = input.closest('.field-item');
+            const idx = item ? parseInt(item.dataset.index) : -1;
+            const clean = input.value.replace(/\D/g, '');
+            if (clean !== input.value) input.value = clean;
+            if (currentFields[idx]) currentFields[idx].numberPrefix = clean;
+        });
+        input.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
     });
 
     // Prevent negative signs in wait inputs
@@ -1000,3 +1139,76 @@ function escapeHtml(text) {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
 }
+
+
+// ── Smart variable picker ──
+// {x} next to a value opens the variables (grouped, searchable, each with a sample of what
+// it produces); a click inserts it where the cursor is - no copying from the guide.
+(function () {
+    const GROUPS = [
+        ['Identity', ['full_name', 'first_name', 'last_name', 'random_name', 'username']],
+        ['Arabic · عربي', ['full_name_ar', 'first_name_ar', 'last_name_ar', 'address_ar', 'city_ar', 'country_ar', 'company_ar', 'job_title_ar', 'long_text_ar']],
+        ['Contact', ['email', 'phone', 'url', 'zip_code']],
+        ['Location', ['address', 'city', 'country']],
+        ['Dates', ['date', 'time', 'datetime', 'year', 'month', 'day']],
+        ['Text & work', ['company', 'job_title', 'long_text', 'age']],
+        ['System', ['password', 'guid', 'bool', 'color']],
+    ];
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const sample = (k) => { try { return self.QASmartVars ? self.QASmartVars.resolve('{{' + k + '}}') : ''; } catch (e) { return ''; } };
+    let pop = null, target = null;
+    const close = () => { if (pop) pop.remove(); pop = null; target = null; };
+    function draw(q) {
+        const list = pop.querySelector('.vp-list');
+        q = (q || '').toLowerCase().trim();
+        list.innerHTML = GROUPS.map(([g, keys]) => {
+            const ks = keys.filter((k) => !q || k.includes(q) || g.toLowerCase().includes(q));
+            if (!ks.length) return '';
+            return `<div class="vp-g">${esc(g)}</div>` + ks.map((k) => {
+                const s = sample(k);
+                return `<button type="button" class="vp-i" data-k="${k}"><code>{{${k}}}</code><span class="vp-s" dir="auto">${esc(s.length > 42 ? s.slice(0, 42) + '…' : s)}</span></button>`;
+            }).join('');
+        }).join('') || '<div class="vp-none">No variable matches</div>';
+    }
+    function open(btn) {
+        close();
+        target = btn.parentElement.querySelector('.field-input');
+        pop = document.createElement('div');
+        pop.className = 'var-pop';
+        pop.innerHTML = '<input class="vp-q" placeholder="Search variables… (name, city, ar)" spellcheck="false"><div class="vp-list"></div>';
+        document.body.appendChild(pop);
+        draw('');
+        const r = btn.getBoundingClientRect();
+        const w = 330, h = Math.min(380, innerHeight - 20);
+        pop.style.width = w + 'px'; pop.style.maxHeight = h + 'px';
+        pop.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + 'px';
+        pop.style.top = (r.bottom + 6 + h > innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6) + 'px';
+        const q = pop.querySelector('.vp-q');
+        q.addEventListener('input', () => draw(q.value));
+        q.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') close();
+            if (e.key === 'Enter') { const first = pop.querySelector('.vp-i'); if (first) first.click(); }
+        });
+        pop.addEventListener('mousedown', (e) => { if (e.target.closest('.vp-i')) e.preventDefault(); });   // keep the caret in the field
+        pop.addEventListener('click', (e) => {
+            const it = e.target.closest('.vp-i'); if (!it || !target) return;
+            const tok = '{{' + it.dataset.k + '}}';
+            const a = target.selectionStart != null ? target.selectionStart : target.value.length;
+            const z = target.selectionEnd != null ? target.selectionEnd : a;
+            target.value = target.value.slice(0, a) + tok + target.value.slice(z);
+            target.focus();
+            try { target.setSelectionRange(a + tok.length, a + tok.length); } catch (err) { }
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+            close();
+        });
+        setTimeout(() => q.focus(), 0);
+    }
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.btn-var');
+        if (btn) { e.preventDefault(); if (pop && target === btn.parentElement.querySelector('.field-input')) close(); else open(btn); return; }
+        if (pop && !e.target.closest('.var-pop')) close();
+    });
+    window.addEventListener('resize', close);
+    document.addEventListener('scroll', (e) => { if (pop && !(e.target.closest && e.target.closest('.var-pop'))) close(); }, true);
+})();
