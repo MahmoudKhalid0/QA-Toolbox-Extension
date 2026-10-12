@@ -343,8 +343,13 @@ function qaApplyFloatOpacity(pct) {
     let st = document.getElementById('qa-float-opacity');
     if (v >= 1) { if (st) st.remove(); return; }
     if (!st) { st = document.createElement('style'); st.id = 'qa-float-opacity'; (document.head || document.documentElement).appendChild(st); }
-    st.textContent = `#ff-floating-btn, #qa-cap-eye { opacity: ${v}; transition: opacity .15s; }
-        #ff-floating-btn:hover, #qa-cap-eye:hover { opacity: 1; }`;
+    // the ⚡ menu too (the eye's menu already lives inside the eye): see-through until the
+    // mouse is on it, so it doesn't hide the page under it
+    st.textContent = `#ff-floating-btn, #qa-cap-eye, #ff-floating-menu { opacity: ${v}; transition: opacity .15s; }
+        #ff-floating-btn:hover, #qa-cap-eye:hover, #ff-floating-menu:hover { opacity: 1; }
+        /* like the eye: the button and its menu are one thing - the mouse on EITHER one
+           shows both solid (the eye's menu lives inside the eye; this menu does not) */
+        html:has(#ff-floating-btn:hover) #ff-floating-menu, html:has(#ff-floating-menu:hover) #ff-floating-btn { opacity: 1; }`;
 }
 if (window.top === window) {
     try {
@@ -6762,9 +6767,11 @@ function createFloatingButton() {
             overflow-y: auto;
             overscroll-behavior: contain;
         }
+        /* no opacity in "to": the slide ends at the menu's own opacity (the floating
+           buttons opacity setting), instead of flashing solid and then dropping */
         @keyframes ff-slide-up {
             from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
+            to { transform: translateY(0); }
         }
         .ff-menu-item {
             padding: 8px 12px;
@@ -6960,7 +6967,7 @@ function createFloatingButton() {
             }
 
             // Switch to a saved login (Snapshot & Swap) - the page reloads.
-            // Skip the "current" one (marked no-click) so it can't be re-clicked.
+            // (the CURRENT one too - switching to it again restores its saved session)
             const swapItem = e.target.closest('.ff-swap-item');
             if (swapItem && swapItem.classList.contains('no-click')) return;
             if (swapItem) {
@@ -7067,10 +7074,10 @@ function createFloatingButton() {
             const reloginBtn = `<span class="ff-swap-relogin${s.hasCreds ? '' : ' off'}" data-swap-id="${escHtml(s.id)}" data-name="${escHtml(s.name)}" data-creds="${s.hasCreds ? '1' : ''}" title="${s.hasCreds ? 'Log in again as this user and refresh the saved session' : 'Log in again - add the username/password first (🔑 in the Sessions tab)'}"><i class="fas fa-right-to-bracket"></i></span>`;
             const refreshBtn = reloginBtn + `<span class="ff-swap-update" data-swap-id="${escHtml(s.id)}" data-active="${s.active ? 'true' : 'false'}" title="Update this saved login with the session you're logged in as now"><i class="fas fa-rotate"></i></span>`;
             if (s.active) {
-                // The login currently in use - shown as CURRENT and not clickable
-                // (so you don't re-switch to yourself by accident).
+                // The login currently in use - shown as CURRENT, and clickable like the others:
+                // switching to it again restores its saved session (e.g. after it expired).
                 menuHtml += `
-                    <div class="ff-menu-item ff-swap-item ff-active no-click" title="${s.activeConfidence === 'assumed' ? 'Cookie-only login; identity could not be verified' : 'You are using this login now'}" style="cursor:default;">
+                    <div class="ff-menu-item ff-swap-item ff-active" data-swap-id="${escHtml(s.id)}" title="You are using this login now - click to switch to its saved session again">
                         <i class="fas fa-circle-check" style="color:#10b981;"></i>
                         <span style="font-weight:600;">${escHtml(truncateName(s.name))}</span>
                         <span class="ff-swap-badge">CURRENT</span>
